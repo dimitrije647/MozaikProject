@@ -1,14 +1,12 @@
 import {
   SemanticEvent,
-  SituationSpecification,
-  createAgent,
   createHuman,
   defineRuntime,
+  type InferenceInput,
   type Participant,
-  type SituationContext,
-  type SituationHandler,
 } from '@mozaik-ai/core';
-import { SMOKE_ACK_EVENT, type FactoryEventPayloads, type RunMode, type TerminalReason } from '../factory/events';
+import type { EmittedEventType, FactoryEventPayloads, RunMode, TerminalReason } from '../factory/events';
+import type { ProductDiscoveryReport } from '../discovery/schemas';
 import { redact, safeErrorMessage } from '../factory/redact';
 import {
   FactoryRuntimeState,
@@ -17,19 +15,15 @@ import {
   type CampaignRunStatus,
   type RecordedEvent,
 } from '../factory/state';
-import { buildInferenceRunnerConfig, type InferenceCredentials } from './providers';
+import { summarizeForHistory } from './history';
+import { DiscoveryProgram, type DiscoveryRunConfig, type ReportMeta } from './programs/discovery-program';
+import { SmokeProgram, type SmokeTestOptions } from './programs/smoke-program';
+import type { InferenceCredentials } from './providers';
+import { OnAnyEvent, OnEventTypes, guarded, type RunContext, type RunProgram } from './run-context';
 import { enforceTelemetryPolicy } from './telemetry';
 
-export type SmokeBehavior = 'acknowledge' | 'fail' | 'silent';
-
-export interface SmokeTestOptions {
-  /** Delay before the test participant acknowledges. Lets callers observe "running" and cancel. */
-  delayMs?: number;
-  /** Hard deadline for the whole run. */
-  timeoutMs?: number;
-  /** Fault injection for tests: 'fail' throws inside the participant, 'silent' never answers. */
-  behavior?: SmokeBehavior;
-}
+export { DEFAULT_SMOKE_TIMEOUT_MS, type SmokeBehavior, type SmokeTestOptions } from './programs/smoke-program';
+export { AGENT_NAMES, type DiscoveryRunConfig, type ReportMeta, type ReportSink } from './programs/discovery-program';
 
 export interface CampaignRunInput {
   runId: string;
@@ -38,14 +32,22 @@ export interface CampaignRunInput {
   mode: RunMode;
   /** Non-secret brief snapshot. */
   manifest: CampaignManifest;
-  /** Only for modes that call an LLM. Never required for the smoke test. */
+  /** Only for modes that call an LLM (product_discovery requires OpenAI credentials). */
   credentials?: InferenceCredentials;
+  /** smoke_test settings. */
   options?: SmokeTestOptions;
+  /** product_discovery settings. */
+  discovery?: DiscoveryRunConfig;
   /**
-   * Receives every event of the run, already sanitized, in order. The backend persists them.
-   * Returned promises are not awaited by the runtime (Mozaik delivery is synchronous).
+   * Receives every event of the run, already sanitized and compacted, in order. The backend
+   * persists them. Returned promises are not awaited by the runtime (Mozaik delivery is synchronous).
    */
   onEvent?: (event: RecordedEvent) => void | Promise<void>;
+  /**
+   * product_discovery: called with the validated report BEFORE the run is completed. The run only
+   * completes if this resolves; a rejection fails the run.
+   */
+  onReport?: (report: ProductDiscoveryReport, meta: ReportMeta) => Promise<void>;
 }
 
 export interface CampaignRunResult {
@@ -79,53 +81,14 @@ export class RuntimeInitError extends Error {
   }
 }
 
-export const DEFAULT_SMOKE_TIMEOUT_MS = 15_000;
-const clamp = (n: number | undefined, min: number, max: number, fallback: number) =>
-  Math.min(Math.max(Number.isFinite(n as number) ? (n as number) : fallback, min), max);
-
-// ---- Mozaik situation specifications -------------------------------------------------------
-
-class OnEventTypes extends SituationSpecification {
-  constructor(private readonly types: readonly string[]) {
-    super();
-  }
-  isSatisfiedBy({ event }: SituationContext): boolean {
-    return this.types.includes(event.type);
-  }
-}
-
-class OnAnyEvent extends SituationSpecification {
-  isSatisfiedBy(): boolean {
-    return true;
-  }
-}
-
-/**
- * Mozaik calls `processor.apply` synchronously and ignores its result, so a thrown error or a
- * rejected promise would otherwise surface as an unhandled exception/rejection outside the run.
- * Every handler goes through here so failures become a `factory.failed` event instead.
- */
-function guarded(
-  onError: (err: unknown) => void,
-  fn: (context: SituationContext) => void | Promise<void>,
-): SituationHandler['processor'] {
-  return {
-    apply(context) {
-      try {
-        const result = fn(context);
-        if (result && typeof (result as Promise<void>).then === 'function') {
-          (result as Promise<void>).catch(onError);
-        }
-      } catch (err) {
-        onError(err);
-      }
-    },
-  };
-}
+/** Safety net against runaway event loops: a run that emits more events than this is failed. */
+export const MAX_EVENTS_PER_RUN = 600;
 
 // ---- One isolated run ----------------------------------------------------------------------
 
-class ActiveRun {
+type BaseRunInput = Omit<CampaignRunInput, 'credentials' | 'discovery' | 'options' | 'onReport'>;
+
+class ActiveRun implements RunContext {
   readonly mozaik = defineRuntime<FactoryRuntimeState>(); // own closure => own runtime, no shared globals
   readonly state: FactoryRuntimeState;
   readonly done: Promise<CampaignRunResult>;
@@ -134,36 +97,36 @@ class ActiveRun {
   private sequence = 0;
   private closed = false;
   private readonly timers = new Set<NodeJS.Timeout>();
-  private orchestrator!: Participant;
-  private smoke!: Participant;
-  private readonly options: Required<SmokeTestOptions>;
+  private orchestratorParticipant!: Participant;
 
   constructor(
-    // Credentials are deliberately not part of this type: they are passed to start() once and
-    // never retained, so they are not reachable from the run object for its lifetime.
-    private readonly input: Omit<CampaignRunInput, 'credentials'>,
+    // Credentials are deliberately not part of this type: they go to the program once and are never
+    // retained here, so they are not reachable from the run object for its lifetime.
+    private readonly input: BaseRunInput,
+    private readonly program: RunProgram,
+    private readonly timeoutMs: number,
     private readonly release: (runId: string) => void,
     private readonly warn: (message: string) => void,
   ) {
     this.state = new FactoryRuntimeState(input.runId, input.projectId, input.userId, input.manifest);
-    this.options = {
-      delayMs: clamp(input.options?.delayMs, 0, 30_000, 0),
-      timeoutMs: clamp(input.options?.timeoutMs, 50, 120_000, DEFAULT_SMOKE_TIMEOUT_MS),
-      behavior: input.options?.behavior ?? 'acknowledge',
-    };
     this.done = new Promise((resolve) => (this.resolveDone = resolve));
   }
 
+  get runId() {
+    return this.input.runId;
+  }
+  get orchestrator() {
+    return this.orchestratorParticipant;
+  }
   get status() {
     return this.state.status;
   }
+  isClosed() {
+    return this.closed;
+  }
 
-  start(credentials?: InferenceCredentials) {
-    this.mozaik.initializeRuntime({
-      state: this.state,
-      // Smoke test: no credentials => empty model list => inference is impossible by construction.
-      inferenceRunnerConfig: buildInferenceRunnerConfig(credentials),
-    });
+  start() {
+    this.mozaik.initializeRuntime({ state: this.state, inferenceRunnerConfig: this.program.inferenceConfig() });
 
     // Join order matters: the recorder joins first so it sees every later event, including joins.
     const recorder = createHuman({
@@ -172,59 +135,33 @@ class ActiveRun {
       handlers: [{ specification: new OnAnyEvent(), processor: guarded((e) => this.warnErr('recorder', e), (c) => this.record(c.event)) }],
     });
 
-    const onError = (who: string) => (err: unknown) => this.fail(err, who);
-
     // Mozaik only offers Agent and Human participants; the orchestrator is a Human by type only.
-    this.orchestrator = createHuman({
+    this.orchestratorParticipant = createHuman({
       name: 'Factory Orchestrator',
       capabilities: ['orchestrate'],
       handlers: [
-        {
-          specification: new OnEventTypes([SMOKE_ACK_EVENT]),
-          processor: guarded(onError('Factory Orchestrator'), () => {
-            this.emit('factory.completed', { mode: 'smoke_test', phasesCompleted: [] }, this.orchestrator);
-          }),
-        },
+        ...this.program.orchestratorHandlers(this),
         {
           specification: new OnEventTypes(['factory.completed', 'factory.failed', 'factory.cancelled']),
-          processor: guarded(onError('Factory Orchestrator'), ({ event }) => this.onTerminalEvent(event)),
-        },
-      ],
-    });
-
-    // Deterministic participant: genuinely joins the Mozaik runtime and reacts to events, but never
-    // calls a model, so the smoke test costs nothing and needs no API key.
-    this.smoke = createAgent({
-      name: 'Smoke Test Participant',
-      capabilities: ['smoke-test'],
-      instruction: 'Deterministic infrastructure test participant. Performs no inference.',
-      tools: [],
-      handlers: [
-        {
-          specification: new OnEventTypes(['factory.started']),
-          processor: guarded(onError('Smoke Test Participant'), () => this.smokeOnStarted()),
+          processor: guarded(this.guard('Factory Orchestrator'), ({ event }) => this.onTerminalEvent(event)),
         },
       ],
     });
 
     this.mozaik.join(recorder);
-    this.mozaik.join(this.orchestrator);
-    this.mozaik.join(this.smoke);
+    this.mozaik.join(this.orchestratorParticipant);
+    for (const p of this.program.participants(this)) this.mozaik.join(p);
 
-    const timeout = setTimeout(() => {
-      this.emit(
-        'factory.failed',
-        { reason: 'timeout', message: `Run timed out after ${this.options.timeoutMs} ms` },
-        this.orchestrator,
-      );
-    }, this.options.timeoutMs);
-    this.timers.add(timeout);
+    const deadline = setTimeout(() => {
+      this.emit('factory.failed', { reason: 'timeout', message: `Run timed out after ${this.timeoutMs} ms` }, this.orchestratorParticipant);
+    }, this.timeoutMs);
+    this.timers.add(deadline);
 
-    this.emit('factory.started', { mode: this.input.mode, label: 'Infrastructure Smoke Test' }, this.orchestrator);
+    this.program.kickoff(this);
   }
 
   cancel(reason: 'cancelled' | 'server_shutdown' = 'cancelled') {
-    if (!this.closed) this.emit('factory.cancelled', { reason }, this.orchestrator);
+    if (!this.closed) this.emit('factory.cancelled', { reason }, this.orchestratorParticipant);
     return this.done;
   }
 
@@ -233,37 +170,60 @@ class ActiveRun {
     this.closeResources('failed');
   }
 
-  // ---- internals
+  // ---- RunContext
 
-  private smokeOnStarted() {
-    const { behavior, delayMs } = this.options;
-    if (behavior === 'fail') throw new Error('Injected participant failure (fault-injection test)');
-    if (behavior === 'silent') return;
-    const acknowledge = () =>
-      this.emit(SMOKE_ACK_EVENT, { by: 'Smoke Test Participant', receivedEvent: 'factory.started' }, this.smoke);
-    if (delayMs === 0) return acknowledge();
-    const timer = setTimeout(() => {
-      this.timers.delete(timer);
-      // Timer callbacks run outside Mozaik's handler guard, so guard here too.
-      try {
-        acknowledge();
-      } catch (err) {
-        this.fail(err, 'Smoke Test Participant');
-      }
-    }, delayMs);
-    this.timers.add(timer);
-  }
-
-  private emit<T extends keyof FactoryEventPayloads>(type: T, payload: FactoryEventPayloads[T], from: Participant) {
+  emit<T extends EmittedEventType>(type: T, payload: FactoryEventPayloads[T], from: Participant) {
     if (this.closed) return;
     this.mozaik.sendEvent(SemanticEvent.create(type, from.getId(), payload), from.getId());
   }
 
+  fail(err: unknown, participant: string) {
+    if (this.closed) return;
+    try {
+      this.emit('factory.failed', { reason: 'participant_error', message: safeErrorMessage(err), participant }, this.orchestratorParticipant);
+    } catch (emitErr) {
+      // The event system itself is broken: still reach a truthful terminal state.
+      this.closeResources('failed', safeErrorMessage(emitErr));
+    }
+  }
+
+  guard(who: string) {
+    return (err: unknown) => this.fail(err, who);
+  }
+
+  setTimer(ms: number, fn: () => void) {
+    const timer = setTimeout(() => {
+      this.timers.delete(timer);
+      if (this.closed) return;
+      // Timer callbacks run outside Mozaik's handler guard, so guard here too.
+      try {
+        fn();
+      } catch (err) {
+        this.fail(err, 'timer');
+      }
+    }, ms);
+    this.timers.add(timer);
+    return timer;
+  }
+
+  clearTimer(timer: NodeJS.Timeout) {
+    clearTimeout(timer);
+    this.timers.delete(timer);
+  }
+
+  runLoop(agentId: string, message: string, input: InferenceInput) {
+    if (this.closed) return;
+    this.mozaik.runLoop(agentId, message, input);
+  }
+
+  // ---- internals
+
   private record(event: SemanticEvent) {
     if (this.closed) return;
+    const summary = summarizeForHistory(event.type, event.payload);
     const raw = event.payload;
     const payload =
-      raw && typeof raw === 'object' ? (redact(raw) as Record<string, unknown>) : raw == null ? null : { value: redact(raw) };
+      summary ?? (raw && typeof raw === 'object' ? (redact(raw) as Record<string, unknown>) : raw == null ? null : { value: redact(raw) });
     const producer = this.state.getParticipant(event.producerId);
     const recorded: RecordedEvent = {
       runId: this.input.runId,
@@ -271,7 +231,7 @@ class ActiveRun {
       type: event.type,
       phase: this.state.currentPhase,
       participant: producer ? producer.getManifest().name : null,
-      payload,
+      payload: payload ? (redact(payload) as Record<string, unknown>) : null,
       occurredAt: event.occurredAt.toISOString(),
     };
     this.state.pushEvent(recorded);
@@ -280,6 +240,9 @@ class ActiveRun {
       if (pending && typeof pending.then === 'function') pending.catch((e) => this.warnErr('onEvent sink', e));
     } catch (err) {
       this.warnErr('onEvent sink', err);
+    }
+    if (this.sequence === MAX_EVENTS_PER_RUN + 1) {
+      queueMicrotask(() => this.fail(new Error(`Event limit (${MAX_EVENTS_PER_RUN}) exceeded; stopping a possible event loop`), 'runtime'));
     }
   }
 
@@ -291,20 +254,6 @@ class ActiveRun {
     return this.closeResources(payload.reason === 'server_shutdown' ? 'interrupted' : 'cancelled');
   }
 
-  private fail(err: unknown, participant: string) {
-    if (this.closed) return;
-    try {
-      this.emit(
-        'factory.failed',
-        { reason: 'participant_error', message: safeErrorMessage(err), participant },
-        this.orchestrator,
-      );
-    } catch (emitErr) {
-      // The event system itself is broken: still reach a truthful terminal state.
-      this.closeResources('failed', safeErrorMessage(emitErr));
-    }
-  }
-
   private closeResources(status: Exclude<CampaignRunStatus, 'running'>, errorMessage?: string) {
     if (this.closed) return;
     this.closed = true; // from here on, nothing is recorded or emitted
@@ -312,6 +261,11 @@ class ActiveRun {
     this.state.completedAt = new Date().toISOString();
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
+    try {
+      this.program.dispose();
+    } catch (err) {
+      this.warnErr('dispose', err);
+    }
     try {
       for (const p of [...this.state.getParticipants()].reverse()) this.mozaik.leave(p);
     } catch (err) {
@@ -343,17 +297,16 @@ export class MozaikCampaignRuntime implements CampaignRuntime {
   }
 
   async startRun(input: CampaignRunInput): Promise<CampaignRunHandle> {
-    if (input.mode !== 'smoke_test') {
-      throw new RuntimeInitError(`Run mode "${String(input.mode)}" is not implemented yet`);
-    }
-    if (this.active.has(input.runId)) throw new RuntimeInitError(`Run ${input.runId} is already active`);
     enforceTelemetryPolicy(); // idempotent; guards against the environment changing after construction
+    if (this.active.has(input.runId)) throw new RuntimeInitError(`Run ${input.runId} is already active`);
 
-    const { credentials, ...withoutCredentials } = input;
-    const run = new ActiveRun(withoutCredentials, (id) => this.active.delete(id), this.warn);
+    const { credentials, discovery, options, onReport, ...base } = input;
+    const program = this.createProgram(input.mode, { credentials, discovery, options, onReport });
+
+    const run = new ActiveRun(base, program, program.defaultTimeoutMs, (id) => this.active.delete(id), this.warn);
     this.active.set(input.runId, run);
     try {
-      run.start(credentials);
+      run.start();
     } catch (err) {
       run.abort();
       this.active.delete(input.runId);
@@ -365,6 +318,21 @@ export class MozaikCampaignRuntime implements CampaignRuntime {
       done: run.done,
       cancel: (reason) => run.cancel(reason),
     };
+  }
+
+  private createProgram(
+    mode: RunMode,
+    parts: Pick<CampaignRunInput, 'credentials' | 'discovery' | 'options' | 'onReport'>,
+  ): RunProgram {
+    if (mode === 'smoke_test') return new SmokeProgram(parts.options, parts.credentials);
+    if (mode === 'product_discovery') {
+      if (!parts.credentials) throw new RuntimeInitError('Product Discovery needs the user\'s OpenAI credentials');
+      if (parts.credentials.provider !== 'openai') throw new RuntimeInitError('Product Discovery currently supports OpenAI only');
+      if (!parts.discovery?.model?.trim()) throw new RuntimeInitError('Product Discovery needs an explicit model');
+      if (!parts.onReport) throw new RuntimeInitError('Product Discovery needs a report sink (onReport)');
+      return new DiscoveryProgram(parts.credentials, parts.discovery, parts.onReport);
+    }
+    throw new RuntimeInitError(`Run mode "${String(mode)}" is not implemented`);
   }
 
   async getRunStatus(runId: string) {

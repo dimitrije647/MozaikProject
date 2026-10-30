@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { AuthUser, CurrentUser } from '../auth/current-user.decorator';
-import { ListEventsQueryDto, StartSmokeTestDto } from './dto/mozaik.dto';
+import { ListEventsQueryDto, StartDiscoveryDto, StartSmokeTestDto } from './dto/mozaik.dto';
 import { MozaikService } from './mozaik.service';
 
 @Controller()
@@ -11,6 +11,25 @@ export class MozaikController {
   @Post('projects/:projectId/runs/smoke-test')
   startSmokeTest(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string, @Body() dto: StartSmokeTestDto) {
     return this.mozaik.startSmokeTest(u.id, projectId, dto);
+  }
+
+  /**
+   * Product Discovery: real agents on the user's OpenAI key and chosen model. Uses their API credits,
+   * so it only ever runs from this explicit call.
+   */
+  @Post('projects/:projectId/runs/product-discovery')
+  startProductDiscovery(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string, @Body() dto: StartDiscoveryDto) {
+    return this.mozaik.startProductDiscovery(u.id, projectId, dto);
+  }
+
+  @Get('projects/:projectId/reports')
+  reports(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string) {
+    return this.mozaik.listReports(u.id, projectId);
+  }
+
+  @Get('reports/:reportId')
+  report(@CurrentUser() u: AuthUser, @Param('reportId') reportId: string) {
+    return this.mozaik.getReport(u.id, reportId);
   }
 
   @Get('projects/:projectId/runs')

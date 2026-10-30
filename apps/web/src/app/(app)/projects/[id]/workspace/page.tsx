@@ -19,6 +19,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/empty-state';
+import { ProductDiscoveryPanel } from '@/components/product-discovery-panel';
 import { RuntimeTestPanel } from '@/components/runtime-test-panel';
 import { ProjectStatusBadge } from '@/components/project-status-badge';
 import { STATUS_META } from '@/components/integration-card';
@@ -59,7 +60,7 @@ export default function WorkspacePage() {
       {/* Banner */}
       <div role="status" className="flex items-start gap-3 rounded-2xl border border-amber-300/70 bg-amber-50 px-5 py-4 text-sm text-amber-900">
         <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-        <p><strong className="font-semibold">Agent execution is not enabled yet in this phase.</strong> This workspace is the shell where agent outputs will appear. Your brief is saved and ready.</p>
+        <p><strong className="font-semibold">Full campaign generation is not enabled yet.</strong> Product Discovery (a text-only AI analysis of your idea) is available below; the audit, strategy, creative and export stages are still to come.</p>
       </div>
 
       {/* Hero */}
@@ -168,6 +169,8 @@ export default function WorkspacePage() {
           </Card>
         </div>
       </div>
+
+      <ProductDiscoveryPanel projectId={id} />
 
       <RuntimeTestPanel projectId={id} />
     </div>

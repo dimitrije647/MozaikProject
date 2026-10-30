@@ -97,9 +97,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </nav>
 
       <div className="mt-auto rounded-2xl bg-ink p-4 text-cream-100">
-        <p className="font-serif text-lg leading-snug">Agents are coming.</p>
+        <p className="font-serif text-lg leading-snug">Discovery is live.</p>
         <p className="mt-1 text-xs text-muted-dark">
-          Your briefs are saved and ready for the AI marketing team once it ships.
+          Run Product Discovery from any project workspace with your own OpenAI key. More agents are coming.
         </p>
       </div>
     </div>

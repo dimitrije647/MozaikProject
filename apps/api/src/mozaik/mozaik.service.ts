@@ -10,13 +10,19 @@ import {
 } from '@nestjs/common';
 import { Prisma, RunStatus, type CampaignRun, type Project, type ProductIntake } from '@prisma/client';
 import {
+  buildDiscoveryInput,
+  redact,
+  resolveOpenAIBaseUrl,
   safeErrorMessage,
   type AiProvider,
   type CampaignManifest,
   type CampaignRunHandle,
   type CampaignRunResult,
   type CampaignRuntime,
+  type DiscoveryRunConfig,
   type InferenceCredentials,
+  type ProductDiscoveryReport,
+  type ReportMeta,
   type SmokeTestOptions,
 } from '@launchpilot/agents';
 import { PrismaService } from '../common/prisma.service';
@@ -24,7 +30,7 @@ import { ProjectsService } from '../projects/projects.service';
 import { ApiCredentialsService } from '../api-credentials/api-credentials.module';
 import { EventWriter } from './event-writer';
 import { CAMPAIGN_RUNTIME } from './types/runtime.token';
-import { ListEventsQueryDto, StartSmokeTestDto } from './dto/mozaik.dto';
+import { ListEventsQueryDto, StartDiscoveryDto, StartSmokeTestDto } from './dto/mozaik.dto';
 
 const RESULT_TO_DB: Record<CampaignRunResult['status'], RunStatus> = {
   completed: RunStatus.COMPLETED,
@@ -32,6 +38,15 @@ const RESULT_TO_DB: Record<CampaignRunResult['status'], RunStatus> = {
   cancelled: RunStatus.CANCELLED,
   interrupted: RunStatus.INTERRUPTED,
 };
+
+const RUN_LABELS: Record<string, string> = {
+  smoke_test: 'Infrastructure Smoke Test',
+  product_discovery: 'Product Discovery',
+};
+
+type RunMode = 'smoke_test' | 'product_discovery';
+type RunWithReport = CampaignRun & { report?: { id: string } | null };
+const withReport = { report: { select: { id: true } } } as const;
 
 interface ActiveEntry {
   handle: CampaignRunHandle;
@@ -41,18 +56,19 @@ interface ActiveEntry {
 }
 
 /** What the API returns for a run. No credentials, ever. */
-export function toRunView(run: CampaignRun) {
+export function toRunView(run: RunWithReport) {
   return {
     id: run.id,
     projectId: run.projectId,
     mode: run.mode,
-    label: run.mode === 'smoke_test' ? 'Infrastructure Smoke Test' : run.mode,
+    label: RUN_LABELS[run.mode] ?? run.mode,
     status: run.status,
     currentPhase: run.currentPhase,
     provider: run.provider,
     startedAt: run.startedAt,
     completedAt: run.completedAt,
     errorMessage: run.errorMessage,
+    reportId: run.report?.id ?? null,
   };
 }
 
@@ -61,7 +77,7 @@ export function toRunView(run: CampaignRun) {
  * @launchpilot/agents). It knows nothing about individual agents.
  *
  * Lifecycle: CampaignRun row (RUNNING) -> runtime.startRun -> events streamed to CampaignEvent
- * -> terminal status written once the runtime reports it.
+ * -> (product discovery: report saved) -> terminal status written once the runtime reports it.
  */
 @Injectable()
 export class MozaikService implements OnModuleInit, OnModuleDestroy {
@@ -117,7 +133,8 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     const runs = await this.prisma.campaignRun.findMany({
       where: { projectId, userId },
       orderBy: { createdAt: 'desc' },
-      take: 20,
+      take: 30,
+      include: withReport,
     });
     return runs.map(toRunView);
   }
@@ -149,6 +166,48 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  /** Report summaries for a project (newest first). Full reports come from getReport. */
+  async listReports(userId: string, projectId: string) {
+    await this.projects.assertOwned(userId, projectId);
+    const rows = await this.prisma.productDiscoveryReport.findMany({
+      where: { projectId },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+    return rows.map((r) => {
+      const report = r.reportJson as unknown as ProductDiscoveryReport;
+      const meta = r.metadataJson as unknown as ReportMeta;
+      return {
+        id: r.id,
+        runId: r.runId,
+        createdAt: r.createdAt,
+        language: r.language,
+        model: r.model,
+        schemaVersion: r.schemaVersion,
+        partial: report.partial,
+        executiveSummary: report.executiveSummary,
+        usage: meta.usage?.total ?? null,
+      };
+    });
+  }
+
+  async getReport(userId: string, reportId: string) {
+    // 404 (not 403) for other users' reports so ids cannot be probed.
+    const r = await this.prisma.productDiscoveryReport.findFirst({ where: { id: reportId, project: { userId } } });
+    if (!r) throw new NotFoundException('Report not found');
+    return {
+      id: r.id,
+      projectId: r.projectId,
+      runId: r.runId,
+      schemaVersion: r.schemaVersion,
+      language: r.language,
+      model: r.model,
+      createdAt: r.createdAt,
+      report: r.reportJson,
+      metadata: r.metadataJson,
+    };
+  }
+
   // ---- commands
 
   /**
@@ -162,51 +221,90 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
       this.prisma.productIntake.findUnique({ where: { projectId } }),
       this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { defaultAiProvider: true } }),
     ]);
-
-    let run: CampaignRun;
-    try {
-      // The partial unique index (one RUNNING run per project) makes this check atomic.
-      run = await this.prisma.campaignRun.create({
-        data: { projectId, userId, mode: 'smoke_test', provider: user.defaultAiProvider },
-      });
-    } catch (err) {
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        throw new ConflictException('A run is already in progress for this project');
-      }
-      throw err;
-    }
-
-    const writer = new EventWriter(this.prisma, this.logger);
-    let handle: CampaignRunHandle;
-    try {
-      handle = await this.runtime.startRun({
-        runId: run.id,
-        projectId,
-        userId,
-        mode: 'smoke_test',
-        manifest: this.buildManifest(project, intake),
-        // No `credentials`: the smoke test never calls a model, so a missing key must not block it.
-        options: { delayMs: dto.delayMs, ...testHooks },
-        onEvent: writer.push,
-      });
-    } catch (err) {
-      await writer.flush();
-      const failed = await this.prisma.campaignRun.update({
-        where: { id: run.id },
-        data: { status: RunStatus.FAILED, completedAt: new Date(), errorMessage: safeErrorMessage(err) },
-      });
-      this.logger.error(`Runtime failed to start for run ${run.id}: ${safeErrorMessage(err)}`);
-      return toRunView(failed);
-    }
-
-    const finalized = handle.done.then((result) => this.finalize(result, writer)).catch((err) => {
-      this.logger.error(`Failed to finalize run ${run.id}: ${safeErrorMessage(err)}`);
-    }).finally(() => {
-      this.active.delete(run.id);
+    return this.launchRun({
+      userId,
+      projectId,
+      mode: 'smoke_test',
+      provider: user.defaultAiProvider,
+      start: (run, writer) =>
+        this.runtime.startRun({
+          runId: run.id,
+          projectId,
+          userId,
+          mode: 'smoke_test',
+          manifest: this.buildManifest(project, intake),
+          // No `credentials`: the smoke test never calls a model, so a missing key must not block it.
+          options: { delayMs: dto.delayMs, ...testHooks },
+          onEvent: writer.push,
+        }),
     });
-    this.active.set(run.id, { handle, writer, finalized });
+  }
 
-    return toRunView(run);
+  /**
+   * Product Discovery (F1): real Mozaik agents using the USER's OpenAI key and an explicitly chosen
+   * model. Requires an intentional call; nothing here runs on page load.
+   * `testHooks` (timeouts etc.) is for tests only and is not reachable through HTTP.
+   */
+  async startProductDiscovery(userId: string, projectId: string, dto: StartDiscoveryDto = {}, testHooks: Partial<DiscoveryRunConfig> = {}) {
+    const project = await this.projects.assertOwned(userId, projectId);
+
+    const cred = await this.credentials.getDecryptedCredential(userId, 'openai');
+    if (!cred) {
+      throw new UnprocessableEntityException('Product Discovery needs your OpenAI API key. Add it under Settings > AI providers.');
+    }
+    const model = dto.model ?? cred.model;
+    if (!model) {
+      throw new UnprocessableEntityException('Choose an OpenAI model first (Settings > AI providers). LaunchPilot never picks one for you.');
+    }
+    const credentials: InferenceCredentials = { provider: 'openai', apiKey: cred.apiKey };
+
+    const [intake, socials, assets, notes] = await Promise.all([
+      this.prisma.productIntake.findUnique({ where: { projectId } }),
+      this.prisma.socialProfile.findMany({ where: { projectId } }),
+      this.prisma.projectAsset.findMany({ where: { projectId } }),
+      this.prisma.workspaceNote.findMany({ where: { projectId }, orderBy: { updatedAt: 'desc' } }),
+    ]);
+    const input = buildDiscoveryInput({ project, intake, socialProfiles: socials, assets, notes });
+
+    return this.launchRun({
+      userId,
+      projectId,
+      mode: 'product_discovery',
+      provider: 'openai',
+      start: (run, writer) =>
+        this.runtime.startRun({
+          runId: run.id,
+          projectId,
+          userId,
+          mode: 'product_discovery',
+          manifest: this.buildManifest(project, intake),
+          credentials,
+          discovery: {
+            input,
+            model,
+            maxModelCalls: dto.maxModelCalls,
+            maxOutputTokens: dto.maxOutputTokens,
+            baseUrl: resolveOpenAIBaseUrl(),
+            ...testHooks,
+          },
+          onEvent: writer.push,
+          // Saved BEFORE the run is marked COMPLETED (the runtime waits for this promise).
+          onReport: async (report, meta) => {
+            await this.prisma.productDiscoveryReport.create({
+              data: {
+                projectId,
+                runId: run.id,
+                schemaVersion: report.schemaVersion,
+                language: report.language,
+                model: meta.model,
+                // Defense in depth: nothing credential-shaped is stored, even inside user text.
+                reportJson: redact(report) as unknown as Prisma.InputJsonValue,
+                metadataJson: redact(meta) as unknown as Prisma.InputJsonValue,
+              },
+            });
+          },
+        }),
+    });
   }
 
   async cancel(userId: string, runId: string) {
@@ -228,13 +326,11 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Single entrance for resolving a user's BYOK credentials at run start. Not used by the smoke
-   * test. Future inference-backed runs call this and pass the result to `runtime.startRun`, where
-   * it lives only inside that run's isolated Mozaik inference runner (never in state, events, logs
-   * or the database). The lookup is keyed by `userId`, so one user's key cannot reach another's run.
+   * Single entrance for resolving a user's BYOK credentials at run start for providers other than
+   * the dedicated flows above. Keyed by `userId`, so one user's key cannot reach another's run.
    */
-  async prepareInference(userId: string): Promise<InferenceCredentials> {
-    const resolved = await this.credentials.getDecryptedKey(userId);
+  async prepareInference(userId: string, providerKey?: AiProvider): Promise<InferenceCredentials> {
+    const resolved = await this.credentials.getDecryptedKey(userId, providerKey);
     if (!resolved) {
       throw new UnprocessableEntityException(
         'Add an OpenAI or Gemini API key under Settings > AI providers to run AI workflows',
@@ -244,6 +340,54 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
   }
 
   // ---- internals
+
+  /** Shared run lifecycle: row -> runtime -> event stream -> terminal status. */
+  private async launchRun(args: {
+    userId: string;
+    projectId: string;
+    mode: RunMode;
+    provider: string | null;
+    start: (run: CampaignRun, writer: EventWriter) => Promise<CampaignRunHandle>;
+  }) {
+    const { userId, projectId, mode } = args;
+    let run: CampaignRun;
+    try {
+      // The partial unique index (one RUNNING run per project) makes this check atomic.
+      run = await this.prisma.campaignRun.create({ data: { projectId, userId, mode, provider: args.provider } });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new ConflictException('A run is already in progress for this project');
+      }
+      throw err;
+    }
+
+    const writer = new EventWriter(this.prisma, this.logger);
+    let handle: CampaignRunHandle;
+    try {
+      handle = await args.start(run, writer);
+    } catch (err) {
+      await writer.flush();
+      const failed = await this.prisma.campaignRun.update({
+        where: { id: run.id },
+        data: { status: RunStatus.FAILED, completedAt: new Date(), errorMessage: safeErrorMessage(err) },
+        include: withReport,
+      });
+      this.logger.error(`Runtime failed to start for run ${run.id}: ${safeErrorMessage(err)}`);
+      return toRunView(failed);
+    }
+
+    const finalized = handle.done
+      .then((result) => this.finalize(result, writer))
+      .catch((err) => {
+        this.logger.error(`Failed to finalize run ${run.id}: ${safeErrorMessage(err)}`);
+      })
+      .finally(() => {
+        this.active.delete(run.id);
+      });
+    this.active.set(run.id, { handle, writer, finalized });
+
+    return toRunView(run);
+  }
 
   private async finalize(result: CampaignRunResult, writer: EventWriter) {
     await writer.flush();
@@ -264,7 +408,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
 
   private async ownedRun(userId: string, runId: string) {
     // 404 (not 403) for other users' runs so ids cannot be probed.
-    const run = await this.prisma.campaignRun.findFirst({ where: { id: runId, userId } });
+    const run = await this.prisma.campaignRun.findFirst({ where: { id: runId, userId }, include: withReport });
     if (!run) throw new NotFoundException('Run not found');
     return run;
   }

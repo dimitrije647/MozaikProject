@@ -72,6 +72,7 @@ model Project {
   notes    WorkspaceNote[]
   activity ActivityLog[]
   runs     CampaignRun[]
+  reports  ProductDiscoveryReport[]
 
   @@unique([userId, slug])
   @@index([userId, updatedAt])
@@ -178,6 +179,12 @@ model ApiCredential {
   // AES-256-GCM payload (iv.tag.ciphertext, base64). Never returned by the API.
   encryptedKey String
   isActive     Boolean  @default(true)
+  // Model id the user chose for this provider. Never defaulted or switched automatically.
+  model        String?
+  // The model for which "Test connection" last succeeded (a real, tiny inference call).
+  // Ready to run = model is set AND verifiedModel == model. Replacing the key clears it.
+  verifiedModel String?
+  verifiedAt    DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -235,6 +242,7 @@ model CampaignRun {
   project Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
   user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   events  CampaignEvent[]
+  report  ProductDiscoveryReport?
 
   // A partial unique index (one RUNNING run per project) is added in the migration SQL,
   // because Prisma cannot express partial indexes in the schema.
@@ -257,4 +265,27 @@ model CampaignEvent {
   run CampaignRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
   @@unique([runId, sequence])
+}
+
+/// Product Discovery output. One report per run; reruns create new rows, nothing is overwritten.
+model ProductDiscoveryReport {
+  id            String   @id @default(cuid())
+  projectId     String
+  runId         String   @unique
+  schemaVersion Int
+  language      String
+  /// Model id the user selected for the run (as sent to OpenAI).
+  model         String
+  /// The validated report (see ProductDiscoveryReport in @launchpilot/agents).
+  reportJson    Json
+  /// Token usage, agent outcomes, cross-check issues, per-agent findings and the exact input snapshot
+  /// the agents saw. Contains the user's own text, never credentials.
+  metadataJson  Json
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  project Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  run     CampaignRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
 }

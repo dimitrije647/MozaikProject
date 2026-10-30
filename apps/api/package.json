@@ -13,7 +13,8 @@
     "db:deploy": "dotenv -e ../../.env -- prisma migrate deploy",
     "db:seed": "dotenv -e ../../.env -- tsx prisma/seed.ts",
     "db:reset": "dotenv -e ../../.env -- prisma migrate reset --force",
-    "test": "dotenv -e ../../.env -- jest"
+    "test": "dotenv -e ../../.env -- jest",
+    "db:seed:samples": "dotenv -e ../../.env -- tsx prisma/seed-samples.ts"
   },
   "dependencies": {
     "@launchpilot/agents": "workspace:*",

@@ -27,7 +27,7 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-di
 export function RuntimeTestPanel({ projectId }: { projectId: string }) {
   const toast = useToast();
   const runs = useProjectRuns(projectId);
-  const latest = runs.data?.[0];
+  const latest = runs.data?.find((r) => r.mode === 'smoke_test');
   const running = latest?.status === 'RUNNING';
   const events = useRunEvents(latest?.id, latest?.status);
   const start = useStartSmokeTest(projectId);

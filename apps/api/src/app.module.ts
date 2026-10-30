@@ -16,6 +16,7 @@ import { ActivityLogModule } from './activity-log/activity-log.module';
 import { HealthModule } from './health/health.module';
 import { StorageModule } from './storage/storage.module';
 import { MozaikModule } from './mozaik/mozaik.module';
+import { OpenAiModule } from './openai/openai.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { MozaikModule } from './mozaik/mozaik.module';
     IntegrationsModule,
     WorkspaceNotesModule,
     MozaikModule,
+    OpenAiModule,
     HealthModule,
   ],
   // Every route requires a session unless it is marked @Public().

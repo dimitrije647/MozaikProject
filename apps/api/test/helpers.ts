@@ -54,3 +54,15 @@ export async function allEvents(user: TestUser, runId: string) {
   const res = await user.agent.get(`/runs/${runId}/events?limit=500`).expect(200);
   return res.body.items as { sequence: number; eventType: string; participant: string | null; payload: any }[];
 }
+
+export async function loginUser(app: INestApplication, email: string): Promise<Agent> {
+  const agent = request.agent(app.getHttpServer());
+  await agent.post('/auth/login').send({ email, password: 'password123' }).expect(200);
+  return agent;
+}
+
+/** Saves an OpenAI key (and optionally a model) the way a user would in Settings. */
+export async function configureOpenAi(user: TestUser, apiKey: string, model?: string) {
+  await user.agent.post('/integrations/configure-api-key').send({ providerKey: 'openai', apiKey, setAsDefault: true }).expect(200);
+  if (model) await user.agent.put('/integrations/openai/model').send({ model }).expect(200);
+}

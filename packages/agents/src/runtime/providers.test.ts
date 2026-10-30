@@ -36,11 +36,29 @@ describe('redact', () => {
   it('masks sensitive keys and credential-shaped strings, deeply', () => {
     const out = redact({
       apiKey: 'whatever',
-      nested: { Authorization: 'Bearer abcdefghijklmnop', ok: 'fine', list: ['sk-abcdefghijkl', 'AIzaSyABCDEFGHIJKLMNOP'] },
+      nested: { Authorization: 'Bearer abcdefghijklmnop', ok: 'fine', list: ['sk-abcdefghijklmnopqrstuv', 'AIzaSyABCDEFGHIJKLMNOP'] },
     });
     const s = JSON.stringify(out);
-    assert.ok(!s.includes('whatever') && !s.includes('abcdefghijklmnop') && !s.includes('sk-abcdefghijkl') && !s.includes('AIzaSy'));
+    assert.ok(!s.includes('whatever') && !s.includes('abcdefghijklmnop') && !s.includes('sk-abcdefghijklmnopqrstuv') && !s.includes('AIzaSy'));
     assert.equal((out.nested as { ok: string }).ok, 'fine');
+  });
+});
+
+describe('redact keeps harmless token counters', () => {
+  it('does not treat usage counters as secrets, but still masks real tokens', () => {
+    const out = redact({ tokenUsage: { inputTokens: 12, outputTokens: 3, totalTokens: 15 }, maxOutputTokens: 3500, access_token: 'abc', accessToken: 'abc', token: 'abc', authToken: 'abc' }) as Record<string, any>;
+    assert.deepEqual(out.tokenUsage, { inputTokens: 12, outputTokens: 3, totalTokens: 15 });
+    assert.equal(out.maxOutputTokens, 3500);
+    for (const k of ['access_token', 'accessToken', 'token', 'authToken']) assert.equal(out[k], '[redacted]', k);
+  });
+});
+
+describe('redact leaves ordinary hyphenated words alone', () => {
+  it('does not mangle user text that merely contains "sk-"', () => {
+    const text = 'A task-management and risk-assessment-platform for desk-booking teams, see https://a.example/disk-usage-report';
+    assert.equal(redact(text), text);
+    assert.equal(redact({ note: text }).note, text);
+    assert.equal(redact('key sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 here'), 'key [redacted] here');
   });
 });
 

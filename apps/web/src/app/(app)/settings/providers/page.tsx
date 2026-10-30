@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { useToast } from '@/components/ui/toast';
 import { IntegrationDialog } from '@/components/integration-dialog';
+import { OpenAiPanel } from '@/components/openai-panel';
 import { ProviderIcon } from '@/components/integration-card';
 import { useCredentials, useDisconnect, useMyIntegrations, useProviders, useSetDefaultProvider } from '@/lib/hooks';
 import type { Provider } from '@/lib/types';
@@ -42,7 +43,7 @@ export default function ProvidersSettingsPage() {
       </div>
 
       <p className="flex items-center gap-2 text-xs text-muted">
-        <Info className="h-3.5 w-3.5" /> Agents are not enabled yet. Your key is stored now so it is ready when they are.
+        <Info className="h-3.5 w-3.5" /> OpenAI powers Product Discovery today. Gemini keys are stored for later and are not used by any agent yet.
       </p>
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -51,7 +52,7 @@ export default function ProvidersSettingsPage() {
           const integration = integrationFor(p.key);
           const isDefault = !!cred?.isDefault;
           return (
-            <Card key={p.key} className={cn('flex flex-col p-6 transition-all', isDefault && 'ring-2 ring-accent/60')}>
+            <Card key={p.key} className={cn('flex flex-col p-6 transition-all', isDefault && 'ring-2 ring-accent/60', p.key === 'openai' && cred && 'md:col-span-2')}>
               <div className="flex items-start justify-between gap-3">
                 <ProviderIcon providerKey={p.key} />
                 <div className="flex gap-1.5">
@@ -100,6 +101,7 @@ export default function ProvidersSettingsPage() {
                   </Button>
                 )}
               </div>
+              {p.key === 'openai' && cred && <OpenAiPanel />}
             </Card>
           );
         })}

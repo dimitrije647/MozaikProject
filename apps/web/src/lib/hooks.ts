@@ -11,7 +11,12 @@ import type {
   Note,
   ProjectDetail,
   ProjectSummary,
+  ConnectionTestResult,
+  OpenAiModelOption,
+  OpenAiStatus,
   Provider,
+  ReportFull,
+  ReportSummary,
   RunEvent,
   RunView,
   SocialProfile,
@@ -27,6 +32,9 @@ export const keys = {
   credentials: ['credentials'] as const,
   activity: ['activity'] as const,
   runs: (projectId: string) => ['runs', projectId] as const,
+  openai: ['openai-status'] as const,
+  reports: (projectId: string) => ['reports', projectId] as const,
+  report: (id: string) => ['report', id] as const,
   // status is part of the key so the history is refetched when the run reaches a terminal state
   runEvents: (runId: string, status?: string) => ['run-events', runId, status] as const,
 };
@@ -145,7 +153,7 @@ export const useProjectRuns = (projectId: string) =>
   useQuery({
     queryKey: keys.runs(projectId),
     queryFn: () => get<RunView[]>(`/projects/${projectId}/runs`),
-    refetchInterval: (q) => (q.state.data?.[0]?.status === 'RUNNING' ? POLL_MS : false),
+    refetchInterval: (q) => (q.state.data?.some((r) => r.status === 'RUNNING') ? POLL_MS : false),
   });
 
 export const useRunEvents = (runId: string | undefined, status: string | undefined) =>
@@ -164,3 +172,39 @@ export const useStartSmokeTest = (projectId: string) =>
 
 export const useCancelRun = (projectId: string) =>
   useApiMutation((runId: string) => post<RunView>(`/runs/${runId}/cancel`), [keys.runs(projectId), ['run-events']]);
+
+// ---- OpenAI BYOK (Settings > AI providers) ----
+
+export const useOpenAiStatus = () =>
+  useQuery({ queryKey: keys.openai, queryFn: () => get<OpenAiStatus>('/integrations/openai/status') });
+
+/** Lazy and free (GET /models): only fetched when the user presses "Load my models". */
+export const useOpenAiModels = () =>
+  useQuery({
+    queryKey: ['openai-models'],
+    queryFn: () => get<{ selected: string | null; models: OpenAiModelOption[] }>('/integrations/openai/models'),
+    enabled: false,
+    retry: false,
+    staleTime: Infinity,
+  });
+
+export const useSaveOpenAiModel = () =>
+  useApiMutation((model: string) => put<OpenAiStatus>('/integrations/openai/model', { model }), [keys.openai, keys.credentials, keys.myIntegrations]);
+
+/** Makes ONE tiny paid inference call. Only ever triggered by an explicit button press. */
+export const useTestOpenAi = () =>
+  useApiMutation((model?: string) => post<ConnectionTestResult>('/integrations/openai/test', model ? { model } : {}), [keys.openai, keys.credentials]);
+
+// ---- Product Discovery ----
+
+export const useStartDiscovery = (projectId: string) =>
+  useApiMutation(
+    (limits: { maxModelCalls?: number; maxOutputTokens?: number }) => post<RunView>(`/projects/${projectId}/runs/product-discovery`, limits),
+    [keys.runs(projectId), keys.reports(projectId)],
+  );
+
+export const useReports = (projectId: string) =>
+  useQuery({ queryKey: keys.reports(projectId), queryFn: () => get<ReportSummary[]>(`/projects/${projectId}/reports`) });
+
+export const useReport = (reportId: string | null | undefined) =>
+  useQuery({ queryKey: keys.report(reportId ?? 'none'), queryFn: () => get<ReportFull>(`/reports/${reportId}`), enabled: !!reportId });

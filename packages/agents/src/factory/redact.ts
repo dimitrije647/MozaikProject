@@ -1,6 +1,9 @@
-const SENSITIVE_KEY = /(api[-_]?key|secret|token|password|passwd|authorization|credential|bearer)/i;
-// Shapes of provider keys: OpenAI (sk-...), Gemini/Google (AIza...), generic bearer tokens.
-const SECRET_VALUE = /(sk-[A-Za-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{12,}|Bearer\s+[A-Za-z0-9._~+/=-]{12,})/g;
+// Credential-like field names. Deliberately NOT a bare /token/: LLM usage counters such as
+// inputTokens, outputTokens, totalTokens and tokenUsage are harmless numbers we must keep.
+const SENSITIVE_KEY = /(api[-_]?key|secret|passw(or)?d|authorization|credential|bearer|^token$|(access|refresh|auth|session|id|api|bearer)[-_]?token)/i;
+// Shapes of provider keys: OpenAI (sk-...), Gemini/Google (AIza...), bearer tokens. The boundary and the minimum
+// length keep ordinary words in user text ("risk-management-platform") from being mistaken for keys.
+const SECRET_VALUE = /((?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}|(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{16,}|Bearer\s+[A-Za-z0-9._~+/=-]{12,})/g;
 
 const MAX_DEPTH = 8;
 

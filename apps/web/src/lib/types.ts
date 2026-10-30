@@ -144,6 +144,7 @@ export interface RunView {
   startedAt: string;
   completedAt: string | null;
   errorMessage: string | null;
+  reportId: string | null;
 }
 
 export interface RunEvent {
@@ -153,4 +154,127 @@ export interface RunEvent {
   participant: string | null;
   payload: Record<string, unknown> | null;
   createdAt: string;
+}
+
+// ---- OpenAI BYOK + Product Discovery ----
+
+export interface OpenAiStatus {
+  configured: boolean;
+  maskedKey: string | null;
+  model: string | null;
+  verifiedModel: string | null;
+  verifiedAt: string | null;
+  /** A model is chosen AND a real test call succeeded for exactly that model. */
+  ready: boolean;
+  isDefault: boolean;
+}
+
+export interface OpenAiModelOption {
+  id: string;
+  ownedBy: string | null;
+  created: number | null;
+  likelyText: boolean;
+}
+
+export interface ConnectionTestResult {
+  ok: boolean;
+  model: string;
+  latencyMs: number;
+  keyAccepted: boolean | null;
+  usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
+  error?: { code: string; message: string };
+}
+
+export type EvidenceStatus = 'verified' | 'claimed' | 'inferred' | 'disputed' | 'unknown';
+
+export interface Statement {
+  text: string;
+  status: EvidenceStatus;
+  basis: string;
+}
+export interface EvidenceItem {
+  id: string;
+  statement: string;
+  status: EvidenceStatus;
+  sourceType: string;
+  sourceReference: string | null;
+  confidence: number | null;
+  explanation: string | null;
+}
+
+/** Mirrors ProductDiscoveryReport in @launchpilot/agents (schemaVersion 1). */
+export interface ProductDiscoveryReportData {
+  schemaVersion: number;
+  language: string;
+  partial: boolean;
+  executiveSummary: string;
+  overview: { name: string; category: string; businessType: string; summary: string };
+  problemAndSolution: { problem: Statement; solution: Statement };
+  valueProposition: Statement;
+  audienceHypotheses: Statement[];
+  featuresServices: Statement[];
+  differentiators: Statement[];
+  strengths: Statement[];
+  weaknessesAndRisks: Statement[];
+  missingInformation: string[];
+  evidenceAndAssumptions: EvidenceItem[];
+  contradictions: { topic: string; detail: string; sources: string[] }[];
+  marketingOpportunities: Statement[];
+  nextSteps: { action: string; priority: 'high' | 'medium' | 'low'; rationale: string }[];
+  followUpQuestions: string[];
+}
+
+export interface UsageTotals {
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reasoningTokens: number;
+  cachedInputTokens: number;
+}
+
+export interface ReportMetadata {
+  model: string;
+  provider: string;
+  generatedAt: string;
+  partial: boolean;
+  usage: { total: UsageTotals; perAgent: Record<string, UsageTotals>; callsStarted: number };
+  budget: { maxModelCalls: number; maxOutputTokens: number };
+  agents: { name: string; status: 'succeeded' | 'failed'; error?: { code: string; message: string } }[];
+  crosscheckIssues: { type: string; severity: string; detail: string; agents: string[] }[];
+  reportPolicyIssues: { type: string; severity: string; detail: string; agents: string[] }[];
+  inputSnapshot: {
+    project: { name: string };
+    truncated: boolean;
+    availableNotAnalyzed: {
+      websiteUrl: string | null;
+      githubUrl: string | null;
+      socialProfiles: { platform: string; url: string }[];
+      uploads: { name: string; type: string; mimeType: string }[];
+    };
+  };
+}
+
+export interface ReportSummary {
+  id: string;
+  runId: string;
+  createdAt: string;
+  language: string;
+  model: string;
+  schemaVersion: number;
+  partial: boolean;
+  executiveSummary: string;
+  usage: UsageTotals | null;
+}
+
+export interface ReportFull {
+  id: string;
+  projectId: string;
+  runId: string;
+  schemaVersion: number;
+  language: string;
+  model: string;
+  createdAt: string;
+  report: ProductDiscoveryReportData;
+  metadata: ReportMetadata;
 }

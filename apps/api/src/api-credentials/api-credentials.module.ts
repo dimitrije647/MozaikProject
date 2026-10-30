@@ -44,6 +44,11 @@ export class ApiCredentialsService {
       maskedKey: c.maskedKey,
       isActive: c.isActive,
       isDefault: user.defaultAiProvider === c.providerKey,
+      model: c.model,
+      verifiedModel: c.verifiedModel,
+      verifiedAt: c.verifiedAt,
+      // Ready = a model is chosen AND a real test call succeeded for exactly that model.
+      ready: !!c.model && c.verifiedModel === c.model,
       updatedAt: c.updatedAt,
     }));
   }
@@ -62,6 +67,9 @@ export class ApiCredentialsService {
       maskedKey: this.crypto.mask(key),
       encryptedKey: this.crypto.encrypt(key),
       isActive: true,
+      // A new key has not been tested yet.
+      verifiedModel: null,
+      verifiedAt: null,
     };
     await this.prisma.apiCredential.upsert({
       where: { userId_providerKey: { userId, providerKey } },
@@ -75,6 +83,23 @@ export class ApiCredentialsService {
     }
     await this.activity.log(userId, 'credential.saved', undefined, { providerKey });
     return { providerKey, maskedKey: data.maskedKey };
+  }
+
+  /** Stores the model the user chose for a provider. Does not call the provider. */
+  async setModel(userId: string, providerKey: string, model: string) {
+    const cred = await this.prisma.apiCredential.findUnique({ where: { userId_providerKey: { userId, providerKey } } });
+    if (!cred) throw new NotFoundException('Save an API key for this provider first');
+    await this.prisma.apiCredential.update({ where: { id: cred.id }, data: { model } });
+    await this.activity.log(userId, 'credential.model_changed', undefined, { providerKey, model });
+  }
+
+  /** Records a successful real test call for `model` (the only thing that makes a provider "ready"). */
+  async markVerified(userId: string, providerKey: string, model: string) {
+    await this.prisma.apiCredential.updateMany({ where: { userId, providerKey }, data: { verifiedModel: model, verifiedAt: new Date() } });
+  }
+
+  async clearVerification(userId: string, providerKey: string) {
+    await this.prisma.apiCredential.updateMany({ where: { userId, providerKey }, data: { verifiedModel: null, verifiedAt: null } });
   }
 
   async setDefault(userId: string, providerKey: string) {
@@ -102,7 +127,17 @@ export class ApiCredentialsService {
   }
 
   /**
-   * Server-side only, for the future agent runtime. Returns the user's decrypted key
+   * Server-side only. Decrypted key plus the user's chosen model for one provider. The lookup is
+   * keyed by `userId`, so one user's key can never be returned for another user's request.
+   */
+  async getDecryptedCredential(userId: string, providerKey: string) {
+    const cred = await this.prisma.apiCredential.findUnique({ where: { userId_providerKey: { userId, providerKey } } });
+    if (!cred || !cred.isActive) return null;
+    return { providerKey, apiKey: this.crypto.decrypt(cred.encryptedKey), model: cred.model, verifiedModel: cred.verifiedModel };
+  }
+
+  /**
+   * Server-side only, for the agent runtime. Returns the user's decrypted key
    * for a provider (or their default). Never expose this through a controller.
    */
   async getDecryptedKey(userId: string, providerKey?: string) {
