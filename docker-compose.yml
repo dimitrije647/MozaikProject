@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: launchpilot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: launchpilot
+      POSTGRES_PASSWORD: launchpilot
+      POSTGRES_DB: launchpilot
+    ports:
+      - "5433:5432"
+    volumes:
+      - launchpilot-pgdata:/var/lib/postgresql/data
+volumes:
+  launchpilot-pgdata:

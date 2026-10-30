@@ -1,0 +1,166 @@
+'use client';
+
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ApiError, del, get, patch, post, put } from './api';
+import type {
+  ActivityItem,
+  ApiCredentialInfo,
+  Asset,
+  FormatPref,
+  MyIntegrations,
+  Note,
+  ProjectDetail,
+  ProjectSummary,
+  Provider,
+  RunEvent,
+  RunView,
+  SocialProfile,
+  User,
+} from './types';
+
+export const keys = {
+  me: ['me'] as const,
+  projects: ['projects'] as const,
+  project: (id: string) => ['project', id] as const,
+  providers: ['providers'] as const,
+  myIntegrations: ['my-integrations'] as const,
+  credentials: ['credentials'] as const,
+  activity: ['activity'] as const,
+  runs: (projectId: string) => ['runs', projectId] as const,
+  // status is part of the key so the history is refetched when the run reaches a terminal state
+  runEvents: (runId: string, status?: string) => ['run-events', runId, status] as const,
+};
+
+export function useMe() {
+  return useQuery({
+    queryKey: keys.me,
+    queryFn: async () => (await get<{ user: User }>('/auth/me')).user,
+    retry: false,
+    staleTime: 60_000,
+  });
+}
+
+export const useProjects = () =>
+  useQuery({ queryKey: keys.projects, queryFn: () => get<ProjectSummary[]>('/projects') });
+
+export const useProject = (id: string) =>
+  useQuery({ queryKey: keys.project(id), queryFn: () => get<ProjectDetail>(`/projects/${id}`) });
+
+export const useProviders = () =>
+  useQuery({ queryKey: keys.providers, queryFn: () => get<Provider[]>('/integrations/providers') });
+
+export const useMyIntegrations = () =>
+  useQuery({ queryKey: keys.myIntegrations, queryFn: () => get<MyIntegrations>('/integrations/me') });
+
+export const useCredentials = () =>
+  useQuery({ queryKey: keys.credentials, queryFn: () => get<ApiCredentialInfo[]>('/api-credentials') });
+
+export const useActivity = (limit = 8) =>
+  useQuery({ queryKey: [...keys.activity, limit], queryFn: () => get<ActivityItem[]>(`/activity?limit=${limit}`) });
+
+/** Mutation helper that invalidates the given query keys on success. */
+function useApiMutation<TVars, TData>(
+  fn: (vars: TVars) => Promise<TData>,
+  invalidate: readonly (readonly unknown[])[],
+) {
+  const qc = useQueryClient();
+  return useMutation<TData, ApiError, TVars>({
+    mutationFn: fn,
+    onSuccess: () => {
+      invalidate.forEach((queryKey) => qc.invalidateQueries({ queryKey }));
+    },
+  });
+}
+
+export const useUpdateProject = (id: string) =>
+  useApiMutation(
+    (data: { name?: string; description?: string; status?: string }) => patch(`/projects/${id}`, data),
+    [keys.projects, keys.project(id)],
+  );
+
+export const useDeleteProject = () =>
+  useApiMutation((id: string) => del(`/projects/${id}`), [keys.projects, keys.activity]);
+
+export const useCreateNote = (projectId: string) =>
+  useApiMutation(
+    (data: { title: string; content: string }) => post<Note>(`/projects/${projectId}/notes`, data),
+    [keys.project(projectId)],
+  );
+
+export const useUpdateNote = (projectId: string) =>
+  useApiMutation(
+    ({ id, ...data }: { id: string; title?: string; content?: string }) => patch<Note>(`/notes/${id}`, data),
+    [keys.project(projectId)],
+  );
+
+export const useDeleteNote = (projectId: string) =>
+  useApiMutation((id: string) => del(`/notes/${id}`), [keys.project(projectId)]);
+
+export const useDeleteAsset = (projectId: string) =>
+  useApiMutation((id: string) => del(`/assets/${id}`), [keys.project(projectId)]);
+
+export const useConfigureApiKey = () =>
+  useApiMutation(
+    (data: { providerKey: string; apiKey: string; label?: string; setAsDefault?: boolean }) =>
+      post<MyIntegrations>('/integrations/configure-api-key', data),
+    [keys.myIntegrations, keys.credentials, keys.me],
+  );
+
+export const useConnectPlaceholder = () =>
+  useApiMutation(
+    (data: { providerKey: string; displayName?: string }) =>
+      post<MyIntegrations>('/integrations/connect-placeholder', data),
+    [keys.myIntegrations],
+  );
+
+export const useDisconnect = () =>
+  useApiMutation(
+    (providerKey: string) => post<MyIntegrations>('/integrations/disconnect', { providerKey }),
+    [keys.myIntegrations, keys.credentials, keys.me],
+  );
+
+export const useSetDefaultProvider = () =>
+  useApiMutation(
+    (providerKey: string) => put('/api-credentials/default', { providerKey }),
+    [keys.myIntegrations, keys.credentials, keys.me],
+  );
+
+export const useUpdateProfile = () =>
+  useApiMutation((data: { name?: string; avatarUrl?: string }) => patch<User>('/users/me', data), [keys.me]);
+
+export const useChangePassword = () =>
+  useApiMutation(
+    (data: { currentPassword: string; newPassword: string }) => patch('/users/me/password', data),
+    [],
+  );
+
+export type { Asset, FormatPref, SocialProfile };
+
+// ---- Mozaik runtime (infrastructure smoke test) ----
+
+const POLL_MS = 1000;
+
+/** Recent runs for a project; polls while the newest one is still running. */
+export const useProjectRuns = (projectId: string) =>
+  useQuery({
+    queryKey: keys.runs(projectId),
+    queryFn: () => get<RunView[]>(`/projects/${projectId}/runs`),
+    refetchInterval: (q) => (q.state.data?.[0]?.status === 'RUNNING' ? POLL_MS : false),
+  });
+
+export const useRunEvents = (runId: string | undefined, status: string | undefined) =>
+  useQuery({
+    queryKey: keys.runEvents(runId ?? 'none', status),
+    queryFn: async () => (await get<{ items: RunEvent[] }>(`/runs/${runId}/events?limit=200`)).items,
+    enabled: !!runId,
+    refetchInterval: status === 'RUNNING' ? POLL_MS : false,
+  });
+
+export const useStartSmokeTest = (projectId: string) =>
+  useApiMutation(
+    () => post<RunView>(`/projects/${projectId}/runs/smoke-test`, { delayMs: 800 }),
+    [keys.runs(projectId)],
+  );
+
+export const useCancelRun = (projectId: string) =>
+  useApiMutation((runId: string) => post<RunView>(`/runs/${runId}/cancel`), [keys.runs(projectId), ['run-events']]);

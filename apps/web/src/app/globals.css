@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-cream font-sans text-ink antialiased;
+  }
+  ::selection {
+    @apply bg-accent/25;
+  }
+  h1, h2, h3 {
+    @apply font-serif tracking-tight;
+  }
+}
+
+@layer components {
+  .panel-dark {
+    @apply rounded-3xl bg-ink text-cream-100;
+  }
+  .grain {
+    background-image: radial-gradient(rgba(244, 238, 227, 0.06) 1px, transparent 1px);
+    background-size: 18px 18px;
+  }
+}

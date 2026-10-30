@@ -1,2 +1,11 @@
 node_modules/
 .env
+.env.local
+dist/
+.next/
+uploads/
+*.log
+.DS_Store
+uploads-test/
+*.tsbuildinfo
+next-env.d.ts

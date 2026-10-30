@@ -1,0 +1,260 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProjectStatus {
+  DRAFT
+  READY
+  IN_PROGRESS
+  COMPLETED
+  ARCHIVED
+}
+
+enum IntegrationStatus {
+  NOT_CONNECTED
+  CONFIGURED
+  CONNECTED
+  ERROR
+}
+
+enum RunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+  INTERRUPTED
+}
+
+enum ConnectionType {
+  OAUTH
+  API_KEY
+  PLACEHOLDER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  avatarUrl    String?
+  // Provider key (e.g. "openai", "gemini") used by future AI agents. See ApiCredential.
+  defaultAiProvider String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  projects     Project[]
+  integrations UserIntegration[]
+  credentials  ApiCredential[]
+  activity     ActivityLog[]
+  runs         CampaignRun[]
+}
+
+model Project {
+  id          String        @id @default(cuid())
+  userId      String
+  name        String
+  slug        String
+  description String?
+  status      ProjectStatus @default(DRAFT)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  user     User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  intake   ProductIntake?
+  assets   ProjectAsset[]
+  socials  SocialProfile[]
+  formats  CampaignFormatPreference[]
+  notes    WorkspaceNote[]
+  activity ActivityLog[]
+  runs     CampaignRun[]
+
+  @@unique([userId, slug])
+  @@index([userId, updatedAt])
+}
+
+model ProductIntake {
+  id                      String   @id @default(cuid())
+  projectId               String   @unique
+  productName             String
+  shortDescription        String?
+  websiteUrl              String?
+  githubUrl               String?
+  targetMarket            String?
+  targetAudience          String?
+  marketingGoal           String?
+  preferredLanguage       String   @default("en")
+  campaignDuration        String?
+  stylePreference         String?
+  publishingMode          String   @default("manual")
+  enableSeoAudit          Boolean  @default(true)
+  enableSeasonalCalendar  Boolean  @default(false)
+  enableGoogleDriveExport Boolean  @default(false)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model ProjectAsset {
+  id           String   @id @default(cuid())
+  projectId    String
+  type         String // logo | image | screenshot | reference | pdf | doc | other
+  originalName String
+  mimeType     String
+  // Storage key relative to the storage root (see StorageService). Not an absolute path.
+  filePath     String
+  fileSize     Int
+  createdAt    DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model SocialProfile {
+  id        String   @id @default(cuid())
+  projectId String
+  platform  String
+  url       String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, platform])
+}
+
+model CampaignFormatPreference {
+  id         String  @id @default(cuid())
+  projectId  String
+  formatType String
+  enabled    Boolean @default(true)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, formatType])
+}
+
+model IntegrationProvider {
+  id          String  @id @default(cuid())
+  key         String  @unique
+  name        String
+  category    String
+  description String
+  // "oauth" | "api_key" - how the provider is configured in the UI
+  authType    String
+  isEnabled   Boolean @default(true)
+}
+
+model UserIntegration {
+  id                String            @id @default(cuid())
+  userId            String
+  providerKey       String
+  status            IntegrationStatus @default(NOT_CONNECTED)
+  connectionType    ConnectionType    @default(PLACEHOLDER)
+  displayName       String?
+  externalAccountId String?
+  maskedCredential  String?
+  metadataJson      Json?
+  connectedAt       DateTime?
+  updatedAt         DateTime          @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, providerKey])
+}
+
+model ApiCredential {
+  id           String   @id @default(cuid())
+  userId       String
+  providerKey  String
+  label        String
+  maskedKey    String
+  // AES-256-GCM payload (iv.tag.ciphertext, base64). Never returned by the API.
+  encryptedKey String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, providerKey])
+}
+
+model WorkspaceNote {
+  id        String   @id @default(cuid())
+  projectId String
+  title     String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model ActivityLog {
+  id            String   @id @default(cuid())
+  userId        String
+  projectId     String?
+  eventType     String
+  eventDataJson Json?
+  createdAt     DateTime @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+/// One execution of the Mozaik runtime for a project. Persistent record only: the live Mozaik
+/// state is in memory and is NOT restored after a restart (such runs become INTERRUPTED).
+model CampaignRun {
+  id           String    @id @default(cuid())
+  projectId    String
+  userId       String
+  /// "smoke_test" today. Future: "campaign".
+  mode         String    @default("smoke_test")
+  status       RunStatus @default(RUNNING)
+  /// FactoryPhase id; null while no phase has started (always null for the smoke test).
+  currentPhase String?
+  /// Name of the default AI provider at start ("openai" or "gemini"). Never the key.
+  provider     String?
+  startedAt    DateTime  @default(now())
+  completedAt  DateTime?
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  project Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events  CampaignEvent[]
+
+  // A partial unique index (one RUNNING run per project) is added in the migration SQL,
+  // because Prisma cannot express partial indexes in the schema.
+  @@index([projectId, createdAt])
+  @@index([userId])
+}
+
+model CampaignEvent {
+  id          String   @id @default(cuid())
+  runId       String
+  /// Monotonic per run; defines event order (createdAt can tie).
+  sequence    Int
+  eventType   String
+  phase       String?
+  participant String?
+  /// Sanitized payload. Never contains credentials (see redact() in @launchpilot/agents).
+  payloadJson Json?
+  createdAt   DateTime @default(now())
+
+  run CampaignRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, sequence])
+}
