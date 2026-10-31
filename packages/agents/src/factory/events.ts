@@ -32,6 +32,17 @@ export const FACTORY_EVENT_TYPES = [
   'audit.completed',
   'strategy.completed',
   'participant.registered',
+  'copy.proposed',
+  'landing.proposed',
+  'visual.generated',
+  'layout.completed',
+  'review.requested',
+  'review.completed',
+  'fix.requested',
+  'revision.requested',
+  'revision.applied',
+  'revision.completed',
+  'campaign.completed',
   'factory.completed',
   'factory.failed',
   'factory.cancelled',
@@ -42,7 +53,7 @@ export type FactoryEventType = (typeof FACTORY_EVENT_TYPES)[number];
 /** Infrastructure-only event used by the smoke test. Not part of the marketing pipeline. */
 export const SMOKE_ACK_EVENT = 'test.acknowledged' as const;
 
-export type RunMode = 'smoke_test' | 'product_discovery' | 'marketing_audit' | 'market_strategy';
+export type RunMode = 'smoke_test' | 'product_discovery' | 'marketing_audit' | 'market_strategy' | 'creative_production';
 
 export type TerminalReason = 'timeout' | 'participant_error' | 'cancelled' | 'server_shutdown';
 
@@ -76,6 +87,24 @@ export interface FactoryEventPayloads {
    * A participant was created and joined the Mozaik runtime AFTER the phase started (F3 Channel Scouts).
    * Not selected candidates are announced with `participant.idle` (skipped) and their reason.
    */
+  /** F4: the Copywriter's concepts and channel copy (text only). */
+  'copy.proposed': { agent: string; summary: string; concepts: unknown[]; variants: unknown[]; missingInformation: string[] };
+  /** F4: the structured landing page content. */
+  'landing.proposed': { agent: string; summary: string; content: unknown; missingInformation: string[] };
+  /** F4: a base image (or brand-colored base) was produced and STORED; only the asset reference travels, never the bytes. */
+  'visual.generated': { agent: string; conceptId: string; asset: unknown; failed: boolean; error?: SafeProviderError; directionSummary: string };
+  /** F4: the layouts of one concept were rendered (asset references only). */
+  'layout.completed': { agent: string; conceptId: string; assets: unknown[]; layouts: unknown[]; skipped: unknown[] };
+  'review.requested': { round: number; scope: { variantIds: string[]; assetIds: string[]; landing: boolean } };
+  'review.completed': { agent: string; round: number; findings: unknown[]; summary: string; modelReview: 'done' | 'partial' | 'failed' | 'skipped' };
+  /** F4: the coordinator hands the open findings of a round to the Fixer. */
+  'fix.requested': { round: number; findingIds: string[] };
+  /** F4: the Fixer asks the owner of a deliverable to correct it (wave 1: copy/landing/image, wave 2: layouts). */
+  'revision.requested': { agent: string; round: number; wave: number; operations: unknown[] };
+  'revision.applied': { owner: string; round: number; operationIds: string[]; status: 'applied' | 'failed'; note: string; patch: unknown };
+  'revision.completed': { agent: string; round: number; results: unknown[] };
+  /** F4: carries the finished Campaign Package for the orchestrator to persist. */
+  'campaign.completed': { report: unknown; meta: unknown };
   'participant.registered': { agent: string; role: string; channel: string | null; reason: string; score: number | null; ruleHits: string[] };
   'phase.completed': { phase: FactoryPhase };
   'phase.failed': { phase: FactoryPhase; reason: string; errors: AgentOutcome[] };

@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { defaultAuditAnalysis, defaultAuditReport } from './fake-audit';
 import { defaultStrategyAnalysis, defaultStrategyDraft } from './fake-strategy';
+import { defaultCopy, defaultCopyRevision, defaultCreativeReview, defaultLanding, defaultLandingRevision, defaultVisual, fakeImageBase64 } from './fake-creative';
 import { parseSources } from './prompt-parse';
 
 export { parseSources, type PromptSource } from './prompt-parse';
@@ -14,8 +15,8 @@ import type { AgentOutput, CrosscheckAnswer, LlmFinding, ProductDiscoveryReportV
  * nothing is billed. Default answers are valid for the F1 schemas and are built from the prompt the
  * request actually carried, so they cite real source ids and excerpts.
  */
-export type FakeAgent = 'input' | 'text' | 'web' | 'repo' | 'files' | 'visual' | 'synthesizer' | 'seo' | 'social' | 'brand' | 'messaging' | 'presence' | 'auditor' | 'audience' | 'competitor' | 'seasonal' | 'scout' | 'strategist' | 'other';
-export type FakeKind = 'analysis' | 'review' | 'synthesis' | 'test';
+export type FakeAgent = 'input' | 'text' | 'web' | 'repo' | 'files' | 'visual' | 'synthesizer' | 'seo' | 'social' | 'brand' | 'messaging' | 'presence' | 'auditor' | 'audience' | 'competitor' | 'seasonal' | 'scout' | 'strategist' | 'copywriter' | 'landing' | 'vcreator' | 'creviewer' | 'image' | 'other';
+export type FakeKind = 'analysis' | 'review' | 'synthesis' | 'test' | 'image';
 
 export interface FakeRequest {
   method: string;
@@ -30,6 +31,8 @@ export interface FakeRequest {
   aborted: boolean;
   /** Text of every user message in the request (joined). */
   userText: string;
+  /** Text of the LAST user message only (what the agent is being asked right now). */
+  lastUserText: string;
   /** Number of image parts attached to the request. */
   images: number;
   /** For Channel Scouts: the channel id from the system instruction. */
@@ -75,6 +78,10 @@ const ROLE_MARKERS: [string, FakeAgent][] = [
   ['You are Seasonal Intelligence', 'seasonal'],
   ['Scout (A16)', 'scout'],
   ['You are the Campaign Strategist', 'strategist'],
+  ['You are the Copywriter (A19)', 'copywriter'],
+  ['You are the Landing Content Builder (A22)', 'landing'],
+  ['You are the Visual Creator (A20)', 'vcreator'],
+  ['You are the Content & Brand Reviewer (A23)', 'creviewer'],
 ];
 
 const items = (body: Record<string, any> | null): any[] => (Array.isArray(body?.input) ? body!.input : []);
@@ -247,6 +254,10 @@ export function defaultReportV2(userText: string, overrides: Partial<ProductDisc
 
 function defaultAnswer(kind: FakeKind, agent: FakeAgent, userText: string, channel: string | null = null): string {
   if (kind === 'review') return JSON.stringify(defaultReview(userText));
+  if (agent === 'copywriter') return JSON.stringify(userText.includes('Revise ONLY the listed variants') ? defaultCopyRevision(userText) : defaultCopy(userText));
+  if (agent === 'landing') return JSON.stringify(userText.includes('Fix the landing page content findings') ? defaultLandingRevision(userText) : defaultLanding(userText));
+  if (agent === 'vcreator') return JSON.stringify(defaultVisual(userText));
+  if (agent === 'creviewer') return JSON.stringify(defaultCreativeReview());
   if (kind === 'synthesis') return JSON.stringify(agent === 'strategist' ? defaultStrategyDraft(userText) : agent === 'auditor' ? defaultAuditReport(userText) : defaultReportV2(userText));
   if (kind === 'analysis') return JSON.stringify(['audience', 'competitor', 'seasonal', 'scout'].includes(agent) ? defaultStrategyAnalysis(agent as never, userText, channel) : ['seo', 'social', 'brand', 'messaging', 'presence'].includes(agent) ? defaultAuditAnalysis(agent as never, userText) : defaultAnalysis(agent, userText));
   return 'OK';
@@ -279,6 +290,11 @@ export class FakeOpenAI {
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
   }
 
+  /** Requests to POST /images/generations. */
+  imageCalls() {
+    return this.requests.filter((r) => r.path.endsWith('/images/generations'));
+  }
+
   calls(agent?: FakeAgent, kind?: FakeKind) {
     return this.requests.filter((r) => r.path.endsWith('/responses') && (!agent || r.agent === agent) && (!kind || r.kind === kind));
   }
@@ -300,12 +316,15 @@ export class FakeOpenAI {
     }
     const path = req.url ?? '';
     const isResponses = path.endsWith('/responses');
-    const agent = isResponses ? identifyAgent(body) : 'other';
+    const isImage = path.endsWith('/images/generations');
+    const agent: FakeAgent = isResponses ? identifyAgent(body) : isImage ? 'image' : 'other';
     const users = userMessages(body);
     const userText = users.join('\n');
-    const kind: FakeKind = !isResponses || agent === 'other' ? 'test' : userText.includes('<crosscheck_request>') ? 'review' : agent === 'synthesizer' || agent === 'auditor' || agent === 'strategist' ? 'synthesis' : 'analysis';
+    const lastUserText = users[users.length - 1] ?? '';
+    const creative = ['copywriter', 'landing', 'vcreator', 'creviewer'].includes(agent);
+    const kind: FakeKind = isImage ? 'image' : !isResponses || agent === 'other' ? 'test' : creative ? (lastUserText.includes('<crosscheck_request>') ? 'review' : 'analysis') : userText.includes('<crosscheck_request>') ? 'review' : agent === 'synthesizer' || agent === 'auditor' || agent === 'strategist' ? 'synthesis' : 'analysis';
     const countKey = `${agent}:${kind}`;
-    if (isResponses) this.counts.set(countKey, (this.counts.get(countKey) ?? 0) + 1);
+    if (isResponses || isImage) this.counts.set(countKey, (this.counts.get(countKey) ?? 0) + 1);
     const record: FakeRequest = {
       method: req.method ?? '',
       path,
@@ -316,6 +335,7 @@ export class FakeOpenAI {
       attempt: this.counts.get(countKey) ?? 0,
       aborted: false,
       userText,
+      lastUserText,
       images: countImages(body),
       channel: agent === 'scout' ? (/Your channel: [^(]+\(id "([a-z_]+)"\)/.exec(textOf(items(body)[0]))?.[1] ?? null) : null,
     };
@@ -333,14 +353,24 @@ export class FakeOpenAI {
       return send(res, 200, { object: 'list', data: ids.map((id) => ({ id, object: 'model', created: 1700000000, owned_by: 'openai' })) });
     }
 
-    const reply = (await this.options.reply?.(record)) ?? {};
+    let reply: FakeReply;
+    try {
+      reply = (await this.options.reply?.(record)) ?? {};
+    } catch (e) {
+      // A broken test reply must never leave a request unanswered (that would hang the run, not fail the test).
+      return send(res, 500, { error: { message: `fake reply threw: ${e instanceof Error ? e.message : String(e)}`, code: 'fake_reply_error' } });
+    }
     if (reply.hang) return; // keep the connection open
     if (reply.delayMs) await new Promise((r) => setTimeout(r, reply.delayMs));
     if (res.destroyed) return;
 
     const status = reply.status ?? 200;
     if (status !== 200) return send(res, status, reply.json ?? { error: { message: 'fake error', code: 'fake' } }, reply.headers);
-    const text = reply.text ?? defaultAnswer(kind, agent, userText, record.channel);
+    if (isImage) {
+      const b64 = await fakeImageBase64(String(body?.size ?? '1024x1024'));
+      return send(res, 200, reply.json ?? { created: 1, data: [{ b64_json: b64 }], usage: { input_tokens: 40, output_tokens: 1056, total_tokens: 1096 } }, reply.headers);
+    }
+    const text = reply.text ?? defaultAnswer(kind, agent, creative ? lastUserText : userText, record.channel);
     const usage = reply.usage ?? { input: 120, output: 60, reasoning: 0 };
     send(
       res,

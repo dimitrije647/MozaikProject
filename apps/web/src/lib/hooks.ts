@@ -21,6 +21,12 @@ import type {
   StrategyAnalysis,
   StrategyFull,
   StrategySummary,
+  CampaignFull,
+  CampaignReviews,
+  CampaignSummary,
+  CreativeAnalysis,
+  CreativePreflight,
+  StartCreativeInput,
   AuditFull,
   AuditSummary,
   SocialDetailInput,
@@ -47,6 +53,8 @@ export const keys = {
   audit: (id: string) => ['audit', id] as const,
   strategies: (projectId: string) => ['strategies', projectId] as const,
   strategy: (id: string) => ['strategy', id] as const,
+  campaigns: (projectId: string) => ['campaigns', projectId] as const,
+  campaign: (id: string) => ['campaign', id] as const,
   // status is part of the key so the history is refetched when the run reaches a terminal state
   analysis: (runId: string, status?: string) => ['run-analysis', runId, status] as const,
   runEvents: (runId: string, status?: string) => ['run-events', runId, status] as const,
@@ -267,6 +275,46 @@ export const useStrategyAnalysis = (runId: string | undefined, status: string | 
   useQuery({
     queryKey: ['strategy-analysis', runId ?? 'none', status] as const,
     queryFn: () => get<StrategyAnalysis>(`/runs/${runId}/strategy-analysis`),
+    enabled: !!runId,
+    refetchInterval: status === 'RUNNING' ? POLL_MS : false,
+  });
+
+// ---- F4 Creative Production ----
+
+export const useStartCreative = (projectId: string) =>
+  useApiMutation((body: StartCreativeInput) => post<RunView>(`/projects/${projectId}/runs/creative-production`, body), [keys.runs(projectId), keys.campaigns(projectId)]);
+
+/** The preflight spends nothing (only GET /models); it returns the exact chain, settings and expected call counts. */
+export const useCreativePreflight = (projectId: string) =>
+  useMutation<CreativePreflight, ApiError, StartCreativeInput>({ mutationFn: (body) => post<CreativePreflight>(`/projects/${projectId}/runs/creative-production/preflight`, body) });
+
+export const useCampaigns = (projectId: string) =>
+  useQuery({ queryKey: keys.campaigns(projectId), queryFn: async () => (await get<{ items: CampaignSummary[]; nextCursor: string | null }>(`/projects/${projectId}/campaigns?limit=30`)).items });
+
+export const useCampaign = (campaignId: string | null | undefined, status?: string) =>
+  useQuery({
+    queryKey: [...keys.campaign(campaignId ?? 'none'), status] as const,
+    queryFn: () => get<CampaignFull>(`/campaigns/${campaignId}`),
+    enabled: !!campaignId,
+    refetchInterval: status === 'RUNNING' ? 2 * POLL_MS : false,
+  });
+
+export const useCampaignReviews = (campaignId: string | null | undefined, status?: string) =>
+  useQuery({ queryKey: ['campaign-reviews', campaignId ?? 'none', status] as const, queryFn: () => get<CampaignReviews>(`/campaigns/${campaignId}/reviews`), enabled: !!campaignId });
+
+export const useCreativeAnalysis = (runId: string | undefined, status: string | undefined) =>
+  useQuery({
+    queryKey: ['creative-analysis', runId ?? 'none', status] as const,
+    queryFn: () => get<CreativeAnalysis>(`/runs/${runId}/creative-analysis`),
+    enabled: !!runId,
+    refetchInterval: status === 'RUNNING' ? POLL_MS : false,
+  });
+
+/** The whole persisted history of one run (F4 runs emit more events than the default page). */
+export const useRunEventsFull = (runId: string | undefined, status: string | undefined) =>
+  useQuery({
+    queryKey: ['run-events-full', runId ?? 'none', status] as const,
+    queryFn: async () => (await get<{ items: RunEvent[] }>(`/runs/${runId}/events?limit=500`)).items,
     enabled: !!runId,
     refetchInterval: status === 'RUNNING' ? POLL_MS : false,
   });

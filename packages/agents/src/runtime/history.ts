@@ -47,6 +47,8 @@ export function summarizeForHistory(type: string, payload: unknown): Obj | null 
       return { stored: 'MarketingAuditReport' };
     case 'strategy.completed':
       return { stored: 'MarketingStrategyReport' };
+    case 'campaign.completed':
+      return { stored: 'CreativeCampaign' };
     default:
       return null;
   }

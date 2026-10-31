@@ -19,6 +19,8 @@ import { summarizeForHistory } from './history';
 import { F1Program, type DiscoveryRunConfig, type ReportMeta } from './programs/f1-program';
 import { F2Program, type AuditReportMeta, type AuditRunConfig } from './programs/f2-program';
 import { F3Program, type StrategyReportMeta, type StrategyRunConfig } from './programs/f3-program';
+import { F4Program, type CreativeReportMeta, type CreativeRunConfig } from './programs/f4-program';
+import type { CampaignPackage } from '../creative/schemas';
 import type { CampaignStrategyReport } from '../strategy/schemas';
 import type { MarketingAuditReport } from '../audit/schemas';
 import { SmokeProgram, type SmokeTestOptions } from './programs/smoke-program';
@@ -46,6 +48,8 @@ export interface CampaignRunInput {
   audit?: AuditRunConfig;
   /** market_strategy settings (needs a completed F1 report and F2 audit, see buildF1Context / buildF2Context). */
   strategy?: StrategyRunConfig;
+  /** creative_production settings (needs the completed F1 -> F2 -> F3 chain and an asset store). */
+  creative?: CreativeRunConfig;
   /**
    * Receives every event of the run, already sanitized and compacted, in order. The backend
    * persists them. Returned promises are not awaited by the runtime (Mozaik delivery is synchronous).
@@ -60,6 +64,8 @@ export interface CampaignRunInput {
   onAudit?: (report: MarketingAuditReport, meta: AuditReportMeta) => Promise<void>;
   /** market_strategy: same contract, for the Campaign Strategy Report. */
   onStrategy?: (report: CampaignStrategyReport, meta: StrategyReportMeta) => Promise<void>;
+  /** creative_production: same contract, for the Campaign Package. */
+  onCampaign?: (pkg: CampaignPackage, meta: CreativeReportMeta) => Promise<void>;
 }
 
 export interface CampaignRunResult {
@@ -98,7 +104,7 @@ export const MAX_EVENTS_PER_RUN = 600;
 
 // ---- One isolated run ----------------------------------------------------------------------
 
-type BaseRunInput = Omit<CampaignRunInput, 'credentials' | 'discovery' | 'audit' | 'strategy' | 'options' | 'onReport' | 'onAudit' | 'onStrategy'>;
+type BaseRunInput = Omit<CampaignRunInput, 'credentials' | 'discovery' | 'audit' | 'strategy' | 'creative' | 'options' | 'onReport' | 'onAudit' | 'onStrategy' | 'onCampaign'>;
 
 class ActiveRun implements RunContext {
   readonly mozaik = defineRuntime<FactoryRuntimeState>(); // own closure => own runtime, no shared globals
@@ -322,8 +328,8 @@ export class MozaikCampaignRuntime implements CampaignRuntime {
     enforceTelemetryPolicy(); // idempotent; guards against the environment changing after construction
     if (this.active.has(input.runId)) throw new RuntimeInitError(`Run ${input.runId} is already active`);
 
-    const { credentials, discovery, audit, strategy, options, onReport, onAudit, onStrategy, ...base } = input;
-    const program = this.createProgram(input.mode, { credentials, discovery, audit, strategy, options, onReport, onAudit, onStrategy });
+    const { credentials, discovery, audit, strategy, creative, options, onReport, onAudit, onStrategy, onCampaign, ...base } = input;
+    const program = this.createProgram(input.mode, { credentials, discovery, audit, strategy, creative, options, onReport, onAudit, onStrategy, onCampaign });
 
     const run = new ActiveRun(base, program, program.defaultTimeoutMs, (id) => this.active.delete(id), this.warn);
     this.active.set(input.runId, run);
@@ -344,7 +350,7 @@ export class MozaikCampaignRuntime implements CampaignRuntime {
 
   private createProgram(
     mode: RunMode,
-    parts: Pick<CampaignRunInput, 'credentials' | 'discovery' | 'audit' | 'strategy' | 'options' | 'onReport' | 'onAudit' | 'onStrategy'>,
+    parts: Pick<CampaignRunInput, 'credentials' | 'discovery' | 'audit' | 'strategy' | 'creative' | 'options' | 'onReport' | 'onAudit' | 'onStrategy' | 'onCampaign'>,
   ): RunProgram {
     if (mode === 'smoke_test') return new SmokeProgram(parts.options, parts.credentials);
     if (mode === 'product_discovery') {
@@ -370,6 +376,17 @@ export class MozaikCampaignRuntime implements CampaignRuntime {
       if (parts.strategy.f2.f1ReportId !== parts.strategy.f1.reportId) throw new RuntimeInitError('The F2 audit was not built on the selected F1 report');
       if (!parts.onStrategy) throw new RuntimeInitError('Market Strategy needs a report sink (onStrategy)');
       return new F3Program(parts.credentials, parts.strategy, parts.onStrategy);
+    }
+    if (mode === 'creative_production') {
+      if (!parts.credentials) throw new RuntimeInitError("Creative Production needs the user's OpenAI credentials");
+      if (parts.credentials.provider !== 'openai') throw new RuntimeInitError('Creative Production currently supports OpenAI only');
+      const c = parts.creative;
+      if (!c?.model?.trim()) throw new RuntimeInitError('Creative Production needs an explicit text model');
+      if (!c.f1 || !c.f2 || !c.f3) throw new RuntimeInitError('Creative Production needs the completed F1 report, F2 audit and F3 strategy');
+      if (c.f2.f1ReportId !== c.f1.reportId || c.f3.f1ReportId !== c.f1.reportId || c.f3.f2AuditId !== c.f2.auditId) throw new RuntimeInitError('The F1 report, F2 audit and F3 strategy do not belong to the same chain');
+      if (!c.assets) throw new RuntimeInitError('Creative Production needs an asset store');
+      if (!parts.onCampaign) throw new RuntimeInitError('Creative Production needs a package sink (onCampaign)');
+      return new F4Program(parts.credentials, c, parts.onCampaign);
     }
     throw new RuntimeInitError(`Run mode "${String(mode)}" is not implemented`);
   }

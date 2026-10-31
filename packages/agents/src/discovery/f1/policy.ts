@@ -39,6 +39,7 @@ const TYPE_BY_KIND: Record<SourceKind, FindingSourceType> = {
   f1_report: 'user_input',
   holiday_calendar: 'website',
   f2_audit: 'user_input',
+  f3_strategy: 'user_input',
 };
 const USER_SUPPLIED: ReadonlySet<SourceKind> = new Set(['user_input', 'document', 'image']);
 

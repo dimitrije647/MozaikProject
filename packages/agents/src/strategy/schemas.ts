@@ -200,6 +200,8 @@ export const CampaignStrategyReport = StrategyDraft.omit({ creativeBrief: true }
     stale: z.boolean(),
     partial: z.boolean(),
     mainProblems: z.array(z.object({ title: z.string(), severity: z.string(), area: z.string(), status: EvidenceStatus })),
+    /** F2's unresolved contradictions travel with the strategy so no later phase builds on a disputed observation (absent in older reports). */
+    contradictions: z.array(z.object({ topic: z.string(), detail: z.string(), status: z.enum(['open', 'resolved']) })).max(6).default([]),
     notes: z.array(z.string()),
   }),
   /** 4/5. Segments as hypotheses with their evidence. */

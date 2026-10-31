@@ -1,6 +1,7 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Query, Res, StreamableFile } from '@nestjs/common';
+import type { Response } from 'express';
 import { AuthUser, CurrentUser } from '../auth/current-user.decorator';
-import { ListAuditsQueryDto, ListEventsQueryDto, StartAuditDto, StartDiscoveryDto, StartSmokeTestDto, StartStrategyDto } from './dto/mozaik.dto';
+import { ListAuditsQueryDto, ListEventsQueryDto, StartAuditDto, StartCreativeDto, StartDiscoveryDto, StartSmokeTestDto, StartStrategyDto } from './dto/mozaik.dto';
 import { MozaikService } from './mozaik.service';
 
 @Controller()
@@ -58,6 +59,88 @@ export class MozaikController {
   @Get('runs/:runId/strategy-analysis')
   strategyAnalysis(@CurrentUser() u: AuthUser, @Param('runId') runId: string) {
     return this.mozaik.getStrategyAnalysis(u.id, runId);
+  }
+
+  /**
+   * F4 Creative Production on a completed F3 strategy. Uses the user's OpenAI credits for text AND images (gpt-image-*);
+   * only runs from this explicit call. The preflight below shows the exact limits first and spends nothing.
+   */
+  @Post('projects/:projectId/runs/creative-production')
+  startCreativeProduction(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string, @Body() dto: StartCreativeDto) {
+    return this.mozaik.startCreativeProduction(u.id, projectId, dto);
+  }
+
+  @Post('projects/:projectId/runs/creative-production/preflight')
+  @HttpCode(200)
+  preflightCreativeProduction(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string, @Body() dto: StartCreativeDto) {
+    return this.mozaik.preflightCreativeProduction(u.id, projectId, dto);
+  }
+
+  @Get('projects/:projectId/campaigns')
+  campaigns(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string, @Query() query: ListAuditsQueryDto) {
+    return this.mozaik.listCampaigns(u.id, projectId, query);
+  }
+
+  @Get('campaigns/:campaignId')
+  campaign(@CurrentUser() u: AuthUser, @Param('campaignId') campaignId: string) {
+    return this.mozaik.getCampaign(u.id, campaignId);
+  }
+
+  @Get('campaigns/:campaignId/assets')
+  campaignAssets(@CurrentUser() u: AuthUser, @Param('campaignId') campaignId: string) {
+    return this.mozaik.getCampaignAssets(u.id, campaignId);
+  }
+
+  /** Authenticated asset binary for the owner only; never served statically, never cached by shared caches. */
+  @Get('campaigns/:campaignId/assets/:assetId/file')
+  async campaignAssetFile(@CurrentUser() u: AuthUser, @Param('campaignId') campaignId: string, @Param('assetId') assetId: string, @Res({ passthrough: true }) res: Response) {
+    const { asset, stream } = await this.mozaik.openCampaignAsset(u.id, campaignId, assetId);
+    res.set({
+      'Content-Type': asset.mimeType,
+      'Content-Length': String(asset.bytes),
+      'Content-Disposition': `inline; filename="${asset.kind}-${asset.conceptId}-v${asset.version}.png"`,
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'private, no-store',
+    });
+    return new StreamableFile(stream);
+  }
+
+  @Get('campaigns/:campaignId/reviews')
+  campaignReviews(@CurrentUser() u: AuthUser, @Param('campaignId') campaignId: string) {
+    return this.mozaik.getCampaignReviews(u.id, campaignId);
+  }
+
+  /** Landing page preview as a self-contained HTML document with a strict CSP (no scripts, no external resources). */
+  @Get('campaigns/:campaignId/landing-preview')
+  async landingPreview(@CurrentUser() u: AuthUser, @Param('campaignId') campaignId: string, @Res({ passthrough: true }) res: Response) {
+    const html = await this.mozaik.getLandingPreview(u.id, campaignId);
+    res.set({
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'private, no-store',
+    });
+    return html;
+  }
+
+  /** The Campaign Package as a ZIP: image binaries, JSON, copy, landing content and preview, review, manifest. */
+  @Get('campaigns/:campaignId/export')
+  async exportCampaign(@CurrentUser() u: AuthUser, @Param('campaignId') campaignId: string, @Res({ passthrough: true }) res: Response) {
+    const { zip, filename } = await this.mozaik.exportCampaign(u.id, campaignId);
+    res.set({
+      'Content-Type': 'application/zip',
+      'Content-Length': String(zip.length),
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'private, no-store',
+    });
+    return new StreamableFile(zip);
+  }
+
+  /** Participants (incl. the Fixer created at run time), cross-checks, usage and the timeline of real participant events. */
+  @Get('runs/:runId/creative-analysis')
+  creativeAnalysis(@CurrentUser() u: AuthUser, @Param('runId') runId: string) {
+    return this.mozaik.getCreativeAnalysis(u.id, runId);
   }
 
   @Get('projects/:projectId/reports')

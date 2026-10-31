@@ -53,7 +53,7 @@ function makeF1(o: { kind?: 'consumer' | 'b2b'; name?: string; palette?: string[
   return ctx;
 }
 
-function makeF2(f1ReportId = 'f1-report-1', o: { generatedAt?: string; partial?: boolean; id?: string } = {}): F2Context {
+function makeF2(f1ReportId = 'f1-report-1', o: { generatedAt?: string; partial?: boolean; id?: string; contradictions?: { topic: string; detail: string; findingIds: string[]; status: 'open' | 'resolved' }[] } = {}): F2Context {
   const draft = defaultAuditReport('');
   const findings = [
     { id: 'A11-1', agent: 'Messaging Auditor', area: 'messaging', kind: 'claim_on_source', title: 'Unsupported 10,000 customers claim', statement: 'The website claims 10,000 customers without evidence.', classification: 'claimed', severity: 'high', locator: 'home', excerpt: 'Over 10,000 customers', recommendation: 'Publish evidence or remove it.' },
@@ -63,6 +63,7 @@ function makeF2(f1ReportId = 'f1-report-1', o: { generatedAt?: string; partial?:
     ...draft,
     partial: o.partial ?? false,
     mainProblems: [{ title: 'Unclear value proposition', area: 'messaging', severity: 'high', status: 'inferred', description: 'The message is vague.', impact: 'Visitors do not know the offer.', recommendation: 'Clarify it.', findingIds: ['A11-1'] }],
+    contradictions: o.contradictions ?? [],
     productContext: { f1ReportId, f1SchemaVersion: 2, f1GeneratedAt: null, name: 'Deep Diving School', category: 'x', businessType: 'education', summary: 's', offering: 'o', valueProposition: null, targetCustomers: [], f1Confidence: 0.5, f1Partial: false },
     websiteHealth: { websiteUrl: null, reachable: null, pagesAnalyzed: 0, robots: 'not checked', sitemap: 'not checked', brokenInternalLinks: null, pageSpeed: { status: 'unavailable', note: 'n', metrics: [] }, perPage: [] },
     socialPlatforms: [{ platform: 'instagram', url: 'https://instagram.com/dds', access: 'unavailable', note: 'n', metrics: [] }],
@@ -701,6 +702,21 @@ describe('F3 Market Research & Strategy (real Mozaik agents, dynamic Channel Sco
     assert.equal(failing.result.status, 'failed');
     assert.match(failing.result.errorMessage ?? '', /database unavailable/);
     assert.ok(!failing.events.some((e) => e.type === 'factory.completed'));
+  });
+
+  it('REGRESSION (F3 verification): an OPEN contradiction from the F2 audit stays visible in the strategy report and in the strategist prompt', async () => {
+    const f2 = makeF2('f1-report-1', { contradictions: [{ topic: 'Customer count on the website', detail: 'The site claims 10,000 customers; no profile supports it.', findingIds: ['A11-1'], status: 'open' }, { topic: 'Settled point', detail: 'Resolved earlier.', findingIds: [], status: 'resolved' }] });
+    const o = await run({ f2 });
+    assert.equal(o.result.status, 'completed', o.result.errorMessage ?? '');
+    const carried = report(o).existingMarketing.contradictions;
+    assert.deepEqual(carried.map((c) => [c.topic, c.status]), [['Customer count on the website', 'open'], ['Settled point', 'resolved']]);
+    const strategistPrompt = openai.calls('strategist', 'synthesis')[0].userText;
+    assert.ok(strategistPrompt.includes('Customer count on the website'), 'the strategist must see the open contradiction');
+    // an older saved strategy without the field still loads (the field defaults to an empty list)
+    const { contradictions: _c, ...legacy } = report(o).existingMarketing;
+    void _c;
+    const parsed = CampaignStrategyReport.safeParse({ ...report(o), existingMarketing: legacy });
+    assert.ok(parsed.success && parsed.data.existingMarketing.contradictions.length === 0);
   });
 
   it('staleness: an old audit is shown with its age, limits what is carried forward, and is called out in the report and the prompts', async () => {

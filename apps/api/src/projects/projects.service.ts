@@ -70,10 +70,13 @@ export class ProjectsService {
 
   async remove(userId: string, id: string) {
     await this.assertOwned(userId, id);
-    const assets = await this.prisma.projectAsset.findMany({ where: { projectId: id } });
+    const [assets, campaignAssets] = await Promise.all([
+      this.prisma.projectAsset.findMany({ where: { projectId: id }, select: { filePath: true } }),
+      this.prisma.campaignAsset.findMany({ where: { projectId: id }, select: { filePath: true } }),
+    ]);
     await this.prisma.project.delete({ where: { id } });
     // Files are removed after the DB row so a failed delete never leaves a project with missing files.
-    await Promise.all(assets.map((a) => this.storage.delete(a.filePath).catch(() => undefined)));
+    await Promise.all([...assets, ...campaignAssets].map((a) => this.storage.delete(a.filePath).catch(() => undefined)));
     await this.activity.log(userId, 'project.deleted', undefined, { id });
     return { ok: true };
   }

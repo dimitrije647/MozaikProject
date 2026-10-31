@@ -149,6 +149,8 @@ export interface RunView {
   auditId: string | null;
   /** Set for Market Research & Strategy runs once their report is saved. */
   strategyId: string | null;
+  /** Set for Creative Production runs (the campaign row exists from the start). */
+  campaignId?: string | null;
 }
 
 export interface RunEvent {
@@ -178,6 +180,10 @@ export interface OpenAiModelOption {
   ownedBy: string | null;
   created: number | null;
   likelyText: boolean;
+  /** Looks like an image model (gpt-image, dall-e). */
+  likelyImage?: boolean;
+  /** A GPT Image model LaunchPilot can call for F4 (dall-e uses another contract and is not offered). */
+  imageSupported?: boolean;
 }
 
 export interface ConnectionTestResult {
@@ -736,7 +742,7 @@ export interface CampaignStrategyReportData {
   openQuestions: string[];
   additionalLimitations: string[];
   productContext: { f1ReportId: string; f1SchemaVersion: number; f1GeneratedAt: string | null; name: string; category: string; businessType: string; summary: string; offering: string; valueProposition: string | null; targetCustomers: string[]; geography: string[]; f1Confidence: number };
-  existingMarketing: { f2AuditId: string; f2SchemaVersion: number; f2GeneratedAt: string | null; ageDays: number | null; stale: boolean; partial: boolean; mainProblems: { title: string; severity: string; area: string; status: EvidenceStatus }[]; notes: string[] };
+  existingMarketing: { f2AuditId: string; f2SchemaVersion: number; f2GeneratedAt: string | null; ageDays: number | null; stale: boolean; partial: boolean; mainProblems: { title: string; severity: string; area: string; status: EvidenceStatus }[]; contradictions?: { topic: string; detail: string; status: 'open' | 'resolved' }[]; notes: string[] };
   audienceResearch: { segment: SegmentDetailData; status: EvidenceStatus; statement: string; reasoning: string; ref: FindingRef }[];
   competitorLandscape: { searchProvider: string; searchUsed: boolean; userSuppliedUrls: number; profiles: { competitor: CompetitorDetailData; status: EvidenceStatus; statement: string; ref: FindingRef }[]; gaps: string[] };
   channelEvaluation: {
@@ -839,4 +845,321 @@ export interface StartStrategyInput {
   goal?: string;
   budgetNote?: string;
   useHolidayCalendar?: boolean;
+}
+
+// ---- F4 Creative Production ----
+
+export type CampaignStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+export type ApprovalStatus = 'approved' | 'approved_with_notes' | 'unresolved';
+export type ClaimSupport = 'brief' | 'f1' | 'f2' | 'f3' | 'user' | 'hypothesis';
+export type IssueSeverity = 'blocker' | 'major' | 'minor' | 'info';
+
+export interface ConceptData {
+  id: string;
+  name: string;
+  angle: string;
+  keyMessage: string;
+  audience: string;
+  ctaType: string;
+  ctaText: string;
+  visualIdea: string;
+}
+
+export interface CopyVariantData {
+  id: string;
+  conceptId: string;
+  channel: ChannelId;
+  placement: string;
+  length: string;
+  headline: string;
+  body: string;
+  description: string | null;
+  ctaText: string;
+  ctaType: string;
+  hashtags: string[];
+  claims: { text: string; support: ClaimSupport; ref: string | null }[];
+  version: number;
+  history: { version: number; headline: string; body: string; ctaText: string; reason: string }[];
+}
+
+export interface CampaignAssetData {
+  id: string;
+  kind: 'image' | 'layout';
+  conceptId: string;
+  channel: ChannelId | null;
+  format: string | null;
+  version: number;
+  parentAssetId: string | null;
+  mimeType: string;
+  width: number;
+  height: number;
+  bytes: number;
+  sha256: string;
+  source: 'ai_image' | 'brand_gradient';
+  model: string | null;
+  quality: string | null;
+  requestedSize: string | null;
+  status: 'generated' | 'rendered' | 'superseded' | 'failed';
+  flags: string[];
+  altText: string | null;
+  promptMetadata: { promptChars: number; directionSummary: string } | null;
+  usage: { input: number; output: number; total: number } | null;
+  createdAt: string;
+}
+
+/** An asset as the API lists it: the metadata plus the authenticated file URL (relative to the API). */
+export interface CampaignAssetView extends CampaignAssetData {
+  url: string;
+}
+
+export interface ChannelLayoutData {
+  id: string;
+  conceptId: string;
+  variantId: string;
+  assetId: string;
+  baseAssetId: string;
+  format: string;
+  channel: ChannelId;
+  headline: string;
+  ctaText: string;
+  flags: string[];
+}
+
+export interface LandingContentData {
+  seoTitle: string;
+  metaDescription: string;
+  hero: { headline: string; description: string; ctaText: string };
+  valueProposition: string;
+  benefits: { title: string; text: string; evidence: ClaimSupport; ref: string | null }[];
+  sections: { title: string; body: string }[];
+  howItWorks: { step: string; text: string }[];
+  faq: { q: string; a: string }[];
+  trustSignals: { text: string; evidence: ClaimSupport; ref: string | null }[];
+  ctas: { objective: string; text: string }[];
+  ctaObjective: string;
+  mobileHierarchy: string[];
+}
+
+export interface ReviewFindingData {
+  id: string;
+  round: number;
+  kind: string;
+  severity: IssueSeverity;
+  assetRef: string | null;
+  finding: string;
+  evidence: string;
+  suggestedCorrection: string;
+  responsibleAgent: 'copywriter' | 'landing' | 'layout' | 'visual';
+  source: 'deterministic' | 'llm_text' | 'llm_vision';
+  status: 'open' | 'fixed' | 'unresolved' | 'accepted';
+  resolvedInRound: number | null;
+}
+
+export interface RevisionData {
+  id: string;
+  round: number;
+  findingId: string;
+  operation: 'revise_copy' | 'revise_landing' | 'rerender_layout' | 'regenerate_image' | 'none';
+  owner: string;
+  status: 'applied' | 'failed' | 'skipped';
+  before: string | null;
+  after: string | null;
+  note: string;
+}
+
+export interface CampaignUsage {
+  text: { calls: number; inputTokens: number; outputTokens: number; totalTokens: number; perAgent: Record<string, { calls: number; totalTokens: number }> };
+  images: { model: string | null; quality: string | null; size: string | null; requested: number; generated: number; failed: number; regenerations: number; limits: { maxImages: number; maxRegenerations: number }; providerReportedTokens: { input: number; output: number; total: number } | null };
+  layouts: { rendered: number; skipped: number };
+}
+
+export interface CampaignPackageData {
+  id: string;
+  projectId: string;
+  runId: string;
+  f1ReportId: string;
+  f2ReportId: string;
+  f3StrategyId: string;
+  schemaVersion: number;
+  campaignName: string;
+  language: string;
+  concepts: ConceptData[];
+  copyVariants: CopyVariantData[];
+  imageAssets: CampaignAssetData[];
+  channelLayouts: ChannelLayoutData[];
+  skippedLayouts: { conceptId: string; format: string; channel: ChannelId; reason: string }[];
+  landingContent: LandingContentData | null;
+  reviewFindings: ReviewFindingData[];
+  revisions: RevisionData[];
+  approval: { status: ApprovalStatus; rounds: number; unresolvedFindingIds: string[]; note: string };
+  usage: CampaignUsage;
+  limitations: string[];
+  createdAt: string;
+}
+
+export interface CampaignSummary {
+  id: string;
+  projectId: string;
+  runId: string;
+  f1ReportId: string;
+  f2AuditId: string;
+  f3StrategyId: string;
+  schemaVersion: number;
+  language: string;
+  model: string;
+  imageModel: string | null;
+  status: CampaignStatus;
+  approvalStatus: ApprovalStatus | null;
+  campaignName: string;
+  createdAt: string;
+  concepts: number | null;
+  variants: number | null;
+  layouts: number | null;
+  generatedImages: number | null;
+  findings: number | null;
+  unresolved: number | null;
+  usage: CampaignUsage | null;
+}
+
+export interface CreativeSettingsSnapshot {
+  channels: string[];
+  concepts: number;
+  formats: string[];
+  imageGeneration: boolean;
+  imageModel: string | null;
+  imageQuality: string | null;
+  imageSize: string | null;
+  maxImages: number;
+  maxRegenerations: number;
+  maxRepairRounds: number;
+  maxModelCalls: number;
+}
+
+export interface ImageUsageData {
+  model: string | null;
+  quality: string | null;
+  size: string | null;
+  requestsStarted: number;
+  attempts: number;
+  generated: number;
+  failed: number;
+  regenerationsStarted: number;
+  limits: { maxImages: number; maxRegenerations: number };
+  tokens: { input: number; output: number; total: number } | null;
+}
+
+export interface CreativeMetadata {
+  schemaVersion: number;
+  model: string;
+  imageModel: string | null;
+  generatedAt: string;
+  partial: boolean;
+  usage: ReportMetadataV2['usage'];
+  images: ImageUsageData | null;
+  settings: CreativeSettingsSnapshot | null;
+  plan: StrategyMetadata['plan'];
+  participants: F1Participant[];
+  sources: AuditSource[];
+  crosschecks: F1Crosscheck[];
+  summaries: Record<string, string>;
+  aiCalls: Record<string, number>;
+  why: string;
+  modelReviewFailed: boolean;
+  chain: { f1ReportId: string; f2AuditId: string; f3StrategyId: string };
+  brand?: { palette: string[]; fromBrand: boolean; logo: boolean } | null;
+}
+
+export interface CampaignFull extends CampaignSummary {
+  package: CampaignPackageData | null;
+  metadata: CreativeMetadata | null;
+  assets: CampaignAssetView[];
+}
+
+export interface CampaignReviews {
+  campaignId: string;
+  status: CampaignStatus;
+  approval: CampaignPackageData['approval'] | null;
+  findings: ReviewFindingData[];
+  revisions: RevisionData[];
+  limitations: string[];
+}
+
+export interface CreativeTimelineEntry {
+  sequence: number;
+  type: string;
+  participant: string | null;
+  at: string;
+  summary: string;
+}
+
+export interface CreativeProgress {
+  concepts: number;
+  variants: number;
+  landing: boolean;
+  images: number;
+  imagesFailed: number;
+  layouts: number;
+  skippedLayouts: number;
+  round: number;
+  findings: number;
+  repairsApplied: number;
+  repairsFailed: number;
+}
+
+/** GET /runs/:id/creative-analysis: from the saved campaign when there is one, otherwise folded from the persisted events. */
+export interface CreativeAnalysis {
+  runId: string;
+  status: RunStatus;
+  kind: 'creative';
+  source: 'report' | 'events';
+  campaignId: string | null;
+  campaignStatus: CampaignStatus | null;
+  approvalStatus: ApprovalStatus | null;
+  progress: CreativeProgress;
+  timeline: CreativeTimelineEntry[];
+  plan: StrategyMetadata['plan'] | null;
+  participants: F1Participant[];
+  sources: AuditSource[];
+  crosschecks: F1Crosscheck[];
+  usage: ReportMetadataV2['usage'] | null;
+  aiCalls: Record<string, number>;
+  images: ImageUsageData | null;
+  settings: CreativeSettingsSnapshot | null;
+  chain: { f1ReportId: string; f2AuditId: string; f3StrategyId: string } | null;
+  summaries: Record<string, string>;
+  why: string | null;
+  partial: boolean;
+  brand: { palette: string[]; fromBrand: boolean; logo: boolean } | null;
+  imageModel: string | null;
+  model: string | null;
+}
+
+export interface StartCreativeInput {
+  model?: string;
+  strategyId?: string;
+  imageModel?: string;
+  imageQuality?: 'low' | 'medium' | 'high' | 'auto';
+  imageSize?: '1024x1024' | '1024x1536' | '1536x1024';
+  concepts?: number;
+  channels?: ChannelId[];
+  landing?: boolean;
+  maxImages?: number;
+  maxRegenerations?: number;
+  maxLayoutsPerConcept?: number;
+  maxRepairRounds?: number;
+  visionReviews?: number;
+  maxModelCalls?: number;
+  maxOutputTokens?: number;
+}
+
+/** POST .../creative-production/preflight: what will run, with the exact limits. Spends nothing. */
+export interface CreativePreflight {
+  ok: boolean;
+  chain: { f1ReportId: string; f2AuditId: string; f3StrategyId: string; strategyCreatedAt: string; strategyPartial: boolean; campaignName: string };
+  input: { projectName: string; language: string; websiteUrl: string | null; channels: ChannelId[]; concepts: number; landing: boolean };
+  settings: { model: string; imageModel: string | null; imageQuality: string; imageSize: string | null; maxImages: number; maxRegenerations: number; maxLayoutsPerConcept: number; maxRepairRounds: number; visionReviews: number; maxModelCalls: number; maxOutputTokens?: number };
+  estimate: { textCalls: { typical: number; max: number; enforcedCap: number }; imageRequests: { planned: number; max: number; regenerationEnabled: boolean }; layouts: { planned: number; note: string } };
+  brand: { palette: string[]; fromBrand: boolean; logo: string | null };
+  imageModel: { available: boolean | null; note: string };
+  notes: string[];
 }

@@ -241,7 +241,7 @@ describe('Market Research & Strategy (real Mozaik agents, dynamic scouts, fake O
     for (let i = 0; i < 40; i++) {
       await sleep(250);
       analysis = (await user.agent.get(`/runs/${started.id}/strategy-analysis`).expect(200)).body;
-      if (analysis.plan?.activated?.some((p: any) => p.dynamic) && fake.calls('scout').length >= 2) break;
+      if ((analysis.plan?.activated ?? []).filter((p: any) => p.dynamic).length >= 2 && fake.calls('scout').length >= 2) break;
     }
     expect(analysis.source).toBe('events');
     expect(analysis.kind).toBe('strategy');

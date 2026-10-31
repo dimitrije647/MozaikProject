@@ -73,3 +73,38 @@ export class StartStrategyDto {
   /** Ask the free public-holiday calendar (default: the intake's "seasonal calendar" setting). */
   @IsOptional() @IsBoolean() useHolidayCalendar?: boolean;
 }
+
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,99}$/;
+const CHANNELS = ['instagram', 'facebook', 'linkedin', 'youtube', 'tiktok', 'google_search', 'email', 'organic_content', 'community'];
+
+/** F4 Creative Production. Every limit is enforced locally per run; none of them is an OpenAI spending cap. */
+export class StartCreativeDto {
+  /** Overrides the text model saved in Settings for this run only. */
+  @IsOptional() @IsString() @Matches(MODEL_ID, { message: 'model must be a valid OpenAI model id' }) model?: string;
+  /** The completed F3 strategy to build on (its F1 report and F2 audit are resolved from it). Defaults to the newest completed strategy. */
+  @IsOptional() @IsString() @MaxLength(60) strategyId?: string;
+  /** Image model (GPT Image family only). Omit = no image is generated; layouts use brand-colored backgrounds. */
+  @IsOptional() @IsString() @Matches(/^gpt-image-[A-Za-z0-9._-]{1,40}$/, { message: 'imageModel must be a GPT Image model id (gpt-image-*)' }) imageModel?: string;
+  @IsOptional() @IsIn(['low', 'medium', 'high', 'auto']) imageQuality?: 'low' | 'medium' | 'high' | 'auto';
+  @IsOptional() @IsIn(['1024x1024', '1024x1536', '1536x1024']) imageSize?: '1024x1024' | '1024x1536' | '1536x1024';
+  /** Creative concepts (1 to 5). Default 3. */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(5) concepts?: number;
+  /** Channels to produce for (a subset of the strategy's channels). Default: the strategy's recommended channels, up to 4. */
+  @IsOptional() @IsArray() @ArrayMaxSize(9) @IsIn(CHANNELS, { each: true }) channels?: string[];
+  /** Build landing page content. Default true. */
+  @IsOptional() @IsBoolean() landing?: boolean;
+  /** Hard cap on ORIGINAL images (one request each). Default: one per concept. 0 with an image model = no image request. */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(10) maxImages?: number;
+  /** Extra images allowed to replace a rejected one. Default 0 = regeneration disabled. */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(5) maxRegenerations?: number;
+  /** Layout formats per concept. Default 4. */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(6) maxLayoutsPerConcept?: number;
+  /** Review/repair rounds after the first review. Default 2. */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(3) maxRepairRounds?: number;
+  /** Exported assets the reviewer may SEE with the vision model per round. Default 0 (measurements only). */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(6) visionReviews?: number;
+  /** Per-run cap on TEXT model calls (copy, landing, planning, cross-checks, reviews, repairs). Default 16. */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(4) @Max(40) maxModelCalls?: number;
+  /** max_output_tokens per text call. Default 3000. */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(800) @Max(6000) maxOutputTokens?: number;
+}

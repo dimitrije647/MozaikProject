@@ -427,6 +427,7 @@ export function finalizeStrategy(draftIn: StrategyDraft, board: StrategyBoard, c
       stale: (ageF2 ?? 0) > STALE_AFTER_DAYS,
       partial: f2.partial,
       mainProblems: f2.report.mainProblems.slice(0, 8).map((p) => ({ title: p.title, severity: p.severity, area: p.area, status: p.status })),
+      contradictions: f2.report.contradictions.slice(0, 6).map((c) => ({ topic: c.topic.slice(0, 200), detail: c.detail.slice(0, 700), status: c.status })),
       notes: [
         ageF2 === null ? 'The age of the audit is unknown.' : `The audit is ${ageF2} day(s) old${(ageF2 ?? 0) > STALE_AFTER_DAYS ? `: older than ${STALE_AFTER_DAYS} days, so it may not reflect the current website and profiles` : ''}.`,
         ...(f2.partial ? ['The audit was partial: some areas were not audited.'] : []),

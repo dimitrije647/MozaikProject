@@ -21,6 +21,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/empty-state';
 import { MarketingAuditPanel } from '@/components/marketing-audit-panel';
 import { MarketStrategyPanel } from '@/components/market-strategy-panel';
+import { CreativeProductionPanel } from '@/components/creative-production-panel';
 import { ProductDiscoveryPanel } from '@/components/product-discovery-panel';
 import { RuntimeTestPanel } from '@/components/runtime-test-panel';
 import { ProjectStatusBadge } from '@/components/project-status-badge';
@@ -34,8 +35,8 @@ const STAGES: { key: string; title: string; icon: LucideIcon; empty: string; nee
   { key: 'intelligence', title: 'Product Intelligence', icon: Brain, empty: 'Positioning, value props and competitor context extracted from your brief.' },
   { key: 'audit', title: 'Audit', icon: FileSearch, empty: 'SEO and presence audit of your website and social profiles.', needs: 'enableSeoAudit' },
   { key: 'strategy', title: 'Strategy', icon: Compass, empty: 'Messaging pillars, channel plan and the seasonal content calendar.' },
-  { key: 'creative', title: 'Creative Output', icon: Palette, empty: 'Copy and visuals for every format you selected.' },
-  { key: 'export', title: 'Export', icon: Download, empty: 'Hand-off to Drive or download the campaign pack.', needs: 'enableGoogleDriveExport' },
+  { key: 'creative', title: 'Creative Output', icon: Palette, empty: 'Copy, images and channel layouts: see the F4 Creative Production panel below.' },
+  { key: 'export', title: 'Export', icon: Download, empty: 'The campaign package (ZIP) is downloaded from the F4 panel below. Drive hand-off is not available.', needs: 'enableGoogleDriveExport' },
 ];
 
 export default function WorkspacePage() {
@@ -62,7 +63,7 @@ export default function WorkspacePage() {
       {/* Banner */}
       <div role="status" className="flex items-start gap-3 rounded-2xl border border-amber-300/70 bg-amber-50 px-5 py-4 text-sm text-amber-900">
         <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-        <p><strong className="font-semibold">Full campaign generation is not enabled yet.</strong> Product Discovery (F1), the Marketing Audit (F2) and Market Research &amp; Strategy (F3) are available below; creative production and export are still to come.</p>
+        <p><strong className="font-semibold">Each phase runs only when you start it.</strong> Product Discovery (F1), the Marketing Audit (F2), Market Research &amp; Strategy (F3) and Creative Production (F4: copy, images, channel layouts, landing content, quality review and the downloadable campaign package) are available below, each on your own OpenAI key. There is no one-click chain: every phase shows its limits first and nothing runs on page load.</p>
       </div>
 
       {/* Hero */}
@@ -77,7 +78,7 @@ export default function WorkspacePage() {
               <span className="text-sm text-muted-dark">{MARKETING_GOALS.find((g) => g.value === intake?.marketingGoal)?.label ?? 'No goal set'}</span>
             </div>
           </div>
-          <Button disabled title="Agents are not available yet" size="lg">
+          <Button disabled title="Run each phase from its panel below; a one-click chain is deliberately not offered" size="lg">
             <Lock className="h-4 w-4" /> <Play className="h-4 w-4" /> Run campaign
           </Button>
         </div>
@@ -177,6 +178,8 @@ export default function WorkspacePage() {
       <MarketingAuditPanel projectId={id} />
 
       <MarketStrategyPanel projectId={id} />
+
+      <CreativeProductionPanel projectId={id} />
 
       <RuntimeTestPanel projectId={id} />
     </div>

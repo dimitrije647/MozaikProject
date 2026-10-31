@@ -87,6 +87,9 @@ importers:
       jest:
         specifier: ^29
         version: 29.7.0(@types/node@26.6.6)
+      jszip:
+        specifier: ^3.10.2
+        version: 3.10.2
       prisma:
         specifier: 6.19.3
         version: 6.19.3(typescript@5.9.3)
@@ -193,6 +196,9 @@ importers:
       dotenv:
         specifier: ^18.0.9
         version: 18.0.9
+      jszip:
+        specifier: ^3.10.2
+        version: 3.10.2
       mammoth:
         specifier: ^1
         version: 1.13.0
@@ -209,9 +215,6 @@ importers:
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
-      jszip:
-        specifier: ^3.10.2
-        version: 3.10.2
       tsx:
         specifier: ^4.23.15
         version: 4.23.15

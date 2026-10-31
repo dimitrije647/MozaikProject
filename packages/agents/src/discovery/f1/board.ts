@@ -32,7 +32,7 @@ export const keyByName = (name: string): AgentKey | undefined => AGENT_KEYS.find
 
 // ---- Sources ---------------------------------------------------------------------------------
 
-export type SourceKind = 'user_input' | 'website' | 'search_result' | 'repository' | 'document' | 'image' | 'robots' | 'sitemap' | 'pagespeed' | 'social_profile' | 'f1_report' | 'holiday_calendar' | 'f2_audit';
+export type SourceKind = 'user_input' | 'website' | 'search_result' | 'repository' | 'document' | 'image' | 'robots' | 'sitemap' | 'pagespeed' | 'social_profile' | 'f1_report' | 'holiday_calendar' | 'f2_audit' | 'f3_strategy';
 
 /** Where the data of a source came from (F2 distinguishes these in every report). */
 export type SourceOrigin = 'public_page' | 'live_api' | 'user_provided' | 'export' | 'fixture' | 'previous_phase';

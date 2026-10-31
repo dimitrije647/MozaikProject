@@ -3,6 +3,8 @@ import {
   OpenAIClient,
   ProviderError,
   SAFE_PROVIDER_MESSAGES,
+  isSupportedImageModel,
+  looksLikeImageModel,
   resolveOpenAIBaseUrl,
   toProviderError,
   type ProviderErrorCode,
@@ -78,7 +80,7 @@ export class OpenAiService {
       return {
         selected: cred.model,
         models: models
-          .map((m) => ({ id: m.id, ownedBy: m.ownedBy, created: m.created, likelyText: !NOT_TEXT.test(m.id) }))
+          .map((m) => ({ id: m.id, ownedBy: m.ownedBy, created: m.created, likelyText: !NOT_TEXT.test(m.id), likelyImage: looksLikeImageModel(m.id), imageSupported: isSupportedImageModel(m.id) }))
           .sort((a, b) => a.id.localeCompare(b.id)),
       };
     } catch (err) {

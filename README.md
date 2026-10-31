@@ -590,11 +590,71 @@ model call. Token usage is measured per agent; no price is shown. These limits a
 * Scout eligibility is rule-based and simple; it can be wrong for unusual businesses (raise or lower the cap, or review the rule hits).
 * One model for all participants; strategy quality depends on the F1/F2 reports beneath it.
 
+## F4 Creative Production (six agents, images through your own key)
+
+F4 turns ONE completed F3 strategy (and the exact F1 report and F2 audit it names) into a campaign package: creative
+concepts, channel copy, one original base image per concept, every channel format cut from it, landing page content, a
+quality review with a bounded repair loop, and a downloadable ZIP. It runs on the same Mozaik runtime, event protocol
+and evidence rules as F1 to F3 (`packages/agents/src/creative`, `runtime/programs/f4*`).
+
+### The six agents
+
+| Code | Participant | Model calls | What it does |
+| --- | --- | --- | --- |
+| A19 | Copywriter | text | Concepts (angle, key message, audience, CTA, visual idea) and channel copy with typed claims (`brief`/`f1`/`f2`/`f3`/`user`/`hypothesis`). Near-identical variants and channels you did not select are dropped. |
+| A20 | Visual Creator | text + **image** | Plans one picture per concept with the text model, has the Copywriter cross-check the plan, then calls the Images API (`gpt-image-*` only) through your key. No text, logos or UI in the picture. A failed image becomes a brand-colored background, said so. |
+| A21 | Layout Designer | none | Deterministic (`sharp` + SVG): cuts each format (Instagram 1080×1080 / 1080×1350, Story 1080×1920, Facebook 1200×628, LinkedIn 1200×627, 16:9) from the base image, never stretches, places headline / supporting line / CTA / your logo in the safe area, measures text fit and contrast, skips formats that would need blurry upscaling. 5 images × 4 formats = 20 assets, **0** extra image calls. |
+| A22 | Landing Content Builder | text | Structured landing content (SEO title, hero, benefits, sections, FAQ, trust signals only with support, one CTA objective). Preview = escaped fixed template + strict CSP, shown in a sandboxed iframe, deployed nowhere. |
+| A23 | Content & Brand Reviewer | text (+ vision, opt-in) | Deterministic checks first (forbidden claims from the brief, invented figures, promise words, CTA mismatch, wrong dimensions, text overflow, low contrast, missing logo), then one text review per round; vision review only if you allow it. Findings carry id, severity, asset reference, evidence, suggested correction, responsible agent and status. |
+| A24 | Fixer | none | **Created at run time** (`participant.registered`) only if blocker/major findings exist. Picks the repair (revise copy / revise landing / re-render layout / regenerate image), asks the owner by `revision.requested`, waits for `revision.applied`, re-renders affected layouts, and reports what it could not fix. Originals are kept as superseded versions. At most 2 repair rounds; regeneration is off unless enabled. |
+
+### Protocol (all real Mozaik events, persisted in `CampaignEvent`)
+
+`copy.proposed` → (Visual Creator starts; `crosscheck.requested` Visual Creator → Copywriter) · `landing.proposed` ·
+cross-checks Landing ↔ Copywriter · `visual.generated` → `layout.completed` per concept · bounded fan-in barrier →
+`review.requested` → `review.completed` → if needed `participant.registered` (Fixer) → `fix.requested` →
+`revision.requested` / `revision.applied` (wave 1 copy, landing, image; wave 2 layouts) → `revision.completed` →
+re-review of only what changed → … → `campaign.completed`. The Creative Coordinator is the single writer of the F4
+board and makes no model call. Binaries never travel in events or JSON: participants exchange asset ids.
+
+### Data flow, storage and API
+
+* Prerequisite check: the strategy, its audit and its report must all belong to the same project (never mixed).
+* `CreativeCampaign` row (created at start, completed with the validated `CampaignPackage` JSON, never overwritten) and
+  `CampaignAsset` rows (metadata + storage key) in PostgreSQL; files in project storage, served **only** through
+  `GET /campaigns/:id/assets/:assetId/file` (owner, `nosniff`, `no-store`). Deleting the project removes the files.
+* `POST /projects/:id/runs/creative-production` (+ `/preflight`, free: only `GET /models`), `GET /projects/:id/campaigns`,
+  `GET /campaigns/:id`, `/assets`, `/reviews`, `/landing-preview`, `/export` (ZIP with image binaries, `campaign.json`,
+  copy text files, landing content + preview, review, README, manifest with SHA-256), `GET /runs/:id/creative-analysis`.
+* UI: the F4 panel in the workspace (Overview, Agents with the recorded timeline, Creative Concepts, Generated Images,
+  Channel Formats, Landing Page, Quality Review, Final Campaign) with a mandatory preflight before the start button.
+
+### Cost controls
+
+Separate caps, all enforced locally per run and **not** an OpenAI spending cap: text calls (default 16), original
+images (default one per concept, max 10), regenerations (default 0), repair rounds (default 2), vision reviews
+(default 0). Nothing runs on page load, startup, tests or restart. The image model must be a `gpt-image-*` id your key
+lists; a text model is refused. No price is computed anywhere: only measured tokens and counts are shown.
+
+### Manual low-cost test (uses your own key)
+
+Settings > AI providers: model `gpt-4.1-mini`. Workspace: with a completed F3 strategy, choose image model
+`gpt-image-1`, quality `low`, 1 concept, 1 channel, landing page on, max text calls 12, regeneration off, press
+**Preflight** (free), read the counts (1 image request, ~5 text calls), then **Start**. Expect one image, four layouts,
+a review and a package; the Agents tab shows the real events. Then scale to 2 to 3 concepts.
+
+### Limitations
+
+* Images come only from GPT Image models; DALL·E uses a different contract and is not offered.
+* Layouts use system fonts and a fixed template; they are solid, not art-directed.
+* The deterministic checks are word-based; the model review judges meaning. Vision review is opt-in and budgeted.
+* A repair the owner cannot make (or a rejected picture with regeneration off) stays visible as unresolved.
+
 ## Tests
 
 ```powershell
-pnpm test:agents    # 47 tests, real Mozaik runtime + real cloud-sdk + fake OpenAI server, no database
-pnpm test:api       # 46 e2e tests, needs PostgreSQL on :5433 (fake OpenAI server, no real calls)
+pnpm test:agents    # 208 tests, real Mozaik runtime + real cloud-sdk + fake OpenAI (text and image) server, no database
+pnpm test:api       # 74 e2e tests, needs PostgreSQL on :5433 (fake OpenAI server, no real calls)
 ```
 
 The API suite creates a separate `launchpilot_test` database next to the dev one (dev data is untouched) and applies the
@@ -612,7 +672,7 @@ runtime and events are real.
 
 ## Known limitations / placeholders
 
-- Only Product Discovery (F1, text-only) exists. No phase runner for F2 to F4, no campaign generation; "Run campaign" stays disabled.
+- F1 to F4 run as separate, explicitly started phases. There is deliberately no one-click "Run campaign" chain (the button stays disabled); each phase shows its limits first.
 - Single API instance assumed: the startup sweep marks every `RUNNING` row `INTERRUPTED`. Multiple instances would need
   an owner/heartbeat column first. Runs are executed in-process (no job queue, no separate worker).
 - The live Mozaik state is not persisted or restored; interrupted runs are reported as interrupted, not resumed.

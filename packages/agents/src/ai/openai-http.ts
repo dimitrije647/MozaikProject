@@ -47,6 +47,11 @@ export class OpenAIClient {
     return this.#request('POST', '/responses', body, signal);
   }
 
+  /** POST /images/generations (GPT Image models). Throws ProviderError (safe message only) on any failure. */
+  async createImage(body: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    return this.#request('POST', '/images/generations', body, signal);
+  }
+
   /** GET /models: free, lists the model ids this key can see. */
   async listModels(signal?: AbortSignal): Promise<OpenAIModelInfo[]> {
     const json = (await this.#request('GET', '/models', undefined, signal)) as { data?: unknown };

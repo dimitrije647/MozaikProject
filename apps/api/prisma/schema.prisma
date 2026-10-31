@@ -75,6 +75,8 @@ model Project {
   reports  ProductDiscoveryReport[]
   audits   MarketingAuditReport[]
   strategies MarketingStrategyReport[]
+  campaigns CreativeCampaign[]
+  campaignAssets CampaignAsset[]
 
   @@unique([userId, slug])
   @@index([userId, updatedAt])
@@ -247,6 +249,7 @@ model CampaignRun {
   report  ProductDiscoveryReport?
   audit   MarketingAuditReport?
   strategy MarketingStrategyReport?
+  campaign CreativeCampaign?
 
   // A partial unique index (one RUNNING run per project) is added in the migration SQL,
   // because Prisma cannot express partial indexes in the schema.
@@ -292,6 +295,7 @@ model ProductDiscoveryReport {
   run     CampaignRun @relation(fields: [runId], references: [id], onDelete: Cascade)
   audits  MarketingAuditReport[]
   strategies MarketingStrategyReport[]
+  campaigns CreativeCampaign[]
 
   @@index([projectId, createdAt])
 }
@@ -320,6 +324,7 @@ model MarketingAuditReport {
   run      CampaignRun            @relation(fields: [runId], references: [id], onDelete: Cascade)
   f1Report ProductDiscoveryReport @relation(fields: [f1ReportId], references: [id], onDelete: NoAction)
   strategies MarketingStrategyReport[]
+  campaigns CreativeCampaign[]
 
   @@index([projectId, createdAt])
   @@index([f1ReportId])
@@ -351,8 +356,87 @@ model MarketingStrategyReport {
   run      CampaignRun            @relation(fields: [runId], references: [id], onDelete: Cascade)
   f1Report ProductDiscoveryReport @relation(fields: [f1ReportId], references: [id], onDelete: NoAction)
   f2Audit  MarketingAuditReport   @relation(fields: [f2AuditId], references: [id], onDelete: NoAction)
+  campaigns CreativeCampaign[]
 
   @@index([projectId, createdAt])
   @@index([f1ReportId])
   @@index([f2AuditId])
+}
+
+/// F4 Creative Production output. One campaign per run: the row is created when the run starts (its assets are stored under
+/// it while the run is in progress) and completed with the validated Campaign Package. Always tied to the exact F1 report,
+/// F2 audit and F3 strategy it was built on. Reruns create new rows; a completed campaign is never overwritten.
+model CreativeCampaign {
+  id             String   @id @default(cuid())
+  projectId      String
+  runId          String   @unique
+  f1ReportId     String
+  f2AuditId      String
+  f3StrategyId   String
+  schemaVersion  Int
+  language       String
+  /// Text model id the user selected for the run (as sent to OpenAI).
+  model          String
+  /// Image model id the user selected (gpt-image-*), or null when no image was generated.
+  imageModel     String?
+  /// running | completed | failed | cancelled | interrupted (mirrors the run; set when the run ends).
+  status         String   @default("running")
+  campaignName   String
+  /// approved | approved_with_notes | unresolved, once the package exists.
+  approvalStatus String?
+  /// The validated Campaign Package (see CampaignPackage in @launchpilot/agents). Null until the run completes.
+  packageJson    Json?
+  /// Usage, participants, cross-checks, plan and the settings snapshot. Never credentials, never image binaries.
+  metadataJson   Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  project    Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  run        CampaignRun             @relation(fields: [runId], references: [id], onDelete: Cascade)
+  f1Report   ProductDiscoveryReport  @relation(fields: [f1ReportId], references: [id], onDelete: NoAction)
+  f2Audit    MarketingAuditReport    @relation(fields: [f2AuditId], references: [id], onDelete: NoAction)
+  f3Strategy MarketingStrategyReport @relation(fields: [f3StrategyId], references: [id], onDelete: NoAction)
+  assets     CampaignAsset[]
+
+  @@index([projectId, createdAt])
+  @@index([f3StrategyId])
+}
+
+/// One stored image file of a campaign: a generated base image or a rendered channel layout. The binary lives in project
+/// storage (filePath is a storage key, served only through an authenticated endpoint); only metadata is here. Superseded
+/// versions are kept: an original is never overwritten by a repair.
+model CampaignAsset {
+  id            String   @id @default(cuid())
+  campaignId    String
+  projectId     String
+  /// image | layout
+  kind          String
+  conceptId     String
+  channel       String?
+  format        String?
+  version       Int      @default(1)
+  parentAssetId String?
+  mimeType      String
+  width         Int
+  height        Int
+  bytes         Int
+  sha256        String
+  /// ai_image | brand_gradient
+  source        String
+  model         String?
+  quality       String?
+  requestedSize String?
+  /// generated | rendered | superseded | failed
+  status        String
+  filePath      String
+  altText       String?
+  /// Layout flags, prompt metadata (length and a short summary only, never the prompt) and provider-reported usage.
+  metadataJson  Json?
+  createdAt     DateTime @default(now())
+
+  campaign CreativeCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  project  Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@index([projectId])
 }
