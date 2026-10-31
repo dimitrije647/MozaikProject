@@ -1,5 +1,5 @@
 import * as cheerio from 'cheerio';
-import { detectInjection } from './html';
+import { detectInjection, detectJsRendered, platformOfHost } from './html';
 import type { WebFetchTool } from './web-fetch';
 
 /**
@@ -40,6 +40,8 @@ export interface PageSignals {
   socialLinks: { platform: string; url: string }[];
   text: string;
   injectionSuspected: boolean;
+  /** The served HTML has almost no visible text and looks like a JavaScript application shell. */
+  likelyJsRendered: boolean;
 }
 
 const clean = (s: string | undefined | null) => (s ?? '').replace(/\s+/g, ' ').trim();
@@ -48,17 +50,7 @@ const nonEmpty = (s: string | undefined | null) => {
   return c ? c : null;
 };
 
-const SOCIAL_HOSTS: [RegExp, string][] = [
-  [/(^|\.)instagram\.com$/, 'instagram'],
-  [/(^|\.)(facebook|fb)\.com$/, 'facebook'],
-  [/(^|\.)linkedin\.com$/, 'linkedin'],
-  [/(^|\.)(x|twitter)\.com$/, 'x'],
-  [/(^|\.)(youtube\.com|youtu\.be)$/, 'youtube'],
-  [/(^|\.)tiktok\.com$/, 'tiktok'],
-  [/(^|\.)pinterest\.[a-z.]+$/, 'pinterest'],
-  [/(^|\.)reddit\.com$/, 'reddit'],
-];
-export const platformOfHost = (host: string) => SOCIAL_HOSTS.find(([re]) => re.test(host.toLowerCase()))?.[1] ?? null;
+export { platformOfHost };
 
 const CTA_RE = /\b(book|buy|order|shop|contact|call|sign ?up|register|subscribe|get started|start|try|download|request|demo|learn more|join|enroll|apply|rezerv|kupi|naru[cč]i|kontakt|prijav|poziv|zapo[cč]n|pogledaj|saznaj)/i;
 
@@ -77,6 +69,7 @@ export function inspectHtml(html: string, requestedUrl: string, finalUrl: string
 
   // visible text (scripts/styles/hidden removed) for word count and messaging
   const body = cheerio.load(html);
+  const scriptCount = body('script').not('[type="application/ld+json"]').length;
   body('script,style,noscript,template,svg,iframe,[hidden],[aria-hidden="true"],[style*="display:none"],[style*="display: none"]').remove();
   const text = clean(body('body').text());
 
@@ -212,13 +205,14 @@ export function inspectHtml(html: string, requestedUrl: string, finalUrl: string
     socialLinks: socialLinks.slice(0, 10),
     text: text.slice(0, 3000),
     injectionSuspected: injection.suspected,
+    likelyJsRendered: detectJsRendered(html, text.length, scriptCount),
   };
 }
 
 export type DescribeMode = 'full' | 'seo' | 'messaging' | 'brand' | 'presence';
 const MODE_KEYS: Record<Exclude<DescribeMode, 'full'>, string[]> = {
-  seo: ['url', 'http_status', 'title', 'meta_description', 'h1_count', 'heading_outline', 'canonical', 'meta_robots', 'viewport', 'html_lang', 'open_graph', 'twitter_card', 'structured_data_types', 'images', 'links', 'word_count', 'hreflang', 'favicon_declared'],
-  messaging: ['url', 'title', 'meta_description', 'heading_outline', 'ctas', 'open_graph', 'html_lang', 'text'],
+  seo: ['url', 'http_status', 'title', 'meta_description', 'h1_count', 'heading_outline', 'canonical', 'meta_robots', 'viewport', 'html_lang', 'open_graph', 'twitter_card', 'structured_data_types', 'images', 'links', 'word_count', 'rendering', 'hreflang', 'favicon_declared'],
+  messaging: ['url', 'title', 'meta_description', 'heading_outline', 'ctas', 'open_graph', 'html_lang', 'rendering', 'text'],
   brand: ['url', 'title', 'open_graph', 'declared_branding', 'favicon_declared', 'html_lang'],
   presence: ['url', 'title', 'open_graph', 'contact', 'social_links_on_page', 'structured_data_types'],
 };
@@ -243,6 +237,7 @@ export function describePage(p: PageSignals, mode: DescribeMode = 'full'): strin
     ['images', `images: ${p.images.total} total, ${p.images.missingAlt} without alt text`],
     ['links', `links: ${p.internalLinks.length} internal, ${p.externalLinkCount} external`],
     ['word_count', `word_count: ${p.wordCount}`],
+    ['rendering', `rendering: ${p.likelyJsRendered ? 'javascript_app_suspected (the served HTML has almost no visible text; crawlers and this audit only see what the server sends)' : 'server_html'}`],
     ['hreflang', `hreflang: ${p.hreflang.join(', ') || '(none)'}`],
     ['favicon_declared', `favicon_declared: ${p.hasFavicon}`],
     ['ctas', `ctas: ${p.ctas.join(' | ') || '(none found)'}`],

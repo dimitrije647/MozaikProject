@@ -81,6 +81,8 @@ describe('Market Research & Strategy (real Mozaik agents, dynamic scouts, fake O
     await startF3(user, projectId, { maxReviews: 50 }).expect(400);
     await startF3(user, projectId, { competitorUrls: ['not a url'] }).expect(400);
     await startF3(user, projectId, { competitorUrls: ['ftp://x.test/a'] }).expect(400);
+    await startF3(user, projectId, { competitorNames: ['a', 'b', 'c', 'd', 'e', 'f'] }).expect(400);
+    await startF3(user, projectId, { competitorNames: ['x'] }).expect(400);
     expect(fake.requests).toHaveLength(0);
     expect(await db.campaignRun.count({ where: { userId: user.id, mode: 'market_strategy' } })).toBe(0);
   });

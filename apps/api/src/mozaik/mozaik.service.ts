@@ -514,6 +514,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
       websiteUrl: intake?.websiteUrl?.trim() || null,
       socialProfiles: socials.map((s) => ({ platform: s.platform, url: s.url })),
       competitorUrls: (dto.competitorUrls ?? []).map((u) => u.trim()).filter(Boolean),
+      competitorNames: [...new Set((dto.competitorNames ?? []).map((n) => n.trim()).filter(Boolean))].slice(0, 5),
       useHolidayCalendar: dto.useHolidayCalendar ?? intake?.enableSeasonalCalendar ?? false,
     };
 

@@ -62,6 +62,8 @@ export interface StrategyInput {
   socialProfiles: { platform: string; url: string }[];
   /** Competitor URLs the user supplied (analyzed first; never invented). */
   competitorUrls: string[];
+  /** Competitor NAMES the user supplied (looked up with one bounded search each; never guessed). */
+  competitorNames: string[];
   /** The user's opt-in to ask the free public-holiday calendar (intake: seasonal calendar). */
   useHolidayCalendar: boolean;
 }
@@ -70,14 +72,33 @@ export interface CompetitorLead {
   title: string;
   url: string;
   snippet: string;
-  origin: 'user_supplied' | 'search_lead';
+  origin: 'user_supplied' | 'user_named' | 'search_lead';
   fetched: boolean;
   sourceId: string | null;
   note: string | null;
+  host: string | null;
+  /** Pages of this competitor's site that were read (home plus relevant same-site pages). */
+  pages: number;
+  /** How the home page was read: served HTML, or the rendering/extraction provider. */
+  via: 'html' | 'extract' | null;
+  /** Social networks the competitor links to from its own pages (an observation about links, nothing more). */
+  socialPlatforms: string[];
+  structuredDataTypes: string[];
 }
 
 export interface StrategyFacts {
-  competitors: { provider: string; searchUsed: boolean; queries: string[]; leads: CompetitorLead[]; userSupplied: number; gaps: string[] } | null;
+  competitors: {
+    provider: string;
+    searchUsed: boolean;
+    queries: string[];
+    leads: CompetitorLead[];
+    userSupplied: number;
+    userNamed: number;
+    notFoundNames: string[];
+    gaps: string[];
+    pagesRetrieved: number;
+    extractUsed: boolean;
+  } | null;
   holidays: { used: boolean; country: string | null; note: string; holidays: { date: string; name: string }[] } | null;
 }
 

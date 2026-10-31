@@ -16,10 +16,26 @@ export interface SearchResult {
 export interface SearchOptions {
   maxResults?: number;
   language?: string;
+  /** ISO 3166-1 alpha-2 code of the market; results from that country are boosted when the provider supports it. */
+  country?: string;
+  /** Hosts whose pages must not appear (for example the business's own site when looking for outside mentions). */
+  excludeDomains?: string[];
   signal?: AbortSignal;
 }
 
-export type SearchErrorCode = 'not_configured' | 'invalid_key' | 'rate_limited' | 'quota_exceeded' | 'unavailable' | 'bad_response' | 'cancelled';
+/** Tavily's `country` parameter takes lowercase country names; only these codes are mapped (others are ignored). */
+export const TAVILY_COUNTRY_NAMES: Record<string, string> = {
+  RS: 'serbia', HR: 'croatia', BA: 'bosnia and herzegovina', ME: 'montenegro', SI: 'slovenia', MK: 'north macedonia',
+  DE: 'germany', AT: 'austria', CH: 'switzerland', US: 'united states', GB: 'united kingdom', IE: 'ireland',
+  FR: 'france', IT: 'italy', ES: 'spain', PT: 'portugal', NL: 'netherlands', BE: 'belgium', PL: 'poland',
+  CZ: 'czech republic', SK: 'slovakia', HU: 'hungary', RO: 'romania', BG: 'bulgaria', GR: 'greece', TR: 'turkey',
+  SE: 'sweden', NO: 'norway', DK: 'denmark', FI: 'finland', CA: 'canada', AU: 'australia',
+};
+/** Country codes Brave's `country` parameter documents. */
+const BRAVE_COUNTRIES = new Set(['AR', 'AU', 'AT', 'BE', 'BR', 'CA', 'CL', 'DK', 'FI', 'FR', 'DE', 'HK', 'IN', 'ID', 'IT', 'JP', 'KR', 'MY', 'MX', 'NL', 'NZ', 'NO', 'CN', 'PL', 'PT', 'PH', 'RU', 'SA', 'ZA', 'ES', 'SE', 'CH', 'TW', 'TR', 'GB', 'US']);
+const cleanDomains = (d?: string[]) => (d ?? []).map((x) => x.trim().toLowerCase().replace(/^www\./, '')).filter((x) => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(x)).slice(0, 10);
+
+export type SearchErrorCode = 'not_configured' | 'invalid_key' | 'rate_limited' | 'quota_exceeded' | 'unavailable' | 'bad_response' | 'cancelled' | 'retry_without_country';
 
 export class SearchError extends Error {
   constructor(
@@ -47,6 +63,7 @@ const SAFE: Record<SearchErrorCode, string> = {
   unavailable: 'The search provider is unavailable.',
   bad_response: 'The search provider returned an unexpected response.',
   cancelled: 'Search cancelled.',
+  retry_without_country: 'The search provider rejected the country filter.',
 };
 const err = (code: SearchErrorCode) => new SearchError(code, SAFE[code]);
 
@@ -72,7 +89,7 @@ function mapStatus(status: number): SearchError {
   return err('unavailable');
 }
 
-async function call(f: typeof fetch, url: string, init: RequestInit, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {
+async function call(f: typeof fetch, url: string, init: RequestInit, timeoutMs: number, signal?: AbortSignal, retryable?: (status: number) => boolean): Promise<unknown> {
   let res: Response;
   try {
     res = await f(url, { ...init, signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]) });
@@ -80,6 +97,7 @@ async function call(f: typeof fetch, url: string, init: RequestInit, timeoutMs: 
     if (signal?.aborted) throw err('cancelled');
     throw err('unavailable');
   }
+  if (!res.ok && retryable?.(res.status)) throw err('retry_without_country');
   if (!res.ok) throw mapStatus(res.status);
   try {
     return await res.json();
@@ -109,7 +127,9 @@ export class TavilySearch implements WebSearchTool {
   }
 
   async search(query: string, options: SearchOptions = {}): Promise<SearchResult[]> {
-    const body = {
+    const exclude = cleanDomains(options.excludeDomains);
+    const country = options.country ? TAVILY_COUNTRY_NAMES[options.country.toUpperCase()] : undefined;
+    const body: Record<string, unknown> = {
       query: query.slice(0, 380),
       search_depth: 'basic', // 1 credit; never "advanced" (2 credits) automatically
       max_results: Math.min(Math.max(options.maxResults ?? 5, 1), 10),
@@ -117,8 +137,18 @@ export class TavilySearch implements WebSearchTool {
       include_raw_content: false,
       include_images: false,
       ...(options.language ? { language: options.language } : {}),
+      ...(exclude.length ? { exclude_domains: exclude } : {}),
+      ...(country ? { country } : {}),
     };
-    const json = (await call(this.f, `${this.baseUrl}/search`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${this.#key}` }, body: JSON.stringify(body) }, this.timeoutMs, options.signal)) as { results?: unknown };
+    const post = (b: Record<string, unknown>) => call(this.f, `${this.baseUrl}/search`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${this.#key}` }, body: JSON.stringify(b) }, this.timeoutMs, options.signal, (status) => status === 400 && !!b.country) as Promise<{ results?: unknown }>;
+    let json: { results?: unknown };
+    try {
+      json = await post(body);
+    } catch (e) {
+      // A country value the provider does not know must not cost the search: retry once without it.
+      if (e instanceof SearchError && e.code === 'retry_without_country') json = await post({ ...body, country: undefined });
+      else throw e;
+    }
     if (!Array.isArray(json?.results)) throw err('bad_response');
     return (json.results as { title?: unknown; url?: unknown; content?: unknown; score?: unknown }[])
       .filter((r) => typeof r.url === 'string')
@@ -147,8 +177,11 @@ export class BraveSearch implements WebSearchTool {
   }
 
   async search(query: string, options: SearchOptions = {}): Promise<SearchResult[]> {
-    const q = new URLSearchParams({ q: query.slice(0, 380), count: String(Math.min(Math.max(options.maxResults ?? 5, 1), 10)) });
+    // Brave has no exclusion parameter; its documented `-site:` operator does the same inside the query.
+    const exclude = cleanDomains(options.excludeDomains).map((d) => ` -site:${d}`).join('');
+    const q = new URLSearchParams({ q: `${query.slice(0, 380 - exclude.length)}${exclude}`, count: String(Math.min(Math.max(options.maxResults ?? 5, 1), 10)) });
     if (options.language) q.set('search_lang', options.language);
+    if (options.country && BRAVE_COUNTRIES.has(options.country.toUpperCase())) q.set('country', options.country.toUpperCase());
     const json = (await call(this.f, `${this.baseUrl}/res/v1/web/search?${q}`, { method: 'GET', headers: { accept: 'application/json', 'x-subscription-token': this.#key } }, this.timeoutMs, options.signal)) as { web?: { results?: unknown } };
     const results = json?.web?.results;
     if (!Array.isArray(results)) throw err('bad_response');

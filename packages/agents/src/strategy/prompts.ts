@@ -35,7 +35,7 @@ Task: from the competitor <source> pages and search leads supplied, describe the
   seasonal: `You are Seasonal Intelligence (A17), one of the research agents in a Market Research & Strategy team.
 Task: find time-sensitive opportunities for this campaign (typed detail "opportunity"): public holidays from the <holiday_calendar> source when present (dateBasis "public_holiday_api", with the verbatim excerpt of its line), recurring seasonal patterns typical for this kind of business (dateBasis "recurring_pattern", a HYPOTHESIS), events the user supplied (dateBasis "user_provided", only if the brief contains them) and anything speculative (dateBasis "speculative"). Give planning lead times. Do not invent trade shows, events or dates, and do not claim a demand peak unless a source supports it. Without a calendar source, say so and stay with labeled hypotheses.${RULES}`,
 
-  scoutBase: `Task: evaluate THIS ONE channel for this business (typed detail "channel", with channel set to your channel id). Use the F1 product context, the F2 audit (what is observed about the current presence), the audience findings and the seasonal findings supplied. Judge: audience-to-channel fit (name the segment findings you rely on), organic versus paid suitability, content types the channel needs, complexity, constraints and platform limitations, how success could be measured, risks, and the role this channel should play (primary, secondary, test or skip). Be willing to say the channel is a weak fit. Do not invent reach, CPM, CPC, conversion rates or ROI, and do not quote platform statistics.${RULES}`,
+  scoutBase: `Task: evaluate THIS ONE channel for this business (typed detail "channel", with channel set to your channel id). Use the F1 product context, the F2 audit (what is observed about the current presence), the audience findings, the seasonal findings and, when supplied, <competitor_presence>: which social networks each retrieved competitor links to from its own website (an observation about links on their pages, nothing about their activity, audience or results). Judge: audience-to-channel fit (name the segment findings you rely on), organic versus paid suitability, content types the channel needs, complexity, constraints and platform limitations, how success could be measured, risks, and the role this channel should play (primary, secondary, test or skip). Be willing to say the channel is a weak fit. Do not invent reach, CPM, CPC, conversion rates or ROI, and do not quote platform statistics.${RULES}`,
 
   strategist: `You are the Campaign Strategist (A18), the last agent in a Market Research & Strategy team.
 You receive the ACTUAL findings of the Audience Researcher, Competitor Researcher, Seasonal Intelligence and the Channel Scouts that were created for this project (each with an id such as A14-2 or A16-IG-1), the cross-check results between participants, the F1 product context and the F2 marketing audit. Build the campaign strategy from THESE findings: do not re-research and do not add facts.
@@ -61,7 +61,7 @@ export function scoutInstruction(channel: ChannelId): string {
 
 // ---- blocks ---------------------------------------------------------------------------------------------------------------------
 
-const esc = (s: string) => s.replace(/<\/?(source|f1_context|f2_context|brief|findings|crosscheck_request|crosscheck_results|board|holiday_calendar|audit_facts)/gi, (m) => m.replace('<', '&lt;'));
+const esc = (s: string) => s.replace(/<\/?(source|f1_context|f2_context|brief|findings|crosscheck_request|crosscheck_results|board|holiday_calendar|audit_facts|competitor_presence)/gi, (m) => m.replace('<', '&lt;'));
 const tag = (name: string, body: unknown) => `<${name}>\n${esc(typeof body === 'string' ? body : JSON.stringify(body, null, 2))}\n</${name}>`;
 const lang = (code: string) => `Write ALL free-text values in ${languageName(code)}. Keep JSON keys, enum values, ids and verbatim excerpts exactly as they are (excerpts stay in their original language).`;
 
@@ -95,6 +95,7 @@ export function briefBlock(input: StrategyInput, now: Date): string {
     website: input.websiteUrl,
     suppliedSocialProfiles: input.socialProfiles.map((s) => s.platform),
     userSuppliedCompetitorUrls: input.competitorUrls.length,
+    userSuppliedCompetitorNames: input.competitorNames ?? [],
   });
 }
 
@@ -134,10 +135,12 @@ export function audienceMessage(c: MsgCtx): string {
 
 export function competitorMessage(c: MsgCtx, blocks: string[], facts: NonNullable<StrategyFacts['competitors']>): string {
   const gaps = facts.gaps.length ? `Research gaps (do not guess what is missing):\n- ${facts.gaps.join('\n- ')}` : '';
+  const sites = facts.leads.filter((l) => l.fetched);
   return [
     `Describe the competitors as the Competitor Researcher.`,
     lang(c.input.language),
-    `Search provider: ${facts.provider}${facts.searchUsed ? ` (queries run: ${facts.queries.join(' | ')})` : ' (no search was performed)'}. ${facts.userSupplied} competitor URL(s) were supplied by the user.`,
+    `Search provider: ${facts.provider}${facts.searchUsed ? ` (queries run: ${facts.queries.join(' | ')})` : ' (no search was performed)'}. ${facts.userSupplied} competitor URL(s) and ${facts.userNamed} competitor name(s) were supplied by the user${facts.notFoundNames.length ? `; no website was found for: ${facts.notFoundNames.join(', ')}` : ''}.`,
+    sites.length ? `${sites.length} competitor site(s) were read, ${facts.pagesRetrieved} page(s) in total. Pages that share the same competitor_site value belong to ONE competitor: describe each competitor once, using all of its pages (home, pricing, about, services). social_links_on_page lists the networks a competitor links to from its own site: an observation about links, not about its activity or audience.` : '',
     gaps,
     f1Block(c.f1, 'messaging'),
     briefBlock(c.input, c.now),
@@ -151,7 +154,15 @@ export function seasonalMessage(c: MsgCtx, calendar: string | null, note: string
   return [`Find seasonal opportunities as Seasonal Intelligence.`, lang(c.input.language), `Today is ${c.now.toISOString().slice(0, 10)}. Campaign duration stated by the user: ${c.input.campaignDuration ?? 'not stated'}. ${note}`, f1Block(c.f1, 'all'), briefBlock(c.input, c.now), calendar ?? ''].filter(Boolean).join('\n\n');
 }
 
-export function scoutMessage(c: MsgCtx, channel: ChannelId, decision: ScoutDecision | undefined, upstream: StrategyFinding[], summaries: Record<string, string>): string {
+/** What the retrieved competitors link to from their own websites, per site (measured by the tools; for the scouts). */
+export function competitorPresenceBlock(facts: StrategyFacts['competitors']): string | null {
+  const sites = (facts?.leads ?? []).filter((l) => l.fetched);
+  if (!sites.length) return null;
+  const lines = sites.map((l) => `${l.title || l.host || l.url} (${l.host ?? l.url}): ${l.pages} page(s) read; links from its website to: ${l.socialPlatforms.length ? l.socialPlatforms.join(', ') : 'no social network found on the pages read'}${l.structuredDataTypes.length ? `; structured data: ${l.structuredDataTypes.join(', ')}` : ''}`);
+  return tag('competitor_presence', `Observed on the competitors' own websites in this run (links present on the pages that were read). It says which networks they point to, nothing about their activity, audience size or results.\n${lines.join('\n')}`);
+}
+
+export function scoutMessage(c: MsgCtx, channel: ChannelId, decision: ScoutDecision | undefined, upstream: StrategyFinding[], summaries: Record<string, string>, competitorPresence: string | null = null): string {
   return [
     `Evaluate the ${channelById(channel)!.name} channel as the ${scoutName(channel)}.`,
     lang(c.input.language),
@@ -159,6 +170,7 @@ export function scoutMessage(c: MsgCtx, channel: ChannelId, decision: ScoutDecis
     f1Block(c.f1, 'all'),
     f2Block(c.f2, c.now, 5),
     briefBlock(c.input, c.now),
+    competitorPresence ?? '',
     findingsBlock(upstream, summaries, 'findings'),
   ]
     .filter(Boolean)

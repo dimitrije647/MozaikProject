@@ -7,6 +7,7 @@ import { FakeGitHub, FakeTavily, FakeWebsite, htmlPage } from '../../testing/fak
 import { buildDocx, buildPdf, docInput, imageInput, makePng } from '../../testing/fixtures';
 import { GitHubRepositoryTool } from '../../tools/github';
 import { WebFetchTool } from '../../tools/web-fetch';
+import { TavilyExtract } from '../../tools/web-extract';
 import { TavilySearch } from '../../tools/web-search';
 import { buildDiscoveryInput, type RawDiscoveryData } from '../input';
 import { ProductDiscoveryReportV2 } from './schemas';
@@ -145,12 +146,43 @@ describe('F1 Product Discovery (real Mozaik agents; fixtures for everything exte
     const o = await run(makeInput({ websiteUrl: site.origin }), { tools: { web: webTool(), search: new TavilySearch({ apiKey: 'tvly-test-KEY', baseUrl: tav.origin }) } });
     completed(o);
     const s = meta(o).sources.filter((x) => x.kind === 'search_result');
-    assert.equal(s.length, 1);
+    assert.equal(s.length, 1, 'the same result from both queries is recorded once');
     assert.ok(s[0].status === 'retrieved' && s[0].fixture);
-    assert.equal(tav.hits.length, 1);
-    assert.equal(JSON.parse(tav.hits[0].body).search_depth, 'basic');
+    // two bounded queries: the business and its domain, then mentions of the name elsewhere
+    assert.equal(tav.hits.length, 2);
+    const bodies = tav.hits.map((h) => JSON.parse(h.body));
+    assert.ok(bodies.every((b) => b.search_depth === 'basic'));
+    assert.match(bodies[0].query, /^Bike Repair /);
+    assert.equal(bodies[1].query, '"Bike Repair"');
     assert.ok(meta(o).findings.filter((f) => f.sourceType === 'search_result').every((f) => f.classification !== 'verified'));
     assert.ok(!JSON.stringify(openai.requests).includes('tvly-test-KEY'), 'the search key never reaches the model');
+  });
+
+  it('2c. a JavaScript-rendered website is read through the extraction fallback (Tavily) and the source says so', async () => {
+    const tav = await track(new FakeTavily().start());
+    site.page('/', '<!doctype html><html><head><title>Deep Diving School</title><script src="/app.js"></script></head><body><div id="root"></div><noscript>You need to enable JavaScript to run this app.</noscript></body></html>');
+    tav.extracted.set(`${site.origin}/`, '# Deep Diving School\n\nWe teach scuba diving to beginners on the Adriatic coast, with PADI open water and advanced courses, guided dives and equipment rental. Our instructors are certified and the groups are small.\n\nFollow us on https://www.instagram.com/deepdivingschool\n');
+    const o = await run(makeInput({ websiteUrl: site.origin }), { tools: { web: webTool(), search: new TavilySearch({ apiKey: 'tvly-test-KEY', baseUrl: tav.origin }), extract: new TavilyExtract({ apiKey: 'tvly-test-KEY', baseUrl: tav.origin }) } });
+    completed(o);
+    assert.equal(tav.count('/extract'), 1);
+    const home = meta(o).sources.find((x) => x.kind === 'website' && x.status === 'retrieved')!;
+    assert.ok(home.notes.some((n) => /JavaScript application/.test(n) && /extraction API/.test(n)), home.notes.join(' | '));
+    const prompt = openai.calls('web', 'analysis')[0].userText;
+    assert.match(prompt, /We teach scuba diving to beginners/);
+    assert.match(prompt, /social_links_on_page: instagram https:\/\/www\.instagram\.com\/deepdivingschool/);
+    assert.equal(meta(o).tools.extractCalls, 1);
+    assert.ok(!JSON.stringify(openai.requests).includes('tvly-test-KEY'));
+  });
+
+  it('2d. a bot-protected website is reported as such (not as a generic error) and makes no model call for A3', async () => {
+    site.page('/', '<!doctype html><html><head><title>Just a moment...</title></head><body><div id="cf-chl-widget">Checking your browser before accessing the site.</div></body></html>', { status: 503 });
+    const o = await run(makeInput({ websiteUrl: site.origin }));
+    completed(o);
+    const failed = meta(o).sources.find((x) => x.kind === 'website')!;
+    assert.equal(failed.status, 'failed');
+    assert.match(failed.error ?? '', /Cloudflare bot protection/);
+    assert.equal(openai.calls('web').length, 0);
+    assert.equal(state(o, 'Web Analyzer'), 'failed');
   });
 
   it('3. software product with a public repository: A4 uses the official API only', async () => {

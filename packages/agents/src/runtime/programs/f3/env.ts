@@ -5,6 +5,7 @@ import type { ScoutDecision, StrategyBoardStore } from '../../../strategy/board'
 import type { F2Context, StrategyFacts, StrategyInput } from '../../../strategy/context';
 import type { StrategyPolicyContext, StrategyPolicyIssue } from '../../../strategy/policy';
 import type { HolidayTool } from '../../../tools/holidays';
+import type { WebExtractTool } from '../../../tools/web-extract';
 import type { WebFetchTool } from '../../../tools/web-fetch';
 import type { WebSearchTool } from '../../../tools/web-search';
 import type { RunContext } from '../../run-context';
@@ -13,6 +14,8 @@ import type { PhaseAgent } from '../f1/agent';
 export interface F3Tools {
   web: WebFetchTool;
   search: WebSearchTool;
+  /** Rendered-text fallback for JavaScript shells and bot-protected pages. */
+  extract: WebExtractTool;
   holidays: HolidayTool;
 }
 
@@ -28,9 +31,10 @@ export interface F3Settings {
   maxScouts: number;
   agentTimeoutMs: number;
   reviewTimeoutMs: number;
-  /** Search queries and competitor pages fetched per run. */
+  /** Category search queries per run, competitor SITES per run, and pages read per competitor site. */
   maxSearches: number;
   maxCompetitorPages: number;
+  maxPagesPerCompetitor: number;
   /** Test fixtures: marks every source from external tools as "fixture" (never real-world evidence). */
   fixtureSources: boolean;
   /** "Today" for staleness, holiday windows and prompts (injectable for tests). */

@@ -7,6 +7,7 @@ import { extractPage, selectRelevantLinks, type ExtractedPage } from './html';
 export type FetchFailureCode =
   | 'blocked_url'
   | 'robots_disallowed'
+  | 'bot_protected'
   | 'http_error'
   | 'timeout'
   | 'too_large'
@@ -33,6 +34,31 @@ export interface WebFetchOptions {
 }
 
 const UA_TOKEN = 'launchpilotbot';
+
+// ---- bot protection ------------------------------------------------------------------------------
+
+const CHALLENGE_VENDORS: [RegExp, string][] = [
+  [/cf-chl|challenge-platform|cf_chl_opt|cf-browser-verification|<title>\s*Just a moment\.\.\.\s*<\/title>|Attention Required! \| Cloudflare|cdn-cgi\/challenge-platform/i, 'Cloudflare'],
+  [/_Incapsula_Resource|incapsula/i, 'Imperva'],
+  [/captcha-delivery\.com|datadome/i, 'DataDome'],
+  [/px-captcha|_pxAppId|perimeterx/i, 'PerimeterX'],
+  [/errors\.edgesuite\.net|akamai/i, 'Akamai'],
+];
+const GENERIC_CHALLENGE = /captcha|verify (that )?you are (a )?human|are you a robot|bot (detection|protection)|access denied|request blocked|unusual traffic/i;
+
+/**
+ * Recognizes challenge or block pages served by bot-protection services, so they are reported as "cannot be read
+ * automatically" instead of a plain HTTP error. Vendor markers count at any status; generic wording only with a
+ * blocking status (403, 429, 503).
+ */
+export function detectBotChallenge(status: number, headers: Record<string, string | string[] | undefined>, body: string): string | null {
+  const mitigated = String(headers['cf-mitigated'] ?? '').toLowerCase();
+  if (mitigated === 'challenge' || mitigated === 'block') return 'Cloudflare';
+  const head = body.slice(0, 40_000);
+  for (const [re, vendor] of CHALLENGE_VENDORS) if (re.test(head)) return vendor;
+  if ((status === 403 || status === 429 || status === 503) && GENERIC_CHALLENGE.test(head) && head.length < 30_000) return 'bot protection';
+  return null;
+}
 const TEXTUAL = /^(text\/(html|plain|markdown)|application\/(xhtml\+xml|xml)|text\/xml)/i;
 
 export interface RobotsRules {
@@ -146,7 +172,7 @@ export class WebFetchTool {
       result = failure(raw, err, signal);
     }
     if (result.ok || result.code !== 'cancelled') this.cache.set(raw, result);
-    if (result.ok || result.code === 'http_error') this.pagesFetched++;
+    if (result.ok || result.code === 'http_error' || result.code === 'bot_protected') this.pagesFetched++;
     return result;
   }
 
@@ -175,6 +201,10 @@ export class WebFetchTool {
       if (res.status >= 300 && res.status < 400 && res.headers.location) {
         current = new URL(res.headers.location, url).toString();
         continue;
+      }
+      const vendor = detectBotChallenge(res.status, res.headers as Record<string, string | string[] | undefined>, res.body.subarray(0, 40_000).toString('utf8'));
+      if (vendor) {
+        return { ok: false, url: raw, code: 'bot_protected', status: res.status, message: `The site is behind ${vendor} bot protection (HTTP ${res.status}): it serves a browser challenge instead of the page, so it cannot be read automatically.` };
       }
       if (res.status >= 400) return { ok: false, url: raw, code: 'http_error', status: res.status, message: `The server answered HTTP ${res.status}.` };
       const contentType = String(res.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();

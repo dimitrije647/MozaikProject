@@ -129,8 +129,18 @@ export function StrategyReportView({ data }: { data: StrategyFull }) {
 
         <Section title="6 · Competitor landscape" icon={Swords} className="lg:col-span-2">
           <p className="mb-2 text-xs text-muted">
-            Search: {r.competitorLandscape.searchUsed ? r.competitorLandscape.searchProvider : 'not performed'} · {r.competitorLandscape.userSuppliedUrls} URL(s) supplied by you. A competitor is confirmed only when its own page was retrieved.
+            Search: {r.competitorLandscape.searchUsed ? r.competitorLandscape.searchProvider : 'not performed'} · {r.competitorLandscape.userSuppliedUrls} URL(s) and {r.competitorLandscape.userSuppliedNames ?? 0} name(s) supplied by you · {r.competitorLandscape.pagesRetrieved ?? 0} page(s) read. A competitor is confirmed only when its own page was retrieved.
           </p>
+          {(r.competitorLandscape.sitesRead?.length ?? 0) > 0 && (
+            <ul className="mb-3 space-y-1 text-xs text-muted">
+              {r.competitorLandscape.sitesRead!.map((site) => (
+                <li key={`${site.host ?? site.name}-${site.origin}`}>
+                  <strong className="text-ink">{site.name}</strong>{site.host ? ` (${site.host})` : ''}: {site.pages} page(s){site.via === 'extract' ? ', read through the extraction API' : ''} · from {site.origin === 'user_supplied' ? 'your URL' : site.origin === 'user_named' ? 'your name lookup' : 'a search lead'} · links to {site.socialPlatforms.length ? site.socialPlatforms.join(', ') : 'no social network'} on its site
+                </li>
+              ))}
+            </ul>
+          )}
+          {(r.competitorLandscape.namesNotFound?.length ?? 0) > 0 && <p className="mb-2 text-xs text-muted">No website was found for: {r.competitorLandscape.namesNotFound!.join(', ')}. They were not analyzed (add their URLs to include them).</p>}
           {r.competitorLandscape.profiles.length === 0 ? <p className="text-sm text-muted">No competitor could be identified from retrieved sources. None is invented.</p> : (
             <ul className="space-y-2 text-sm">
               {r.competitorLandscape.profiles.map((p) => (

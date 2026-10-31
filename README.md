@@ -268,8 +268,16 @@ palette from measured pixels, not from the model.
   per-run cache. Fetched content is **untrusted data**: scripts and hidden elements are dropped, instruction-like text is
   flagged, prompts delimit it and tell the agents never to follow it. A page cannot make LaunchPilot fetch other URLs.
 - **Search:** optional. `TAVILY_API_KEY` (preferred) or `BRAVE_SEARCH_API_KEY` in `.env`. Results are leads, never verified.
-  LaunchPilot never scrapes Google and never falls back to a paid service. Without a key the report says that no web search
-  was done. (The Brave adapter follows the documented API but has not been exercised against the live service.)
+  The Web Analyzer runs two bounded queries: the business name with its domain, and the quoted name with the business's own
+  domain excluded (mentions elsewhere). LaunchPilot never scrapes Google and never falls back to a paid service. Without a key
+  the report says that no web search was done. (The Brave adapter follows the documented API but has not been exercised
+  against the live service.)
+- **JavaScript sites and bot protection:** the fetcher recognizes an application shell (almost no visible text, a framework
+  root element) and challenge pages served by Cloudflare, Imperva, DataDome, PerimeterX or Akamai (reported as
+  "bot protected", never as a plain HTTP error). With `TAVILY_API_KEY` the rendered text of such pages is requested from the
+  official Tavily Extract API (`tools/web-extract.ts`, basic depth, bounded per run) and the source record says so; a page
+  that robots.txt disallows is never sent there. Without the key, only what the server sent is read and the source says why.
+  Every page also yields its JSON-LD types, the declared organization and the social profile links it carries.
 - **GitHub:** official REST API, `GET` only, no clone, no code execution. `GITHUB_TOKEN` is optional (raises the rate limit
   from 60 to 5000/hour). Rate limits are reported, not retried. Private repositories are not supported.
 - **Documents:** PDF parsed in an isolated worker thread (memory and time limits, JavaScript/eval disabled), DOCX text only
@@ -348,7 +356,7 @@ Placeholder `.example` URLs are never live sources: they fail to resolve and are
 ### Known limitations of Product Discovery
 
 - Social profiles are listed but not read (no scraping of networks; official APIs are future work). Google is never scraped.
-- Pages that need JavaScript to render are read as served (no headless browser). Scanned PDFs need OCR, which is not included.
+- Pages that need JavaScript to render are read through the Tavily Extract API only when `TAVILY_API_KEY` is set; otherwise as served (no headless browser). Scanned PDFs need OCR, which is not included.
 - Private repositories and non-GitHub hosts are not supported. Only the first few pages, files and images are analyzed (limits
   are shown in the Overview as "not analyzed").
 - OpenAI only (Gemini keys remain stored but unused here); the chosen model must support structured outputs, and vision for
@@ -463,7 +471,7 @@ no price is displayed (no trustworthy pricing source).
 ### Limitations
 
 * Only YouTube has a live social adapter. No Meta/LinkedIn/X/TikTok data without your own authorized integration.
-* Pages that need JavaScript are read as served (no headless browser); the crawl is bounded (default 5 pages + 8 link checks).
+* Pages that need JavaScript are read as served (no headless browser; the SEO signals flag `rendering: javascript_app_suspected`); the crawl is bounded (default 5 pages + 8 link checks).
 * No Search Console: nothing is claimed about indexing or rankings. PageSpeed is a single lab run.
 * The audit uses a single model and is only as good as the F1 report beneath it.
 
@@ -479,7 +487,7 @@ and timeouts as F1 and F2.
 | # | Agent | Does | Tools (deterministic, no AI) |
 |---|---|---|---|
 | A14 | Audience Researcher | customer segments (B2B/B2C), needs, pain points, motivations, barriers, decision process, product fit. **Hypotheses** unless evidenced. | none (F1/F2 context) |
-| A15 | Competitor Researcher | real competitors from retrieved pages and search leads; positioning, offerings, crowded themes. Existence is **confirmed only if the competitor's own page was retrieved**. | `competitorQueries`/`pickCandidates`, SSRF-safe `WebFetchTool`, Tavily/Brave search |
+| A15 | Competitor Researcher | real competitors from retrieved pages and search leads; positioning, offerings, crowded themes. Existence is **confirmed only if the competitor's own page was retrieved**. Each site is read up to 3 pages deep (home, pricing, about, services); its social links and JSON-LD are extracted in code. | `competitorQueries` (localized), `pickNamed`/`pickCandidates`, SSRF-safe `WebFetchTool` + Tavily Extract fallback, Tavily/Brave search |
 | A16 | **Channel Scouts** (dynamic) | one participant per relevant channel: audience fit, organic vs. paid, content types, complexity, constraints, measurement, risks, role | none (context only) |
 | A17 | Seasonal Intelligence | public holidays from a calendar, recurring-pattern hypotheses, user events; lead times | `HolidayTool` (Nager.Date, free, no key) |
 | A18 | Campaign Strategist | the strategy, with the reasons and the finding ids behind every recommendation, plus the F4 creative brief | none |
@@ -547,10 +555,14 @@ forward as verified.
 | Tool | Needs | Without it |
 |---|---|---|
 | Competitor pages | the SSRF-safe fetcher (F1); URLs you supply, or search results | n/a |
-| Web search | `TAVILY_API_KEY` or `BRAVE_SEARCH_API_KEY` (optional, official APIs only, never Google scraping) | only URLs you supplied are analyzed; with neither, "insufficient research" is reported and **no competitor is invented** (no model call) |
+| Web search | `TAVILY_API_KEY` or `BRAVE_SEARCH_API_KEY` (optional, official APIs only, never Google scraping). Queries use the report language (`najbolji … cene …` for Serbian) and boost the market's country when it can be resolved from the geography | only URLs you supplied are analyzed; with neither, "insufficient research" is reported and **no competitor is invented** (no model call) |
+| Named competitors | the same search provider: one lookup per name you supplied (up to 5); the result is used only if its host or title carries the name, directories and social networks never qualify | names are reported as "not found" (add the URL instead); nothing is guessed |
+| Rendered pages | `TAVILY_API_KEY` (Tavily Extract, basic depth, bounded per run) for JavaScript shells and bot-protected competitor pages | such pages are read as served, and the source says why |
 | Holiday calendar | none (Nager.Date). Used only if the intake's "seasonal calendar" is on (or you choose it in the run options) and one country can be resolved from the geography | seasonal analysis is limited to labeled hypotheses |
 
-At most 3 searches and 4 competitor pages per run (configurable lower). All fetched content is untrusted data.
+At most 3 category searches plus one lookup per named competitor, 4 competitor sites and 3 pages per site per run (configurable
+lower). The scouts receive `<competitor_presence>`: which social networks each retrieved competitor links to from its own website
+(an observation about links, never about activity or audience). All fetched content is untrusted data.
 
 ### Database, API and UI
 
@@ -559,7 +571,7 @@ One additive migration (`20261102090000_market_strategy`): table `MarketingStrat
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/projects/:id/runs/market-strategy` | `{ auditId?, model?, maxModelCalls? (6-40), maxScouts? (0-6), maxReviews? (0-10), maxOutputTokens?, competitorUrls? (≤5), goal?, budgetNote?, useHolidayCalendar? }`; 422 without F1/F2/key/model; 409 if a run is active |
+| POST | `/projects/:id/runs/market-strategy` | `{ auditId?, model?, maxModelCalls? (6-40), maxScouts? (0-6), maxReviews? (0-10), maxOutputTokens?, competitorUrls? (≤5), competitorNames? (≤5), goal?, budgetNote?, useHolidayCalendar? }`; 422 without F1/F2/key/model; 409 if a run is active |
 | GET | `/projects/:id/strategies?limit=&cursor=` | summaries, newest first |
 | GET | `/strategies/:id` | full report + metadata (404 for other users) |
 | GET | `/runs/:id/strategy-analysis` | plan incl. the dynamically created scouts, scout decisions, participants, sources, findings, cross-checks, usage per agent (also while running) |
@@ -586,7 +598,7 @@ model call. Token usage is measured per agent; no price is shown. These limits a
 ### Limitations
 
 * Audience, channel fit and seasonality are hypotheses until validated with real data; no market size, reach, CPC/CPM, conversion or ROI is claimed.
-* Competitor research is only as good as the pages and search results that could be retrieved (no scraping of search engines or social networks).
+* Competitor research is only as good as the pages and search results that could be retrieved (no scraping of search engines or social networks). Figures the user states in the brief (a budget, a duration) are allowed in the strategy; every other money, percentage or ROI figure that appears in no source is removed.
 * Scout eligibility is rule-based and simple; it can be wrong for unusual businesses (raise or lower the cap, or review the rule hits).
 * One model for all participants; strategy quality depends on the F1/F2 reports beneath it.
 

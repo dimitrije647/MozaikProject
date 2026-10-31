@@ -211,6 +211,13 @@ export const CampaignStrategyReport = StrategyDraft.omit({ creativeBrief: true }
     searchProvider: z.string(),
     searchUsed: z.boolean(),
     userSuppliedUrls: z.number(),
+    /** The fields below have defaults so strategies stored before they existed still parse (F4 reads stored strategies). */
+    userSuppliedNames: z.number().default(0),
+    /** Named competitors for which no website was found (they are reported, never guessed). */
+    namesNotFound: z.array(z.string()).default([]),
+    pagesRetrieved: z.number().default(0),
+    /** Every competitor site that was really read: how many of its pages, how, and which social networks it links to. */
+    sitesRead: z.array(z.object({ name: z.string(), host: z.string().nullable(), origin: z.string(), pages: z.number(), via: z.string(), socialPlatforms: z.array(z.string()) })).default([]),
     profiles: z.array(z.object({ competitor: CompetitorDetail, status: EvidenceStatus, statement: z.string(), ref: Ref })),
     gaps: z.array(z.string()),
   }),

@@ -66,6 +66,7 @@ export function MarketStrategyPanel({ projectId }: { projectId: string }) {
   const [maxReviews, setMaxReviews] = React.useState(DEFAULT_REVIEWS);
   const [maxTokens, setMaxTokens] = React.useState(DEFAULT_TOKENS);
   const [competitors, setCompetitors] = React.useState('');
+  const [competitorNames, setCompetitorNames] = React.useState('');
   const [goal, setGoal] = React.useState('');
   const [calendar, setCalendar] = React.useState<'project' | 'yes' | 'no'>('project');
   const [tab, setTab] = React.useState<Tab>('Overview');
@@ -83,6 +84,7 @@ export function MarketStrategyPanel({ projectId }: { projectId: string }) {
   const badge = RUN_STATUS[shown?.status ?? 'NONE'];
   const view = toRunAnalysis(analysis.data);
   const urls = competitors.split(/\s+/).map((s) => s.trim()).filter(Boolean).slice(0, 5);
+  const names = competitorNames.split(/\n/).map((s) => s.trim()).filter((s) => s.length >= 2).slice(0, 5);
 
   function begin() {
     const ok = window.confirm(
@@ -99,6 +101,7 @@ export function MarketStrategyPanel({ projectId }: { projectId: string }) {
         maxReviews,
         maxOutputTokens: maxTokens,
         competitorUrls: urls.length ? urls : undefined,
+        competitorNames: names.length ? names : undefined,
         goal: goal.trim() || undefined,
         useHolidayCalendar: calendar === 'project' ? undefined : calendar === 'yes',
       },
@@ -214,6 +217,10 @@ export function MarketStrategyPanel({ projectId }: { projectId: string }) {
                 <textarea aria-label="Competitor URLs" className="w-full rounded-lg border border-cream-300 bg-cream-50 px-3 py-2 text-sm text-ink" rows={3} placeholder="https://competitor.example" value={competitors} onChange={(e) => setCompetitors(e.target.value)} />
               </label>
               <label className="mt-3 block max-w-xl space-y-1 text-xs text-muted">
+                Competitor names you know (one per line, up to 5; each is looked up with one search and read only if its own website is found)
+                <textarea aria-label="Competitor names" className="w-full rounded-lg border border-cream-300 bg-cream-50 px-3 py-2 text-sm text-ink" rows={2} placeholder="Blue Depths Academy" value={competitorNames} onChange={(e) => setCompetitorNames(e.target.value)} />
+              </label>
+              <label className="mt-3 block max-w-xl space-y-1 text-xs text-muted">
                 Campaign goal for this strategy (optional; defaults to the project's marketing goal)
                 <Input maxLength={300} value={goal} onChange={(e) => setGoal(e.target.value)} />
               </label>
@@ -225,7 +232,7 @@ export function MarketStrategyPanel({ projectId }: { projectId: string }) {
                   <option value="no">Do not ask</option>
                 </select>
               </label>
-              <p className="mt-2 max-w-xl text-xs text-muted">Web search needs <code>TAVILY_API_KEY</code> on the server. Without it (and without URLs above) the Competitor Researcher reports insufficient research instead of guessing.</p>
+              <p className="mt-2 max-w-xl text-xs text-muted">Web search and name lookups need <code>TAVILY_API_KEY</code> on the server; the same key lets JavaScript-rendered and bot-protected competitor pages be read through the Tavily Extract API. Without it (and without URLs above) the Competitor Researcher reports insufficient research instead of guessing. Each competitor site is read up to 3 pages deep (home, pricing, about, services).</p>
             </details>
           </div>
         </div>

@@ -2,6 +2,7 @@ import type { SafeProviderError } from '../../../ai/errors';
 import type { SourceRecord } from '../../../discovery/f1/board';
 import { evidenceMessage, inputAnalyzerMessage, sourceBlock, textAnalyzerMessage, visualMessage } from '../../../discovery/f1/prompts';
 import type { ExtractedPage } from '../../../tools/html';
+import { readPage } from '../../../tools/page-reader';
 import { SearchError } from '../../../tools/web-search';
 import type { F1Agent } from './agent';
 import type { F1Env } from './env';
@@ -36,6 +37,9 @@ const pageBody = (p: ExtractedPage, cap: number) =>
     p.siteName && `site_name: ${p.siteName}`,
     p.lang && `lang: ${p.lang}`,
     p.headings.length && `headings: ${p.headings.slice(0, 20).join(' | ')}`,
+    p.jsonLdTypes.length && `structured_data_types: ${p.jsonLdTypes.join(', ')}`,
+    p.organization?.name && `declared_organization: ${p.organization.name}`,
+    p.socialLinks.length && `social_links_on_page: ${p.socialLinks.map((l) => `${l.platform} ${l.url}`).join(' | ')}`,
     `text: ${p.text.slice(0, cap)}`,
   ]
     .filter(Boolean)
@@ -50,7 +54,7 @@ export async function prepareText(env: F1Env): Promise<Prep> {
 }
 
 export async function prepareWeb(env: F1Env, agent: F1Agent): Promise<Prep> {
-  const { web, search } = env.tools;
+  const { web, search, extract } = env.tools;
   const signal = agent.signal;
   const fixture = env.settings.fixtureSources;
   const url = env.input.availableSources.websiteUrl!;
@@ -59,22 +63,33 @@ export async function prepareWeb(env: F1Env, agent: F1Agent): Promise<Prep> {
   let pages = 0;
 
   const fetchOne = async (target: string, cap: number) => {
-    const res = await web.fetchHtml(target, signal);
+    const res = await readPage(web, extract, target, signal);
     if (!res.ok) {
-      addSource(env, agent, { kind: 'website', label: target, url: target, status: 'failed', live: true, fixture, httpStatus: res.result.status ?? null, error: res.result.message });
-      notes.push(`${target}: ${res.result.message}`);
+      addSource(env, agent, { kind: 'website', label: target, url: target, status: 'failed', live: true, fixture, httpStatus: res.status, error: res.message, notes: res.notes });
+      notes.push(`${target}: ${res.message}`);
       return null;
     }
-    const { page, result } = res;
+    const { page, fetched } = res;
     const rec = addSource(
       env,
       agent,
-      { kind: 'website', label: page.title ?? result.finalUrl, url: result.finalUrl, status: 'retrieved', live: true, fixture, httpStatus: result.status, bytes: result.bytes, injectionSuspected: page.injectionSuspected, notes: [...(result.truncated ? ['Page was larger than the size limit and was truncated.'] : []), ...(page.injectionSuspected ? ['Contains text that looks like instructions to an AI. Treated as data only.'] : [])] },
+      {
+        kind: 'website',
+        label: page.title ?? fetched.finalUrl,
+        url: fetched.finalUrl,
+        status: 'retrieved',
+        live: true,
+        fixture,
+        httpStatus: fetched.status,
+        bytes: fetched.bytes,
+        injectionSuspected: page.injectionSuspected,
+        notes: [...res.notes, ...(fetched.truncated ? ['Page was larger than the size limit and was truncated.'] : []), ...(page.injectionSuspected ? ['Contains text that looks like instructions to an AI. Treated as data only.'] : [])],
+      },
       `${pageBody(page, 12_000)}`,
     );
     blocks.push(sourceBlock(rec, pageBody(page, cap)));
     pages++;
-    return { page, finalUrl: result.finalUrl };
+    return { page, finalUrl: fetched.finalUrl };
   };
 
   const home = await fetchOne(url, 3500);
@@ -87,6 +102,7 @@ export async function prepareWeb(env: F1Env, agent: F1Agent): Promise<Prep> {
   }
 
   // Search (optional, only with a configured official provider). Results are leads, never verification.
+  // Two bounded queries: what the search engine shows for the business, and mentions OUTSIDE its own site.
   if (search.configured) {
     const host = (() => {
       try {
@@ -95,14 +111,26 @@ export async function prepareWeb(env: F1Env, agent: F1Agent): Promise<Prep> {
         return '';
       }
     })();
-    try {
-      const results = await search.search(`${env.input.intake?.productName ?? env.input.project.name} ${host}`.trim(), { maxResults: 5, language: env.input.language, signal });
+    const name = (env.input.intake?.productName ?? env.input.project.name).trim();
+    const seen = new Set<string>();
+    const runQuery = async (query: string, options: { excludeDomains?: string[] }, note: string) => {
+      const results = await search.search(query, { maxResults: 5, language: env.input.language, signal, ...options });
+      let added = 0;
       for (const r of results) {
+        const key = r.url.replace(/\/$/, '').toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
         const text = `${r.title}\n${r.url}\n${r.snippet}`;
-        const rec = addSource(env, agent, { kind: 'search_result', label: r.title || r.url, url: r.url, status: 'retrieved', live: true, fixture, notes: [`Search provider: ${search.provider}. A snippet is a lead, not verification.`] }, text);
+        const rec = addSource(env, agent, { kind: 'search_result', label: r.title || r.url, url: r.url, status: 'retrieved', live: true, fixture, notes: [`Search provider: ${search.provider}. ${note} A snippet is a lead, not verification.`] }, text);
         blocks.push(sourceBlock(rec, text));
+        added++;
       }
-      if (!results.length) notes.push('The search returned no results.');
+      return added;
+    };
+    try {
+      const first = await runQuery(`${name} ${host}`.trim(), {}, 'Query: the business name and its domain.');
+      const mentions = host ? await runQuery(`"${name}"`, { excludeDomains: [host] }, `Query: mentions of the business name on sites other than ${host}.`) : 0;
+      if (!first && !mentions) notes.push('The search returned no results.');
     } catch (e) {
       const msg = e instanceof SearchError ? e.message : 'Search failed.';
       addSource(env, agent, { kind: 'search_result', label: 'Web search', status: 'failed', live: true, fixture, error: msg });
