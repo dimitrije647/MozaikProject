@@ -14,6 +14,7 @@ import { finalizeStrategy, type StrategyPolicyContext, type StrategyPolicyIssue 
 import { STRATEGY_INSTRUCTIONS, scoutInstruction, strategistMessage, type StrategyDigest } from '../../strategy/prompts';
 import { STRATEGY_REPORT_VERSION, CampaignStrategyReport, StrategyAgentOutput, StrategyDraft } from '../../strategy/schemas';
 import { HolidayTool } from '../../tools/holidays';
+import { createWebExtractFromEnv } from '../../tools/web-extract';
 import { WebFetchTool } from '../../tools/web-fetch';
 import { createWebSearchFromEnv } from '../../tools/web-search';
 import { ParticipantRegistry } from '../participant-registry';
@@ -43,10 +44,12 @@ export interface StrategyRunConfig {
   maxReviews?: number;
   /** Maximum dynamically created Channel Scouts. Default 4. */
   maxScouts?: number;
-  /** Search queries per run. Default 3. */
+  /** Category search queries per run (named competitors add one lookup each). Default 3. */
   maxSearches?: number;
-  /** Competitor pages fetched per run. Default 4. */
+  /** Competitor SITES read per run. Default 4. */
   maxCompetitorPages?: number;
+  /** Pages read per competitor site: the home page plus relevant same-site pages (pricing, about, services). Default 3. */
+  maxPagesPerCompetitor?: number;
   agentTimeoutMs?: number;
   reviewTimeoutMs?: number;
   callTimeoutMs?: number;
@@ -84,7 +87,7 @@ export interface StrategyReportMeta {
   aiCalls: Record<string, number>;
   /** Everything that limits the strategy (same list as the report's "limitations"). */
   notAnalyzed: { label: string; reason: string }[];
-  tools: { search: { provider: string; configured: boolean; used: boolean }; holidays: { used: boolean; calls: number }; fixtureSources: boolean };
+  tools: { search: { provider: string; configured: boolean; used: boolean }; extract: { provider: string; configured: boolean; calls: number }; holidays: { used: boolean; calls: number }; fixtureSources: boolean };
   inputSnapshot: StrategyInput;
 }
 
@@ -148,12 +151,14 @@ export class F3Program implements RunProgram {
       reviewTimeoutMs: clamp(config.reviewTimeoutMs, 50, 600_000, 90_000),
       maxSearches: clamp(config.maxSearches, 0, 5, 3),
       maxCompetitorPages: clamp(config.maxCompetitorPages, 0, 6, 4),
+      maxPagesPerCompetitor: clamp(config.maxPagesPerCompetitor, 1, 4, 3),
       fixtureSources: config.fixtureSources === true,
       now: config.now ?? new Date(),
     };
     this.tools = {
-      web: config.tools?.web ?? new WebFetchTool({ maxPages: this.settings.maxCompetitorPages + 2 }),
+      web: config.tools?.web ?? new WebFetchTool({ maxPages: this.settings.maxCompetitorPages * this.settings.maxPagesPerCompetitor + 2 }),
       search: config.tools?.search ?? createWebSearchFromEnv(),
+      extract: config.tools?.extract ?? createWebExtractFromEnv(),
       holidays: config.tools?.holidays ?? new HolidayTool(),
     };
     this.defaultTimeoutMs = clamp(config.timeoutMs, 200, 1_800_000, 900_000);
@@ -226,7 +231,7 @@ export class F3Program implements RunProgram {
         env.agents.set(`scout:${d.channel}`, agent);
         return agent;
       },
-      policyContext: (): StrategyPolicyContext => ({ store: this.store, f1: this.config.f1, f2: this.config.f2, now: this.settings.now, issues: policyIssues }),
+      policyContext: (): StrategyPolicyContext => ({ store: this.store, f1: this.config.f1, f2: this.config.f2, input: this.config.input, now: this.settings.now, issues: policyIssues }),
     };
     this.env = env;
     const { plan, pre } = this.planned;
@@ -413,7 +418,7 @@ export class F3Program implements RunProgram {
                 policyIssues: [...env.policyIssues, ...issues],
                 aiCalls: Object.fromEntries(Object.entries(usage.perAgent).map(([k, v]) => [k, v.calls])),
                 notAnalyzed: report.limitations.map((l) => ({ label: 'Limitation', reason: l })),
-                tools: { search: { provider: env.tools.search.provider, configured: env.tools.search.configured, used: !!env.facts.competitors?.searchUsed }, holidays: { used: !!env.facts.holidays?.used, calls: env.tools.holidays.callCount }, fixtureSources: settings.fixtureSources },
+                tools: { search: { provider: env.tools.search.provider, configured: env.tools.search.configured, used: !!env.facts.competitors?.searchUsed }, extract: { provider: env.tools.extract.provider, configured: env.tools.extract.configured, calls: env.tools.extract.callCount }, holidays: { used: !!env.facts.holidays?.used, calls: env.tools.holidays.callCount }, fixtureSources: settings.fixtureSources },
                 inputSnapshot: env.input,
               };
               ctx.emit('task.completed', { agent: name, outcome: 'succeeded' }, self.participant);

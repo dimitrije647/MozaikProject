@@ -33,6 +33,8 @@ export { finalizeReportV2, validateFinding, analyzedSections, type PolicyIssue, 
 export * from './tools/url-safety';
 export * from './tools/web-fetch';
 export * from './tools/web-search';
+export * from './tools/web-extract';
+export * from './tools/page-reader';
 export * from './tools/github';
 export * from './tools/documents';
 export * from './tools/images';

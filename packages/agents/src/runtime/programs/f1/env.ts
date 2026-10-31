@@ -5,6 +5,7 @@ import type { PolicyIssue } from '../../../discovery/f1/policy';
 import type { DocumentExtractionTool, DocumentInput } from '../../../tools/documents';
 import type { GitHubRepositoryTool } from '../../../tools/github';
 import type { ImageInput, ImagePreparationTool } from '../../../tools/images';
+import type { WebExtractTool } from '../../../tools/web-extract';
 import type { WebFetchTool } from '../../../tools/web-fetch';
 import type { WebSearchTool } from '../../../tools/web-search';
 import type { RunContext } from '../../run-context';
@@ -12,6 +13,8 @@ import type { RunContext } from '../../run-context';
 export interface F1Tools {
   web: WebFetchTool;
   search: WebSearchTool;
+  /** Rendered-text fallback for JavaScript shells and bot-protected pages. */
+  extract: WebExtractTool;
   github: GitHubRepositoryTool;
   documents: DocumentExtractionTool;
   images: ImagePreparationTool;

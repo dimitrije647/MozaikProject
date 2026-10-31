@@ -50,6 +50,8 @@ export interface StrategyPolicyContext {
   store: SourceStore;
   f1: F1Context;
   f2: F2Context;
+  /** The user's brief for this run: figures it states (a budget, a duration) are legitimate in the strategy. */
+  input?: StrategyInput;
   now: Date;
   issues: StrategyPolicyIssue[];
 }
@@ -73,7 +75,8 @@ export function scrubFigures(textIn: string, allowedCorpus: string): { text: str
 
 /** Everything a figure may legitimately come from: the user's brief, F1 and F2 reports and the cited source text. */
 export function allowedCorpus(ctx: StrategyPolicyContext, extra = ''): string {
-  return `${JSON.stringify(ctx.f1.report)} ${JSON.stringify(ctx.f2.report)} ${extra}`;
+  const brief = ctx.input ? [ctx.input.budgetNote, ctx.input.marketingGoal, ctx.input.targetAudience, ctx.input.campaignDuration, ...ctx.input.geography].filter(Boolean).join(' ') : '';
+  return `${JSON.stringify(ctx.f1.report)} ${JSON.stringify(ctx.f2.report)} ${brief} ${extra}`;
 }
 
 // ---- findings ------------------------------------------------------------------------------------------------------------------
@@ -438,6 +441,10 @@ export function finalizeStrategy(draftIn: StrategyDraft, board: StrategyBoard, c
       searchProvider: args.searchProvider,
       searchUsed,
       userSuppliedUrls: args.facts.competitors?.userSupplied ?? 0,
+      userSuppliedNames: args.facts.competitors?.userNamed ?? 0,
+      namesNotFound: args.facts.competitors?.notFoundNames ?? [],
+      pagesRetrieved: args.facts.competitors?.pagesRetrieved ?? 0,
+      sitesRead: (args.facts.competitors?.leads ?? []).filter((l) => l.fetched).map((l) => ({ name: l.title || l.host || l.url, host: l.host, origin: l.origin, pages: l.pages, via: l.via ?? 'html', socialPlatforms: l.socialPlatforms })),
       profiles: board.findings.filter((f) => f.competitor).map((f) => ({ competitor: f.competitor!, status: f.classification, statement: f.statement, ref: ref(f) })),
       gaps: args.facts.competitors?.gaps ?? ['Competitor research was not performed.'],
     },

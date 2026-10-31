@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUrl, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUrl, Matches, Max, MaxLength, Min, MinLength, ValidateNested } from 'class-validator';
 
 export class StartSmokeTestDto {
   /** Optional delay before the test participant answers (lets you watch it run, or cancel it). */
@@ -67,6 +67,8 @@ export class StartStrategyDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(800) @Max(6000) maxOutputTokens?: number;
   /** Competitor websites you know of (analyzed first, never invented). */
   @IsOptional() @IsArray() @ArrayMaxSize(5) @IsUrl({ protocols: ['http', 'https'], require_protocol: true }, { each: true }) @MaxLength(300, { each: true }) competitorUrls?: string[];
+  /** Competitor NAMES you know of; each is looked up with one bounded search (needs a search provider) and read only if a matching website is found. */
+  @IsOptional() @IsArray() @ArrayMaxSize(5) @IsString({ each: true }) @MinLength(2, { each: true }) @MaxLength(100, { each: true }) competitorNames?: string[];
   /** The campaign goal for this strategy; defaults to the intake's marketing goal. */
   @IsOptional() @IsString() @MaxLength(300) goal?: string;
   @IsOptional() @IsString() @MaxLength(200) budgetNote?: string;

@@ -757,7 +757,17 @@ export interface CampaignStrategyReportData {
   productContext: { f1ReportId: string; f1SchemaVersion: number; f1GeneratedAt: string | null; name: string; category: string; businessType: string; summary: string; offering: string; valueProposition: string | null; targetCustomers: string[]; geography: string[]; f1Confidence: number };
   existingMarketing: { f2AuditId: string; f2SchemaVersion: number; f2GeneratedAt: string | null; ageDays: number | null; stale: boolean; partial: boolean; mainProblems: { title: string; severity: string; area: string; status: EvidenceStatus }[]; contradictions?: { topic: string; detail: string; status: 'open' | 'resolved' }[]; notes: string[] };
   audienceResearch: { segment: SegmentDetailData; status: EvidenceStatus; statement: string; reasoning: string; ref: FindingRef }[];
-  competitorLandscape: { searchProvider: string; searchUsed: boolean; userSuppliedUrls: number; profiles: { competitor: CompetitorDetailData; status: EvidenceStatus; statement: string; ref: FindingRef }[]; gaps: string[] };
+  competitorLandscape: {
+    searchProvider: string;
+    searchUsed: boolean;
+    userSuppliedUrls: number;
+    userSuppliedNames?: number;
+    namesNotFound?: string[];
+    pagesRetrieved?: number;
+    sitesRead?: { name: string; host: string | null; origin: string; pages: number; via: string; socialPlatforms: string[] }[];
+    profiles: { competitor: CompetitorDetailData; status: EvidenceStatus; statement: string; ref: FindingRef }[];
+    gaps: string[];
+  };
   channelEvaluation: {
     evaluated: { scout: string; evaluation: ChannelDetailData; status: EvidenceStatus; statement: string; reasoning: string; ref: FindingRef }[];
     notSelected: { channel: ChannelId; reason: string; score: number }[];
@@ -855,6 +865,7 @@ export interface StartStrategyInput {
   maxReviews?: number;
   maxOutputTokens?: number;
   competitorUrls?: string[];
+  competitorNames?: string[];
   goal?: string;
   budgetNote?: string;
   useHolidayCalendar?: boolean;

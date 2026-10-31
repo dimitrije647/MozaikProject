@@ -9,12 +9,13 @@ import { FakeOpenAI, defaultReportV2, defaultReview, type FakeOpenAIOptions, typ
 import { FakeNager, FakeTavily, FakeWebsite, htmlPage } from '../testing/fake-services';
 import { defaultStrategyAnalysis, defaultStrategyDraft } from '../testing/fake-strategy';
 import { HolidayTool, countryCodeFor } from '../tools/holidays';
+import { TavilyExtract } from '../tools/web-extract';
 import { TavilySearch } from '../tools/web-search';
 import { WebFetchTool } from '../tools/web-fetch';
 import { buildF1Context, type F1Context } from '../audit/context';
 import { evaluateScouts } from './scouts';
 import { buildF2Context, type F2Context, type StrategyInput } from './context';
-import { scrubFigures, validateStrategyFinding } from './policy';
+import { allowedCorpus, scrubFigures, validateStrategyFinding } from './policy';
 import { CampaignStrategyReport, type LlmStrategyFinding, type StrategyDraft } from './schemas';
 import { scoutName } from './channels';
 
@@ -134,6 +135,7 @@ describe('F3 Market Research & Strategy (real Mozaik agents, dynamic Channel Sco
     websiteUrl: null,
     socialProfiles: [{ platform: 'instagram', url: 'https://instagram.com/dds' }],
     competitorUrls: [],
+    competitorNames: [],
     useHolidayCalendar: true,
     ...o,
   });
@@ -253,6 +255,14 @@ describe('F3 Market Research & Strategy (real Mozaik agents, dynamic Channel Sco
       assert.ok(!/\$1\.50|4%/.test(f.statement));
       assert.match(f.statement, /figure removed/);
     });
+    it('figures the user stated in the brief (a budget, a duration) are legitimate and are not scrubbed', () => {
+      const c = { ...ctx(), input: input({ budgetNote: 'About 500 EUR per month', campaignDuration: '3 months' }) };
+      const f = validateStrategyFinding(finding({ statement: 'With about 500 EUR per month, start with organic content.' }), 'Instagram Scout', { key: 'scout', channel: 'instagram' }, c);
+      assert.ok(!/figure removed/.test(f.statement), f.statement);
+      assert.match(scrubFigures('Plan 500 EUR per month over 3 months.', allowedCorpus(c)).text, /500 EUR/);
+      assert.equal(scrubFigures('Expect 25% conversion.', allowedCorpus(c)).removed.length, 1);
+      assert.equal(scrubFigures('With 500 EUR per month', allowedCorpus(ctx())).removed.length, 1, 'without the brief the same figure is unsupported');
+    });
   });
 
   // ---- integration scenarios -----------------------------------------------------------------------------------------------------
@@ -339,6 +349,51 @@ describe('F3 Market Research & Strategy (real Mozaik agents, dynamic Channel Sco
     assert.match(gaps, /169\.254\.169\.254[^ ]* the supplied competitor URL was rejected|rejected/);
     assert.equal(report(o2).competitorLandscape.userSuppliedUrls, 3);
     assert.ok(meta(o2).findings.some((f) => f.competitor?.existence === 'confirmed'));
+  });
+
+  it("7b. deep competitor research: several pages per site, named competitors looked up, JavaScript shells rendered through the extraction fallback, and the competitors' social presence reaches the scouts", async () => {
+    site
+      .page('/rival-a', htmlPage({ title: 'Rival Dive Centre', description: 'Premium diving courses on the coast', paragraphs: ['Premium diving courses for every level.'], links: [{ href: '/rival-a/pricing', text: 'Pricing' }, { href: '/rival-a/about', text: 'About us' }, { href: 'https://www.instagram.com/rivaldive', text: 'Instagram' }], extraBody: '<script type="application/ld+json">{"@type":"LocalBusiness","name":"Rival Dive Centre","sameAs":["https://www.facebook.com/rivaldive"]}</script>' }))
+      .page('/rival-a/pricing', htmlPage({ title: 'Rival Dive Centre Pricing', paragraphs: ['Open water course 350 EUR. Advanced 420 EUR.'] }))
+      .page('/rival-a/about', htmlPage({ title: 'About Rival Dive Centre', paragraphs: ['Founded by two instructors.'] }));
+    siteC.page('/rival-c', '<!doctype html><html><head><title>Reef Club</title><script src="/app.js"></script></head><body><div id="root"></div></body></html>');
+    tav.extracted.set(`${siteC.origin}/rival-c`, `# Reef Club\n\nA community diving club with weekly boat dives and a beginner programme. ${'Members meet every weekend. '.repeat(10)} Follow https://www.tiktok.com/@reefclub`);
+    tav.byQuery.set('Blue Depths Academy Serbia', [{ title: 'Blue Depths Academy', url: `${siteB.origin}/rival-b`, content: 'Premium instruction.', score: 0.9 }]);
+    tav.byQuery.set('Nonexistent Diving Co Serbia', [{ title: 'Facebook page of someone', url: 'https://www.facebook.com/someone', content: 'x', score: 0.5 }]);
+    const tools = { web: webTool(), search: searchTool(), extract: new TavilyExtract({ apiKey: TAVILY_KEY, baseUrl: tav.origin }), holidays: holidayTool() };
+    const o = await run({ tools, input: input({ competitorUrls: [`${site.origin}/rival-a`, `${siteC.origin}/rival-c`], competitorNames: ['Blue Depths Academy', 'Nonexistent Diving Co'] }) });
+    completed(o);
+    const land = report(o).competitorLandscape;
+    assert.equal(land.userSuppliedUrls, 2);
+    assert.equal(land.userSuppliedNames, 2);
+    assert.deepEqual(land.namesNotFound, ['Nonexistent Diving Co']);
+    assert.equal(land.pagesRetrieved, 5, 'rival-a home + pricing + about, rival-b home, rival-c home');
+    const rivalA = land.sitesRead.find((x) => x.name === 'Rival Dive Centre')!;
+    assert.ok(rivalA, JSON.stringify(land.sitesRead));
+    assert.equal(rivalA.pages, 3);
+    assert.deepEqual([...rivalA.socialPlatforms].sort(), ['facebook', 'instagram']);
+    const named = land.sitesRead.find((x) => x.origin === 'user_named')!;
+    assert.equal(named.name, 'Blue Depths Academy');
+    const reef = land.sitesRead.find((x) => /Reef Club/.test(x.name))!;
+    assert.equal(reef.via, 'extract');
+    assert.deepEqual(reef.socialPlatforms, ['tiktok']);
+    assert.equal(tav.count('/extract'), 1);
+    assert.equal(meta(o).tools.extract.calls, 1);
+    assert.ok(meta(o).sources.some((x) => x.kind === 'website' && x.notes.some((n) => /extraction API/.test(n))));
+    assert.equal(report(o).evidence.sources.filter((x) => x.kind === 'website' && x.status === 'retrieved').length, 5);
+    const prompt = openai.calls('competitor', 'analysis')[0].userText;
+    assert.match(prompt, /competitor_site: [^\n]+\npage_role: pricing/);
+    assert.match(prompt, /Open water course 350 EUR/);
+    assert.match(prompt, /2 competitor name\(s\) were supplied/);
+    assert.match(prompt, /no website was found for: Nonexistent Diving Co/);
+    const scouts = openai.calls('scout', 'analysis');
+    assert.ok(scouts.length >= 2);
+    for (const call of scouts) {
+      assert.match(call.userText, /<competitor_presence>/);
+      assert.match(call.userText, /Rival Dive Centre[^\n]*links from its website to: (facebook, instagram|instagram, facebook)/);
+      assert.match(call.userText, /Reef Club[^\n]*tiktok/);
+    }
+    assert.ok(!JSON.stringify(openai.requests.map((r) => r.body)).includes(TAVILY_KEY));
   });
 
   it('8. Seasonal Intelligence: the holiday date is an observation of the calendar; unsupported timing claims are hypotheses; the calendar is opt-in', async () => {

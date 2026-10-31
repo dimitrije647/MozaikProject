@@ -24,6 +24,7 @@ import type { AgentOutcome } from '../../factory/events';
 import { DocumentExtractionTool, detectFormat, type DocumentInput } from '../../tools/documents';
 import { GitHubRepositoryTool, parseGitHubUrl } from '../../tools/github';
 import { ImagePreparationTool, type ImageInput } from '../../tools/images';
+import { createWebExtractFromEnv } from '../../tools/web-extract';
 import { WebFetchTool } from '../../tools/web-fetch';
 import { createWebSearchFromEnv, type WebSearchTool } from '../../tools/web-search';
 import { ParticipantRegistry } from '../participant-registry';
@@ -89,7 +90,7 @@ export interface ReportMeta {
   notAnalyzed: { label: string; reason: string }[];
   /** Which participants actually made AI calls (the rest are deterministic tools or the coordinator). */
   aiCalls: Record<string, number>;
-  tools: { search: string; searchConfigured: boolean; fixtureSources: boolean };
+  tools: { search: string; searchConfigured: boolean; extract: string; extractConfigured: boolean; extractCalls: number; fixtureSources: boolean };
   inputSnapshot: DiscoveryInput;
 }
 
@@ -206,6 +207,7 @@ export class F1Program implements RunProgram {
     this.tools = {
       web: config.tools?.web ?? new WebFetchTool({ maxPages: this.settings.maxWebPages }),
       search: config.tools?.search ?? createWebSearchFromEnv(),
+      extract: config.tools?.extract ?? createWebExtractFromEnv(),
       github: config.tools?.github ?? new GitHubRepositoryTool({ token: process.env.GITHUB_TOKEN }),
       documents: config.tools?.documents ?? new DocumentExtractionTool(),
       images: config.tools?.images ?? new ImagePreparationTool(),
@@ -411,7 +413,7 @@ export class F1Program implements RunProgram {
                 analyzed,
                 notAnalyzed: this.notAnalyzed(final.sources, analyzed),
                 aiCalls: Object.fromEntries(Object.entries(usage.perAgent).map(([k, v]) => [k, v.calls])),
-                tools: { search: env.tools.search.provider, searchConfigured: env.tools.search.configured, fixtureSources: settings.fixtureSources },
+                tools: { search: env.tools.search.provider, searchConfigured: env.tools.search.configured, extract: env.tools.extract.provider, extractConfigured: env.tools.extract.configured, extractCalls: env.tools.extract.callCount, fixtureSources: settings.fixtureSources },
                 inputSnapshot: env.input,
               };
               ctx.emit('task.completed', { agent: name, outcome: 'succeeded' }, self.participant);

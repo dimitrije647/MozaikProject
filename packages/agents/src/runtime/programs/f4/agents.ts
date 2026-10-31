@@ -6,7 +6,7 @@ import { CrosscheckAnswer } from '../../../discovery/f1/schemas';
 import type { AssetRecord, ConceptRecord, CopyVariantRecord, ImageResultRecord, LayoutRecord, ReviewFindingRecord, SkippedLayout } from '../../../creative/schemas';
 import { CopyOutput, CopyRevisionOutput, LandingOutput, LandingRevisionOutput, ReviewOutput, VisualDirections } from '../../../creative/schemas';
 import { CREATIVE_INFO } from '../../../creative/board';
-import { assetFindings, claimFindings, consistencyFindings, dedupe, type RawFinding } from '../../../creative/checks';
+import { assetFindings, channelFindings, claimFindings, consistencyFindings, dedupe, type RawFinding } from '../../../creative/checks';
 import { brandGradient, renderLayout, type LayoutOverrides } from '../../../creative/layout';
 import { SYSTEMATIC_IMAGE_FAILURES, generatedResult, notAttempted, providerFailure, storageFailure } from '../../../creative/image-results';
 import { imageModelProblem, retiredImageModel } from '../../../ai/image-models';
@@ -513,7 +513,8 @@ export function buildReviewer(env: F4Env): PhaseAgent {
         const snap = env.board.snapshot();
         // 1. deterministic checks (no model): what code can prove
         const det: RawFinding[] = dedupe([
-          ...claimFindings({ board: snap, f1: env.f1, f3: env.f3 }),
+          ...claimFindings({ board: snap, f1: env.f1, f3: env.f3, language: env.input.language }),
+          ...channelFindings(snap),
           ...consistencyFindings(snap),
           ...assetFindings({ board: snap, hasLogo: !!env.logo, hasPalette: env.hasBrandPalette, imageGeneration: settings.imageGeneration }),
         ]);

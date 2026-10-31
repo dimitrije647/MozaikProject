@@ -65,7 +65,8 @@ export async function buildChain(o: { kind?: 'consumer' | 'b2b'; palette?: strin
   const f2 = makeF2(f1.reportId, { name: o.name });
   const fake = await new FakeOpenAI().start();
   const runtime = new MozaikCampaignRuntime();
-  const input: StrategyInput = { projectName: o.name ?? 'Deep Diving School', language: 'en', geography: ['Serbia', 'Novi Sad'], targetAudience: 'Beginners', marketingGoal: 'More course sign-ups', campaignDuration: '3 months', budgetNote: null, websiteUrl: null, socialProfiles: [{ platform: 'instagram', url: 'https://instagram.com/dds' }], competitorUrls: [], useHolidayCalendar: false };
+  const input: StrategyInput = { projectName: o.name ?? 'Deep Diving School', language: 'en', geography: ['Serbia', 'Novi Sad'], targetAudience: 'Beginners', marketingGoal: 'More course sign-ups', campaignDuration: '3 months', budgetNote: null, websiteUrl: null, socialProfiles: [{ platform: 'instagram', url: 'https://instagram.com/dds' }], competitorUrls: [],
+      competitorNames: [], useHolidayCalendar: false };
   let captured: CampaignStrategyReport | null = null;
   try {
     const handle = await runtime.startRun({

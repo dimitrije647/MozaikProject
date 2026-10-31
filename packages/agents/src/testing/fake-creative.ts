@@ -1,5 +1,6 @@
 import sharp from 'sharp';
 import type { ChannelId } from '../strategy/channels';
+import { limitsFor } from '../creative/limits';
 import type { CopyOutput, CopyRevisionOutput, LandingOutput, LandingRevisionOutput, ReviewOutput, VisualDirections } from '../creative/schemas';
 
 /**
@@ -39,6 +40,12 @@ const FLAVOR: Record<string, string> = {
   community: 'Join the conversation with others.',
 };
 
+/** Clean copy also respects the channel's length limits (the deterministic review measures them): cut at a word boundary. */
+export function fit(text: string, channel: string, placement: string, field: 'headline' | 'body', fallback: number): string {
+  const max = Math.min(fallback, ...limitsFor(channel, placement).filter((l) => l.field === field).map((l) => l.max));
+  return text.length <= max ? text : text.slice(0, max).replace(/\s+\S*$/, '').replace(/[,:;]$/, '');
+}
+
 export function defaultCopy(userText: string): CopyOutput {
   const task = block(userText, 'task') as { concepts?: string; channels?: ChannelId[] } | null;
   const n = Math.min(5, Math.max(1, Number(/exactly (\d+)/.exec(String(task?.concepts ?? ''))?.[1] ?? 3)));
@@ -52,13 +59,14 @@ export function defaultCopy(userText: string): CopyOutput {
   concepts.forEach((c, i) => {
     channels.slice(0, 3).forEach((ch, j) => {
       if (variants.length >= 12) return;
+      const placement = j === 0 ? 'paid_ad' : 'organic_post';
       variants.push({
         conceptKey: c.key,
         channel: ch,
-        placement: j === 0 ? 'paid_ad' : 'organic_post',
+        placement,
         length: j === 0 ? 'short' : 'long',
-        headline: `${HOOKS[i % HOOKS.length].headline}${j ? ` on ${ch.replace('_', ' ')}` : ''}`.slice(0, 70),
-        body: `${vp}. ${FLAVOR[ch] ?? 'Learn more on our site.'} Idea ${i + 1}, ${ch.replace('_', ' ')}: ${HOOKS[i % HOOKS.length].angle.toLowerCase()}.`.slice(0, 400),
+        headline: fit(`${HOOKS[i % HOOKS.length].headline}${j ? ` on ${ch.replace('_', ' ')}` : ''}`, ch, placement, 'headline', 70),
+        body: fit(`${vp}. ${FLAVOR[ch] ?? 'Learn more on our site.'} Idea ${i + 1}, ${ch.replace('_', ' ')}: ${HOOKS[i % HOOKS.length].angle.toLowerCase()}.`, ch, placement, 'body', 400),
         description: null,
         ctaText: 'Learn more',
         ctaType: 'learn_more',
@@ -113,9 +121,16 @@ export const sanitize = (s: string, fallback = 'Learn more') => {
 };
 
 export function defaultCopyRevision(userText: string): CopyRevisionOutput {
-  const variants = (block(userText, 'variants') ?? []) as { id: string; headline: string; body: string; ctaText: string; hashtags: string[]; claims: CopyRevisionOutput['revisions'][number]['claims'] }[];
+  const variants = (block(userText, 'variants') ?? []) as { id: string; channel?: string; placement?: string; headline: string; body: string; ctaText: string; hashtags: string[]; claims: CopyRevisionOutput['revisions'][number]['claims'] }[];
   return {
-    revisions: variants.map((v) => ({ variantId: v.id, headline: sanitize(v.headline, 'A clear next step').slice(0, 70), body: sanitize(v.body, 'Learn what is offered and decide at your own pace.').slice(0, 400), ctaText: v.ctaText, hashtags: v.hashtags ?? [], claims: (v.claims ?? []).filter((c) => c.support !== 'hypothesis') })),
+    revisions: variants.map((v) => ({
+      variantId: v.id,
+      headline: fit(sanitize(v.headline, 'A clear next step'), v.channel ?? '', v.placement ?? '', 'headline', 70),
+      body: fit(sanitize(v.body, 'Learn what is offered and decide at your own pace.'), v.channel ?? '', v.placement ?? '', 'body', 400),
+      ctaText: v.ctaText,
+      hashtags: v.hashtags ?? [],
+      claims: (v.claims ?? []).filter((c) => c.support !== 'hypothesis'),
+    })),
   };
 }
 

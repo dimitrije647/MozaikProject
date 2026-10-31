@@ -154,11 +154,43 @@ export class FakeGitHub extends FakeHttp {
 export class FakeTavily extends FakeHttp {
   status = 200;
   results: { title: string; url: string; content: string; score: number }[] = [{ title: 'Example result', url: 'https://search.example/result', content: 'A snippet from the search provider.', score: 0.9 }];
+  /** Answers per query text (exact match) for tests that need different results per search; falls back to `results`. */
+  byQuery = new Map<string, { title: string; url: string; content: string; score: number }[]>();
+  /** Rendered content the fake Extract API returns per URL; unknown URLs are reported as failed. */
+  extracted = new Map<string, string>();
+  extractStatus = 200;
+  /** A country value the fake rejects with HTTP 400 (to test the retry without it). */
+  rejectCountry: string | null = null;
 
-  protected handle(req: IncomingMessage, res: ServerResponse) {
-    if (req.url !== '/search' || req.method !== 'POST') return send(res, { status: 404, type: 'application/json', body: '{}' });
+  protected handle(req: IncomingMessage, res: ServerResponse, body: string) {
+    if (req.method !== 'POST') return send(res, { status: 404, type: 'application/json', body: '{}' });
+    if (req.url === '/extract') {
+      if (this.extractStatus !== 200) return send(res, { status: this.extractStatus, type: 'application/json', body: JSON.stringify({ detail: { error: 'raw provider text sk-should-never-leak' } }) });
+      const urls: string[] = (() => {
+        try {
+          const u = JSON.parse(body).urls;
+          return Array.isArray(u) ? u : [u];
+        } catch {
+          return [];
+        }
+      })();
+      const results = urls.filter((u) => this.extracted.has(u)).map((u) => ({ url: u, raw_content: this.extracted.get(u) }));
+      const failed = urls.filter((u) => !this.extracted.has(u)).map((u) => ({ url: u, error: 'raw provider text sk-should-never-leak' }));
+      return send(res, { type: 'application/json', body: JSON.stringify({ results, failed_results: failed, response_time: 0.1 }) });
+    }
+    if (req.url !== '/search') return send(res, { status: 404, type: 'application/json', body: '{}' });
     if (this.status !== 200) return send(res, { status: this.status, type: 'application/json', body: JSON.stringify({ detail: { error: 'raw provider text sk-should-never-leak' } }) });
-    send(res, { type: 'application/json', body: JSON.stringify({ query: 'q', results: this.results, response_time: 0.1, request_id: 'x' }) });
+    let query = '';
+    let country: string | undefined;
+    try {
+      const parsed = JSON.parse(body);
+      query = String(parsed.query ?? '');
+      country = parsed.country;
+    } catch {
+      /* ignore */
+    }
+    if (this.rejectCountry && country === this.rejectCountry) return send(res, { status: 400, type: 'application/json', body: JSON.stringify({ detail: { error: 'invalid country' } }) });
+    send(res, { type: 'application/json', body: JSON.stringify({ query, results: this.byQuery.get(query) ?? this.results, response_time: 0.1, request_id: 'x' }) });
   }
 }
 

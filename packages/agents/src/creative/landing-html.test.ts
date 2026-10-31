@@ -36,6 +36,16 @@ describe('landing page preview HTML', () => {
     for (const m of html.matchAll(/href="([^"]*)"/g)) assert.equal(m[1], '#contact');
   });
 
+  it('section headings and the preview note follow the campaign language; unknown languages fall back to English', () => {
+    const sr = renderLandingHtml(content, { name: 'x', language: 'sr', palette: [] });
+    for (const label of ['<h2>Prednosti</h2>', '<h2>Kako funkcioniše</h2>', '<h2>Zašto nam verovati</h2>', '<h2>Česta pitanja</h2>', 'Nije objavljeno nigde.']) assert.ok(sr.includes(label), label);
+    assert.ok(!sr.includes('<h2>Benefits</h2>'));
+    const de = renderLandingHtml(content, { name: 'x', language: 'de', palette: [] });
+    assert.ok(de.includes('<h2>Vorteile</h2>') && de.includes('<h2>Häufige Fragen</h2>'));
+    const unknown = renderLandingHtml(content, { name: 'x', language: 'xx', palette: [] });
+    assert.ok(unknown.includes('<h2>Benefits</h2>') && unknown.includes('Not published anywhere.'));
+  });
+
   it('carries a Content-Security-Policy that forbids scripts and external resources, and only accepts safe palette/lang values', () => {
     const html = renderLandingHtml(content, { name: 'x', language: 'en"><script>', palette: ['red;}body{display:none}', '#00ff00'] });
     assert.match(html, /Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"/);
