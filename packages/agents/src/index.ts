@@ -67,6 +67,8 @@ export { planF4, estimateCreativeRun, type CreativeRunConfig, type CreativeRepor
 export type { F4Tools } from './runtime/programs/f4/env';
 export { ImageGenerator, IMAGE_SIZES, IMAGE_QUALITIES, isSupportedImageModel, looksLikeImageModel, DEFAULT_IMAGE_LIMITS as DEFAULT_IMAGE_GENERATION_LIMITS, type ImageQuality, type ImageSize, type ImageUsageSnapshot, type ImageGenSettings, type ImageBudgetLimits, type ImageResult as ImageGenerationResult } from './ai/openai-images';
 export * from './creative/schemas';
+export * from './ai/image-models';
+export { SYSTEMATIC_IMAGE_FAILURES, explainImageFailure, completeImageResults, reconstructImageResults, distinctReasons } from './creative/image-results';
 export * from './creative/context';
 export * from './creative/formats';
 export * from './creative/assets';

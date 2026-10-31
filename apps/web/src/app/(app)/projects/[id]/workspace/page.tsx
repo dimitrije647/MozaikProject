@@ -2,23 +2,11 @@
 
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import {
-  ArrowLeft,
-  Brain,
-  CalendarRange,
-  Compass,
-  Download,
-  FileSearch,
-  Lock,
-  Palette,
-  Play,
-  Plug,
-  TriangleAlert,
-  type LucideIcon,
-} from 'lucide-react';
+import { ArrowLeft, CalendarRange, Loader2, Play, Plug, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/empty-state';
+import { PipelineBadge, PipelineCards, PipelineStrip, toSummary } from '@/components/pipeline-ui';
 import { MarketingAuditPanel } from '@/components/marketing-audit-panel';
 import { MarketStrategyPanel } from '@/components/market-strategy-panel';
 import { CreativeProductionPanel } from '@/components/creative-production-panel';
@@ -26,24 +14,18 @@ import { ProductDiscoveryPanel } from '@/components/product-discovery-panel';
 import { RuntimeTestPanel } from '@/components/runtime-test-panel';
 import { ProjectStatusBadge } from '@/components/project-status-badge';
 import { STATUS_META } from '@/components/integration-card';
-import { useMyIntegrations, useProject, useProviders } from '@/lib/hooks';
+import { useFactoryRuns, useMyIntegrations, useProject, usePipeline, useProviders } from '@/lib/hooks';
 import { FORMAT_OPTIONS, LANGUAGES, MARKETING_GOALS, STYLES } from '@/lib/constants';
 import { cn } from '@/lib/utils';
-
-// PLACEHOLDER stages: each becomes an agent output panel in a later phase.
-const STAGES: { key: string; title: string; icon: LucideIcon; empty: string; needs?: string }[] = [
-  { key: 'intelligence', title: 'Product Intelligence', icon: Brain, empty: 'Positioning, value props and competitor context extracted from your brief.' },
-  { key: 'audit', title: 'Audit', icon: FileSearch, empty: 'SEO and presence audit of your website and social profiles.', needs: 'enableSeoAudit' },
-  { key: 'strategy', title: 'Strategy', icon: Compass, empty: 'Messaging pillars, channel plan and the seasonal content calendar.' },
-  { key: 'creative', title: 'Creative Output', icon: Palette, empty: 'Copy, images and channel layouts: see the F4 Creative Production panel below.' },
-  { key: 'export', title: 'Export', icon: Download, empty: 'The campaign package (ZIP) is downloaded from the F4 panel below. Drive hand-off is not available.', needs: 'enableGoogleDriveExport' },
-];
 
 export default function WorkspacePage() {
   const { id } = useParams<{ id: string }>();
   const project = useProject(id);
   const mine = useMyIntegrations();
   const providers = useProviders();
+  const pipeline = usePipeline(id);
+  const factoryRuns = useFactoryRuns(id);
+  const factoryActive = factoryRuns.data?.some((r) => r.status === 'queued' || r.status === 'running') ?? false;
 
   if (project.isLoading) return <div className="h-96 animate-pulse rounded-3xl bg-cream-200" />;
   if (!project.data) {
@@ -63,7 +45,7 @@ export default function WorkspacePage() {
       {/* Banner */}
       <div role="status" className="flex items-start gap-3 rounded-2xl border border-amber-300/70 bg-amber-50 px-5 py-4 text-sm text-amber-900">
         <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-        <p><strong className="font-semibold">Each phase runs only when you start it.</strong> Product Discovery (F1), the Marketing Audit (F2), Market Research &amp; Strategy (F3) and Creative Production (F4: copy, images, channel layouts, landing content, quality review and the downloadable campaign package) are available below, each on your own OpenAI key. There is no one-click chain: every phase shows its limits first and nothing runs on page load.</p>
+        <p><strong className="font-semibold">Nothing runs until you confirm it.</strong> “Run campaign” shows the plan and the limits first (free), then runs Product Discovery (F1), the Marketing Audit (F2), Market Research &amp; Strategy (F3) and Creative Production (F4) in order on your own OpenAI key, reusing completed work. The phase panels below stay available for running one phase at a time.</p>
       </div>
 
       {/* Hero */}
@@ -75,56 +57,24 @@ export default function WorkspacePage() {
             <h1 className="mt-3 text-4xl text-cream-100 sm:text-5xl">{p.name}</h1>
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <ProjectStatusBadge status={p.status} />
+              <PipelineBadge dark summary={toSummary(pipeline.data)} />
               <span className="text-sm text-muted-dark">{MARKETING_GOALS.find((g) => g.value === intake?.marketingGoal)?.label ?? 'No goal set'}</span>
             </div>
           </div>
-          <Button disabled title="Run each phase from its panel below; a one-click chain is deliberately not offered" size="lg">
-            <Lock className="h-4 w-4" /> <Play className="h-4 w-4" /> Run campaign
+          <Button asChild size="lg" title="Review the plan and limits, then run F1 to F4 in one go">
+            <Link href={`/projects/${id}/campaign`}>
+              {factoryActive ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} {factoryActive ? 'View campaign run' : 'Run campaign'}
+            </Link>
           </Button>
         </div>
 
-        {/* Pipeline */}
-        <ol className="relative mt-10 grid gap-3 sm:grid-cols-5">
-          {STAGES.map((s, i) => (
-            <li key={s.key} className="flex items-center gap-3 rounded-2xl bg-white/[0.06] px-4 py-3 ring-1 ring-white/10">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/10 text-accent"><s.icon className="h-4 w-4" /></span>
-              <span className="min-w-0">
-                <span className="block text-[10px] uppercase tracking-wider text-muted-dark">Stage {i + 1}</span>
-                <span className="block truncate text-sm text-cream-100">{s.title}</span>
-              </span>
-            </li>
-          ))}
-        </ol>
+        {/* Pipeline: the persisted state of each phase */}
+        <PipelineStrip pipeline={pipeline.data} />
       </section>
 
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
-        {/* Stage panels */}
-        <div className="grid gap-4 sm:grid-cols-2">
-          {STAGES.map((s) => {
-            const disabledByToggle = s.needs && flags && !flags[s.needs];
-            return (
-              <Card key={s.key} className={cn(s.key === 'creative' && 'sm:col-span-2')}>
-                <CardHeader className="items-center">
-                  <CardTitle className="flex items-center gap-2.5">
-                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-ink text-accent"><s.icon className="h-4 w-4" /></span>
-                    {s.title}
-                  </CardTitle>
-                  <span className="rounded-full bg-cream-200 px-2.5 py-1 text-[11px] font-medium text-muted">
-                    {disabledByToggle ? 'Turned off' : 'Waiting for agents'}
-                  </span>
-                </CardHeader>
-                <CardContent>
-                  <EmptyState
-                    icon={s.icon}
-                    title="No output yet"
-                    description={disabledByToggle ? 'This step is disabled in the project brief.' : s.empty}
-                    className="py-8"
-                  />
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+        {/* Stage cards: real saved state and results of F1 to F4 and the export */}
+        <PipelineCards pipeline={pipeline.data} loading={pipeline.isLoading} flags={flags} />
 
         {/* Side panels */}
         <div className="space-y-6">
@@ -173,13 +123,13 @@ export default function WorkspacePage() {
         </div>
       </div>
 
-      <ProductDiscoveryPanel projectId={id} />
+      <div id="phase-f1" className="scroll-mt-6"><ProductDiscoveryPanel projectId={id} /></div>
 
-      <MarketingAuditPanel projectId={id} />
+      <div id="phase-f2" className="scroll-mt-6"><MarketingAuditPanel projectId={id} /></div>
 
-      <MarketStrategyPanel projectId={id} />
+      <div id="phase-f3" className="scroll-mt-6"><MarketStrategyPanel projectId={id} /></div>
 
-      <CreativeProductionPanel projectId={id} />
+      <div id="phase-f4" className="scroll-mt-6"><CreativeProductionPanel projectId={id} /></div>
 
       <RuntimeTestPanel projectId={id} />
     </div>

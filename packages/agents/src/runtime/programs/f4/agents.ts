@@ -3,11 +3,13 @@ import sharp from 'sharp';
 import { toSafeError, type SafeProviderError } from '../../../ai/errors';
 import { reviewMessage } from '../../../discovery/f1/prompts';
 import { CrosscheckAnswer } from '../../../discovery/f1/schemas';
-import type { AssetRecord, ConceptRecord, CopyVariantRecord, LayoutRecord, ReviewFindingRecord, SkippedLayout } from '../../../creative/schemas';
+import type { AssetRecord, ConceptRecord, CopyVariantRecord, ImageResultRecord, LayoutRecord, ReviewFindingRecord, SkippedLayout } from '../../../creative/schemas';
 import { CopyOutput, CopyRevisionOutput, LandingOutput, LandingRevisionOutput, ReviewOutput, VisualDirections } from '../../../creative/schemas';
 import { CREATIVE_INFO } from '../../../creative/board';
 import { assetFindings, claimFindings, consistencyFindings, dedupe, type RawFinding } from '../../../creative/checks';
 import { brandGradient, renderLayout, type LayoutOverrides } from '../../../creative/layout';
+import { SYSTEMATIC_IMAGE_FAILURES, generatedResult, notAttempted, providerFailure, storageFailure } from '../../../creative/image-results';
+import { imageModelProblem, retiredImageModel } from '../../../ai/image-models';
 import { CREATIVE_INSTRUCTIONS, copyRevisionMessage, copywriterMessage, imagePrompt, landingMessage, landingRevisionMessage, reviewTextMessage, reviewVisionMessage, visualMessage } from '../../../creative/prompts';
 import { layoutOperations, planRepairs, type CopyOp, type ImageOp, type LandingOp, type LayoutOp } from '../../../creative/repair';
 import { OnEventTypes, guarded } from '../../run-context';
@@ -163,8 +165,11 @@ export function buildLanding(env: F4Env): PhaseAgent {
 
 // ---- shared: bases and layouts ---------------------------------------------------------------------------------------------
 
+/** The concept's position decides which brand-colored gradient it gets, so fallbacks of different concepts are not identical. */
+const conceptIndex = (env: F4Env, conceptId: string) => Math.max(0, env.board.concepts.findIndex((c) => c.id === conceptId));
+
 async function saveGradientBase(env: F4Env, conceptId: string): Promise<AssetRecord> {
-  const data = await brandGradient(1024, env.palette);
+  const data = await brandGradient(1024, env.palette, conceptIndex(env, conceptId));
   return env.tools.assets.save({ kind: 'image', conceptId, channel: null, format: null, version: 1, parentAssetId: null, mimeType: 'image/png', width: 1024, height: 1024, source: 'brand_gradient', model: null, quality: null, requestedSize: null, status: 'rendered', flags: [], altText: null, promptMetadata: null, usage: null, data });
 }
 
@@ -203,31 +208,60 @@ export function buildVisual(env: F4Env): PhaseAgent {
 
     const generateAll = async (directions: Map<string, ReturnType<typeof emptyDirection>>, feedback: Map<string, string>) => {
       const images = tools.images!;
-      const queue = env.board.concepts.slice(0, images.usage().limits.maxImages);
-      let ok = 0;
-      let firstError: SafeProviderError | undefined;
+      const model = settings.imageModel!;
+      const cap = images.usage().limits.maxImages;
+      const all = env.board.concepts;
+      const eligible = all.slice(0, cap);
+      const retired = retiredImageModel(model, settings.now) ? imageModelProblem(model, settings.now) : null;
+      // shared by the (at most two) workers; one object so the narrowing of its fields stays honest across awaits
+      const st: { ok: number; firstFailure: ImageResultRecord | null; firstError: SafeProviderError | null; systematic: ImageResultRecord | null } = { ok: 0, firstFailure: null, firstError: null, systematic: null };
+      const alive = () => self.isTaskOpen() && !ctx.isClosed();
+
+      /** Saves the brand-colored fallback and reports this concept's result (a genuine visual.generated event). */
+      const fallback = async (c: ConceptRecord, d: ReturnType<typeof emptyDirection>, make: (assetId: string) => ImageResultRecord, error?: SafeProviderError) => {
+        const asset = await saveGradientBase(env, c.id);
+        const result = make(asset.id);
+        if (!alive()) return;
+        if (result.outcome === 'failed') {
+          st.firstFailure ??= result;
+          st.firstError ??= error ?? toSafeError('provider_unavailable');
+        }
+        ctx.emit('visual.generated', { agent: name, conceptId: c.id, asset, failed: result.outcome === 'failed', error, result, directionSummary: clean(d.subject, 160) }, self.participant);
+      };
+
+      // concepts beyond the image budget never reach the provider: say so, explicitly, per concept
+      for (const c of all.slice(cap)) {
+        await fallback(c, directions.get(c.id) ?? emptyDirection(c), (assetId) => notAttempted({ conceptId: c.id, conceptName: c.name, model, assetId }, 'budget', `Image generation was skipped because the configured maximum is ${cap} image${cap === 1 ? '' : 's'} for ${all.length} concept${all.length === 1 ? '' : 's'}.`, 'skipped'));
+      }
+      if (!eligible.length) return outcome('skipped', { reason: `Image generation was skipped because the configured maximum is ${cap} image${cap === 1 ? '' : 's'} for ${all.length} concept${all.length === 1 ? '' : 's'}.` });
+
+      const queue = [...eligible];
       const one = async (c: ConceptRecord) => {
         const d = directions.get(c.id) ?? emptyDirection(c);
-        const prompt = imagePrompt({ subject: d.subject, composition: d.composition, mood: d.mood, colors: d.colors, avoid: d.avoid, promptDetails: `${d.promptDetails}${feedback.get(c.id) ? ` Team feedback: ${feedback.get(c.id)}` : ''}`.trim() }, env.input.projectName, 'bottom');
-        const res = await images.generate(prompt, { model: settings.imageModel!, quality: settings.imageQuality, size: settings.imageSize }, { signal: self.signal });
-        if (ctx.isClosed() || !self.isTaskOpen()) return;
-        let asset: AssetRecord | null = null;
-        let error: SafeProviderError | undefined;
-        if (res.ok) {
-          try {
-            asset = await tools.assets.save({ kind: 'image', conceptId: c.id, channel: null, format: null, version: 1, parentAssetId: null, mimeType: res.mimeType, width: res.width, height: res.height, source: 'ai_image', model: settings.imageModel, quality: settings.imageQuality, requestedSize: settings.imageSize, status: 'generated', flags: [], altText: clean(d.altText, 200) || null, promptMetadata: { promptChars: prompt.length, directionSummary: clean(d.subject, 160) }, usage: res.usage, data: res.bytes });
-            prompts.set(c.id, prompt);
-            ok++;
-          } catch {
-            error = toSafeError('provider_unavailable');
-          }
-        } else error = res.error;
-        if (!self.isTaskOpen() || ctx.isClosed()) return;
-        if (!asset) {
-          firstError ??= error;
-          asset = await saveGradientBase(env, c.id); // an honest fallback: the layouts will use a brand-colored background
+        const base = { conceptId: c.id, conceptName: c.name, model };
+        if (retired) return fallback(c, d, (assetId) => notAttempted({ ...base, assetId }, 'configuration', retired, 'failed'), toSafeError('model_unavailable'));
+        if (st.systematic) {
+          const why = st.systematic.explanation;
+          return fallback(c, d, (assetId) => notAttempted({ ...base, assetId }, 'provider', `Not attempted: an earlier image request already failed in a way that affects every concept. ${why ?? ''}`.trim(), 'failed'), st.firstError ?? toSafeError('model_unavailable'));
         }
-        ctx.emit('visual.generated', { agent: name, conceptId: c.id, asset, failed: !!error, error, directionSummary: clean(d.subject, 160) }, self.participant);
+        // every concept gets ITS OWN prompt: its own visual direction, grounded in the concept itself
+        const prompt = imagePrompt({ subject: d.subject, composition: d.composition, mood: d.mood, colors: d.colors, avoid: d.avoid, promptDetails: `${d.promptDetails}${feedback.get(c.id) ? ` Team feedback: ${feedback.get(c.id)}` : ''}`.trim() }, env.input.projectName, 'bottom', { name: c.name, keyMessage: c.keyMessage });
+        const res = await images.generate(prompt, { model, quality: settings.imageQuality, size: settings.imageSize }, { signal: self.signal });
+        if (!alive()) return;
+        if (!res.ok) {
+          const probe = providerFailure({ ...base, assetId: '' }, res.error, settings.now);
+          if (SYSTEMATIC_IMAGE_FAILURES.has(res.error.code)) st.systematic ??= probe;
+          return fallback(c, d, (assetId) => ({ ...probe, assetId }), res.error);
+        }
+        let asset: AssetRecord;
+        try {
+          asset = await tools.assets.save({ kind: 'image', conceptId: c.id, channel: null, format: null, version: 1, parentAssetId: null, mimeType: res.mimeType, width: res.width, height: res.height, source: 'ai_image', model, quality: settings.imageQuality, requestedSize: settings.imageSize, status: 'generated', flags: [], altText: clean(d.altText, 200) || null, promptMetadata: { promptChars: prompt.length, directionSummary: clean(d.subject, 160) }, usage: res.usage, data: res.bytes });
+        } catch (e) {
+          return fallback(c, d, (assetId) => storageFailure({ ...base, assetId }, clean(e instanceof Error ? e.message : 'storage error', 160)), toSafeError('provider_unavailable'));
+        }
+        prompts.set(c.id, prompt);
+        st.ok++;
+        ctx.emit('visual.generated', { agent: name, conceptId: c.id, asset, failed: false, result: generatedResult({ ...base, assetId: asset.id }), directionSummary: clean(d.subject, 160) }, self.participant);
       };
       const worker = async () => {
         for (let c = queue.shift(); c; c = queue.shift()) {
@@ -236,8 +270,10 @@ export function buildVisual(env: F4Env): PhaseAgent {
         }
       };
       await Promise.all([worker(), worker()]); // at most two image requests in flight
-      if (!self.isTaskOpen() || ctx.isClosed()) return;
-      outcome(ok > 0 ? 'succeeded' : 'failed', ok > 0 ? {} : { error: firstError ?? toSafeError('provider_unavailable') });
+      if (!alive()) return;
+      // the task error carries the real reason (the first failure's explanation), not a generic text-model message
+      const error = st.firstError ? { ...st.firstError, message: st.firstFailure?.explanation ?? st.firstError.message } : toSafeError('provider_unavailable');
+      outcome(st.ok > 0 ? 'succeeded' : 'failed', st.ok > 0 ? {} : { error });
     };
 
     const afterPlan = (out: VisualDirections) => {
@@ -371,7 +407,7 @@ export function buildLayout(env: F4Env): PhaseAgent {
             skipped.push({ conceptId, format: format.id, channel, reason: 'There is no copy for this concept to place on the layout.' });
             continue;
           }
-          const res = await renderLayout({ base: baseBuf, format, headline: variant.headline, body: supportingText(variant), ctaText: variant.ctaText, palette: env.palette, logo: env.logo });
+          const res = await renderLayout({ gradientVariant: conceptIndex(env, conceptId), base: baseBuf, format, headline: variant.headline, body: supportingText(variant), ctaText: variant.ctaText, palette: env.palette, logo: env.logo });
           if (!res.ok) {
             skipped.push({ conceptId, format: format.id, channel, reason: res.reason });
             continue;
@@ -435,7 +471,7 @@ export function buildLayout(env: F4Env): PhaseAgent {
                 continue;
               }
               const baseBuf = base.source === 'ai_image' ? await tools.assets.load(base.id) : null;
-              const res = await renderLayout({ base: baseBuf, format, headline: variant.headline, body: op.overrides.hideBody ? null : supportingText(variant), ctaText: variant.ctaText, palette: env.palette, logo: env.logo, overrides: op.overrides as LayoutOverrides });
+              const res = await renderLayout({ gradientVariant: conceptIndex(env, op.conceptId), base: baseBuf, format, headline: variant.headline, body: op.overrides.hideBody ? null : supportingText(variant), ctaText: variant.ctaText, palette: env.palette, logo: env.logo, overrides: op.overrides as LayoutOverrides });
               if (!res.ok) {
                 results.push({ id: op.id, ok: false, note: res.reason });
                 continue;

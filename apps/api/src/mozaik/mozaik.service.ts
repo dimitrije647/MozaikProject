@@ -40,7 +40,7 @@ import {
   renderLandingHtml,
   derivePalette,
   estimateCreativeRun,
-  isSupportedImageModel,
+  reconstructImageResults,
   OpenAIClient,
   CampaignPackage,
   CAMPAIGN_SCHEMA_VERSION,
@@ -57,6 +57,7 @@ import { ProjectsService } from '../projects/projects.service';
 import { ApiCredentialsService } from '../api-credentials/api-credentials.module';
 import { EventWriter } from './event-writer';
 import { CAMPAIGN_RUNTIME } from './types/runtime.token';
+import { chooseImageModel } from './image-model-choice';
 import { ListAuditsQueryDto, ListEventsQueryDto, StartAuditDto, StartCreativeDto, StartDiscoveryDto, StartSmokeTestDto, StartStrategyDto } from './dto/mozaik.dto';
 
 const RESULT_TO_DB: Record<CampaignRunResult['status'], RunStatus> = {
@@ -251,13 +252,14 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
    * Deterministic, no LLM, no API key needed, no marketing output.
    * `testHooks` is for fault-injection in tests only and is not reachable through HTTP.
    */
-  async startSmokeTest(userId: string, projectId: string, dto: StartSmokeTestDto = {}, testHooks: SmokeTestOptions = {}) {
+  async startSmokeTest(userId: string, projectId: string, dto: StartSmokeTestDto = {}, testHooks: SmokeTestOptions = {}, opts: { factoryRunId?: string } = {}) {
     const project = await this.projects.assertOwned(userId, projectId);
     const [intake, user] = await Promise.all([
       this.prisma.productIntake.findUnique({ where: { projectId } }),
       this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { defaultAiProvider: true } }),
     ]);
     return this.launchRun({
+      factoryRunId: opts.factoryRunId,
       userId,
       projectId,
       mode: 'smoke_test',
@@ -281,7 +283,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
    * model. Requires an intentional call; nothing here runs on page load.
    * `testHooks` (timeouts etc.) is for tests only and is not reachable through HTTP.
    */
-  async startProductDiscovery(userId: string, projectId: string, dto: StartDiscoveryDto = {}, testHooks: Partial<DiscoveryRunConfig> = {}) {
+  async startProductDiscovery(userId: string, projectId: string, dto: StartDiscoveryDto = {}, testHooks: Partial<DiscoveryRunConfig> = {}, opts: { factoryRunId?: string } = {}) {
     const project = await this.projects.assertOwned(userId, projectId);
 
     const cred = await this.credentials.getDecryptedCredential(userId, 'openai');
@@ -304,6 +306,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     const { documents, images } = this.loadAssets(assets);
 
     return this.launchRun({
+      factoryRunId: opts.factoryRunId,
       userId,
       projectId,
       mode: 'product_discovery',
@@ -361,7 +364,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
    * Nothing runs without this explicit call; a missing F1 report is never fabricated.
    * `testHooks` (timeouts, test tools) is for tests only and is not reachable through HTTP.
    */
-  async startMarketingAudit(userId: string, projectId: string, dto: StartAuditDto = {}, testHooks: Partial<AuditRunConfig> = {}) {
+  async startMarketingAudit(userId: string, projectId: string, dto: StartAuditDto = {}, testHooks: Partial<AuditRunConfig> = {}, opts: { factoryRunId?: string } = {}) {
     const project = await this.projects.assertOwned(userId, projectId);
     const f1Row = dto.f1ReportId
       ? await this.prisma.productDiscoveryReport.findFirst({ where: { id: dto.f1ReportId, projectId, project: { userId } } })
@@ -390,6 +393,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     };
 
     return this.launchRun({
+      factoryRunId: opts.factoryRunId,
       userId,
       projectId,
       mode: 'marketing_audit',
@@ -482,7 +486,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
    * never fabricated or silently combined across projects.
    * `testHooks` (timeouts, test tools, the clock) is for tests only and is not reachable through HTTP.
    */
-  async startMarketStrategy(userId: string, projectId: string, dto: StartStrategyDto = {}, testHooks: Partial<StrategyRunConfig> = {}) {
+  async startMarketStrategy(userId: string, projectId: string, dto: StartStrategyDto = {}, testHooks: Partial<StrategyRunConfig> = {}, opts: { factoryRunId?: string } = {}) {
     const project = await this.projects.assertOwned(userId, projectId);
     const auditRow = dto.auditId
       ? await this.prisma.marketingAuditReport.findFirst({ where: { id: dto.auditId, projectId, project: { userId } } })
@@ -518,6 +522,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     };
 
     return this.launchRun({
+      factoryRunId: opts.factoryRunId,
       userId,
       projectId,
       mode: 'market_strategy',
@@ -734,13 +739,12 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     if (!f1 || !f2 || !f3) throw new UnprocessableEntityException('A report in the F1 -> F2 -> F3 chain could not be read (older format). Run the Strategy again.');
 
     const { credentials, model } = await this.openAiFor(userId, dto.model, 'Creative Production');
-    const imageModel = dto.imageModel?.trim() || null;
-    let imageModelCheck: { available: boolean | null; note: string } = { available: null, note: 'No image model selected: no image is generated; layouts use brand-colored backgrounds.' };
-    if (imageModel) {
-      if (!isSupportedImageModel(imageModel)) throw new UnprocessableEntityException('Only GPT Image models (gpt-image-*) are supported for image generation. A text model cannot generate images.');
-      imageModelCheck = await this.checkImageModel(credentials.apiKey, imageModel);
-      if (imageModelCheck.available === false) throw new UnprocessableEntityException(`The image model "${imageModel}" is not available to your OpenAI key. ${imageModelCheck.note}`);
-    }
+    // "auto" picks a current GPT Image model from the key's own list; a retired or unlisted model is refused BEFORE anything is spent
+    const requestedImageModel = dto.imageModel?.trim() || null;
+    const choice = chooseImageModel(requestedImageModel, requestedImageModel ? await this.listModelIds(credentials.apiKey) : null);
+    if (choice.blocker) throw new UnprocessableEntityException(choice.blocker.message);
+    const imageModel = choice.model;
+    const imageModelCheck: { available: boolean | null; note: string; requested: string | null; mode: 'none' | 'auto' | 'explicit' } = { available: choice.available, note: choice.note, requested: requestedImageModel, mode: choice.mode };
 
     const [intake, logoAsset] = await Promise.all([
       this.prisma.productIntake.findUnique({ where: { projectId } }),
@@ -777,17 +781,13 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     return { project, intake, f1, f2, f3, credentials, input, settings, estimate, palette, fromBrand, logo, logoName: logoAsset?.originalName ?? null, imageModelCheck, strategyRow };
   }
 
-  /** GET /models (free, no inference): does the user's key list the image model? null = could not tell (outage). */
-  private async checkImageModel(apiKey: string, imageModel: string): Promise<{ available: boolean | null; note: string }> {
+  /** GET /models (free, no inference): the model ids the user's key lists. null = could not tell (outage), never "no models". */
+  private async listModelIds(apiKey: string): Promise<string[] | null> {
     try {
       const client = new OpenAIClient({ apiKey, baseUrl: resolveOpenAIBaseUrl() });
-      const models = await client.listModels(AbortSignal.timeout(15_000));
-      const ids = models.map((m) => m.id);
-      if (ids.includes(imageModel)) return { available: true, note: `"${imageModel}" is listed for your key.` };
-      const alternatives = ids.filter((id) => isSupportedImageModel(id));
-      return { available: false, note: alternatives.length ? `Your key lists: ${alternatives.join(', ')}.` : 'Your key lists no gpt-image model.' };
-    } catch (err) {
-      return { available: null, note: `The model list could not be read (${safeErrorMessage(err)}). If the image model is unavailable the run says so and uses brand-colored backgrounds.` };
+      return (await client.listModels(AbortSignal.timeout(15_000))).map((m) => m.id);
+    } catch {
+      return null;
     }
   }
 
@@ -816,10 +816,11 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
    * (the Fixer only if the review finds something to repair). Uses the user's own OpenAI key for text AND images; nothing runs
    * without this explicit call. `testHooks` (timeouts, fake tools) is for tests only and is not reachable through HTTP.
    */
-  async startCreativeProduction(userId: string, projectId: string, dto: StartCreativeDto = {}, testHooks: Partial<CreativeRunConfig> = {}) {
+  async startCreativeProduction(userId: string, projectId: string, dto: StartCreativeDto = {}, testHooks: Partial<CreativeRunConfig> = {}, opts: { factoryRunId?: string } = {}) {
     const r = await this.resolveCreative(userId, projectId, dto);
     const { f1, f2, f3, input, settings } = r;
     return this.launchRun({
+      factoryRunId: opts.factoryRunId,
       userId,
       projectId,
       mode: 'creative_production',
@@ -940,7 +941,26 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
   async getCampaign(userId: string, campaignId: string) {
     const r = await this.ownedCampaign(userId, campaignId);
     const rows = await this.prisma.campaignAsset.findMany({ where: { campaignId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
-    return { ...this.campaignSummary(r), package: r.packageJson, metadata: r.metadataJson, assets: rows.map(this.assetView(campaignId)) };
+    return { ...this.campaignSummary(r), package: await this.withImageResults(r, rows), metadata: r.metadataJson, assets: rows.map(this.assetView(campaignId)) };
+  }
+
+  /**
+   * Campaigns saved before per-concept image results existed have none. For those (and only those) the results are DERIVED, on read,
+   * from what the run recorded (its assets and `visual.generated` events) and flagged `reconstructed`. The stored package is never
+   * modified, and a campaign that has its own results is returned exactly as saved.
+   */
+  private async withImageResults(r: { runId: string; imageModel: string | null; createdAt: Date; packageJson: unknown }, rows: Parameters<typeof toAssetRecord>[0][]) {
+    const pkg = r.packageJson as { concepts?: { id: string; name: string }[]; imageResults?: unknown[] } | null;
+    if (!pkg || !Array.isArray(pkg.concepts) || (Array.isArray(pkg.imageResults) && pkg.imageResults.length > 0)) return r.packageJson;
+    const events = await this.prisma.campaignEvent.findMany({ where: { runId: r.runId, eventType: 'visual.generated' }, orderBy: { sequence: 'asc' }, select: { payloadJson: true } });
+    const imageResults = reconstructImageResults({
+      concepts: pkg.concepts,
+      assets: rows.map((row) => toAssetRecord(row)),
+      visualEvents: events.map((e) => (e.payloadJson ?? {}) as { conceptId?: string; failed?: boolean; error?: { code?: string; message?: string } | null }),
+      imageModel: r.imageModel,
+      at: r.createdAt,
+    });
+    return { ...pkg, imageResults };
   }
 
   async getCampaignAssets(userId: string, campaignId: string) {
@@ -1066,6 +1086,21 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     return { ...base, source: 'events' as const, plan, participants: [...fold.participants.values()], sources: fold.sources, crosschecks: fold.crosschecks, usage: null, aiCalls: {}, images: null, settings: null, chain: campaign ? { f1ReportId: campaign.f1ReportId, f2AuditId: campaign.f2AuditId, f3StrategyId: campaign.f3StrategyId } : null, summaries: {}, why: null, partial: false, brand: null, imageModel: campaign?.imageModel ?? null, model: campaign?.model ?? null };
   }
 
+  /**
+   * Waits until a run THIS process started has finished AND its terminal status, report and hooks are persisted (no polling, no
+   * sleeping), then returns the stored row. If the timeout passes first the row is returned as it is (still RUNNING): the caller
+   * decides. A RUNNING row that this process does not hold is an orphan (its owner is gone).
+   */
+  async waitForRun(runId: string, timeoutMs: number) {
+    const entry = this.active.get(runId);
+    if (entry) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([entry.finalized, new Promise<void>((resolve) => (timer = setTimeout(resolve, timeoutMs)))]).finally(() => timer && clearTimeout(timer));
+    }
+    const row = await this.prisma.campaignRun.findUniqueOrThrow({ where: { id: runId }, include: withReport });
+    return { row, heldHere: this.active.has(runId) };
+  }
+
   async cancel(userId: string, runId: string) {
     const run = await this.ownedRun(userId, runId);
     if (run.status !== RunStatus.RUNNING) throw new ConflictException(`Run already ${run.status.toLowerCase()}`);
@@ -1109,8 +1144,15 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     start: (run: CampaignRun, writer: EventWriter) => Promise<CampaignRunHandle>;
     /** Runs after the terminal status is persisted (and when the runtime failed to start). */
     afterFinalize?: (result: CampaignRunResult) => Promise<void>;
+    /** Set only by the Factory Orchestrator, which owns the project while its full-campaign run is active. */
+    factoryRunId?: string;
   }) {
     const { userId, projectId, mode } = args;
+    if (!args.factoryRunId) {
+      // While a full campaign run is active it owns the project: a phase started by hand in between would break its chain.
+      const factory = await this.prisma.factoryRun.findFirst({ where: { projectId, status: { in: ['queued', 'running'] } }, select: { id: true } });
+      if (factory) throw new ConflictException('A full campaign run is in progress for this project. Wait for it to finish or cancel it first.');
+    }
     let run: CampaignRun;
     try {
       // The partial unique index (one RUNNING run per project) makes this check atomic.

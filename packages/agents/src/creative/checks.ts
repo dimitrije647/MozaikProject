@@ -100,7 +100,12 @@ export function assetFindings(args: { board: CreativeBoard; hasLogo: boolean; ha
   }
   for (const c of board.concepts) {
     if (!board.layouts.some((l) => l.conceptId === c.id)) out.push({ kind: 'layout_unavailable', severity: 'major', assetRef: c.id, finding: `Concept "${c.name}" has no exported layout.`, evidence: board.skippedLayouts.filter((s) => s.conceptId === c.id).map((s) => `${s.format}: ${s.reason}`).join(' | ').slice(0, 280) || 'Nothing was rendered.', suggestedCorrection: 'Render the layouts again.', responsibleAgent: 'layout', source: 'deterministic' });
-    if (args.imageGeneration && board.assets.some((a) => a.conceptId === c.id && a.kind === 'image' && a.source === 'brand_gradient')) out.push({ kind: 'visual_irrelevant', severity: 'info', assetRef: null, finding: `Concept "${c.name}" uses a brand-colored background because its AI image could not be produced.`, evidence: 'The image request failed or was over budget.', suggestedCorrection: 'Retry the campaign or enable image regeneration.', responsibleAgent: 'visual', source: 'deterministic' });
+    if (args.imageGeneration && board.assets.some((a) => a.conceptId === c.id && a.kind === 'image' && a.source === 'brand_gradient' && a.status !== 'superseded')) {
+      const res = board.imageResults.find((r) => r.conceptId === c.id);
+      // an image that FAILED is a real defect of the campaign; a budget the user chose is a limitation (minor), not a failure
+      const failed = !res || res.outcome === 'failed';
+      out.push({ kind: 'visual_irrelevant', severity: failed ? 'major' : 'minor', assetRef: c.id, finding: `Concept "${c.name}" has no AI image: its layouts use a brand-colored background.`, evidence: res?.explanation ?? 'The image request failed or was over budget.', suggestedCorrection: res?.stage === 'budget' ? 'Raise the image limit for the next run if every concept should have its own picture.' : 'Fix the cause named above and run the creative round again (regeneration is off unless you enable it).', responsibleAgent: 'visual', source: 'deterministic' });
+    }
   }
   if (!args.hasPalette) out.push({ kind: 'brand_color', severity: 'info', assetRef: null, finding: 'No brand colors were supplied, so a neutral palette was used.', evidence: 'F1 has no measured palette and no logo was uploaded.', suggestedCorrection: 'Upload a logo so brand colors can be derived.', responsibleAgent: 'layout', source: 'deterministic' });
   return out;

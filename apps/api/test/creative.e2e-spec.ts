@@ -86,6 +86,14 @@ describe('Creative Production (real Mozaik agents, fake text + image APIs, persi
     await useFake({ models: MODELS.filter((m) => m !== IMAGE_MODEL) });
     const missing = await start(user, projectId, { imageModel: IMAGE_MODEL }).expect(422);
     expect(missing.body.message).toMatch(/not available to your OpenAI key/);
+    // a shut-down model is refused even when the key still LISTS it; "auto" skips it and uses a current one
+    await useFake({ models: [...MODELS, 'gpt-image-1'] });
+    const retired = await start(user, projectId, { imageModel: 'gpt-image-1' }).expect(422);
+    expect(retired.body.message).toMatch(/shut down gpt-image-1 on 2026-10-23/);
+    const autoPre = (await preflight(user, projectId, { imageModel: 'auto', concepts: 1 }).expect(200)).body;
+    expect(autoPre.settings.imageModel).toBe(IMAGE_MODEL);
+    expect(autoPre.imageModel).toMatchObject({ mode: 'auto', requested: 'auto', available: true });
+    expect(fake.requests.filter((r) => r.path.endsWith('/images/generations'))).toHaveLength(0);
     await useFake();
 
     // preflight: exact chain, effective settings and expected counts; spends nothing
@@ -252,9 +260,35 @@ describe('Creative Production (real Mozaik agents, fake text + image APIs, persi
     expect(pkg.imageAssets.filter((a) => a.kind === 'layout').every((a) => a.flags.includes('logo_applied'))).toBe(true);
     expect(pkg.limitations.join(' ')).toMatch(/No image model/);
     expect(pkg.usage.images).toMatchObject({ model: null, requested: 0, generated: 0 });
+    expect(pkg.imageResults).toHaveLength(1);
+    expect(pkg.imageResults[0]).toMatchObject({ outcome: 'skipped', stage: 'configuration', requestAttempted: false, fallbackUsed: true });
     const analysis = (await user.agent.get(`/runs/${done.id}/creative-analysis`).expect(200)).body;
     expect(analysis.participants.find((p: any) => p.agent === 'Visual Creator').state).toBe('skipped');
     expect(analysis.brand).toMatchObject({ fromBrand: true, logo: true });
+  }, 180_000);
+
+  it('a campaign saved before per-concept image results existed gets them reconstructed from its recorded events, flagged, without touching the stored package', async () => {
+    const { user, projectId } = await withChain('cre-legacy');
+    await useFake({ reply: (r) => (r.agent === 'image' ? { status: 404, json: { error: { code: 'model_not_found', message: `no such model ${KEY}` } } } : undefined) });
+    const done = await waitForTerminal(user, (await start(user, projectId, { imageModel: IMAGE_MODEL, concepts: 1, channels: ['instagram'] }).expect(201)).body.id, 90_000);
+    expect(done.status).toBe('COMPLETED');
+    const own = (await user.agent.get(`/campaigns/${done.campaignId}`).expect(200)).body.package;
+    expect(own.imageResults[0]).toMatchObject({ outcome: 'failed', stage: 'provider', errorCode: 'model_unavailable', providerStatus: 404 });
+    expect(own.imageResults[0].reconstructed).toBeUndefined();
+
+    // simulate a package written by an older version: no imageResults at all
+    const row = await db.creativeCampaign.findUniqueOrThrow({ where: { id: done.campaignId } });
+    const { imageResults: _removed, ...legacy } = row.packageJson as Record<string, unknown>;
+    await db.creativeCampaign.update({ where: { id: done.campaignId }, data: { packageJson: legacy as never } });
+
+    const read = (await user.agent.get(`/campaigns/${done.campaignId}`).expect(200)).body.package;
+    expect(read.imageResults).toHaveLength(1);
+    expect(read.imageResults[0]).toMatchObject({ reconstructed: true, outcome: 'failed', requestAttempted: true, fallbackUsed: true, errorCode: 'model_unavailable' });
+    expect(read.imageResults[0].explanation).toMatch(/does not exist or is not available/);
+    expect(JSON.stringify(read)).not.toContain(KEY);
+    // read-only: the stored package is exactly what the old version wrote
+    const after = await db.creativeCampaign.findUniqueOrThrow({ where: { id: done.campaignId } });
+    expect((after.packageJson as Record<string, unknown>).imageResults).toBeUndefined();
   }, 180_000);
 
   it('cancellation while images are being generated aborts the request, leaves no package, marks the campaign cancelled; export says so', async () => {

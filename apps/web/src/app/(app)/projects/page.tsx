@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/form';
 import { useToast } from '@/components/ui/toast';
 import { EmptyState } from '@/components/empty-state';
 import { ProjectStatusBadge } from '@/components/project-status-badge';
+import { PipelineBadge } from '@/components/pipeline-ui';
 import { SectionHeader } from '@/components/section-header';
 import { useDeleteProject, useProjects } from '@/lib/hooks';
 import { MARKETING_GOALS, PROJECT_STATUS } from '@/lib/constants';
@@ -93,7 +94,10 @@ export default function ProjectsPage() {
                     <span className="block truncate text-xs text-muted">{p.description || 'No description'}</span>
                   </span>
                 </Link>
-                <span><ProjectStatusBadge status={p.status} /></span>
+                <span className="flex flex-col items-start gap-1.5">
+                  <ProjectStatusBadge status={p.status} />
+                  <PipelineBadge summary={p.pipeline} />
+                </span>
                 <span className="text-sm text-ink-600">
                   {MARKETING_GOALS.find((g) => g.value === p.intake?.marketingGoal)?.label ?? '–'}
                 </span>

@@ -199,9 +199,11 @@ export function CreativeProductionPanel({ projectId }: { projectId: string }) {
                   <span className="text-muted">Image model</span>
                   <select aria-label="Image model" className="rounded-lg border border-cream-300 bg-cream-50 px-2 py-1.5 text-xs text-ink" value={imageModel} onChange={(e) => setImageModel(e.target.value)}>
                     <option value="">None (no image generation)</option>
+                    <option value="auto">Automatic: a current model your key lists</option>
                     {imageOptions.map((m) => (
                       <option key={m.id} value={m.id}>
                         {m.id}
+                        {m.retired ? ` — shut down by OpenAI on ${m.retired.on} (will be refused)` : ''}
                       </option>
                     ))}
                   </select>

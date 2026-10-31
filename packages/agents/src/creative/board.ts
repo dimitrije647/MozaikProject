@@ -1,6 +1,6 @@
 import type { SafeProviderError } from '../ai/errors';
 import type { CrosscheckRecord, ParticipantStatus, SourceRecord } from '../discovery/f1/board';
-import type { AssetRecord, ConceptRecord, CopyVariantRecord, LandingContent, LayoutRecord, ReviewFindingRecord, RevisionRecord, SkippedLayout } from './schemas';
+import type { AssetRecord, ConceptRecord, CopyVariantRecord, ImageResultRecord, LandingContent, LayoutRecord, ReviewFindingRecord, RevisionRecord, SkippedLayout } from './schemas';
 
 /**
  * The F4 shared board: typed in-memory state of one Creative Production run.
@@ -48,6 +48,7 @@ export interface CreativeBoard {
   variants: CopyVariantRecord[];
   landing: LandingContent | null;
   assets: AssetRecord[];
+  imageResults: ImageResultRecord[];
   layouts: LayoutRecord[];
   skippedLayouts: SkippedLayout[];
   findings: ReviewFindingRecord[];
@@ -67,6 +68,7 @@ export class CreativeBoardStore implements CreativeBoard {
   variants: CopyVariantRecord[] = [];
   landing: LandingContent | null = null;
   readonly assets: AssetRecord[] = [];
+  readonly imageResults: ImageResultRecord[] = [];
   readonly layouts: LayoutRecord[] = [];
   readonly skippedLayouts: CreativeBoard['skippedLayouts'] = [];
   readonly findings: ReviewFindingRecord[] = [];
@@ -112,6 +114,7 @@ export class CreativeBoardStore implements CreativeBoard {
       variants: this.variants,
       landing: this.landing,
       assets: this.assets,
+      imageResults: this.imageResults,
       layouts: this.layouts,
       skippedLayouts: this.skippedLayouts,
       findings: this.findings,

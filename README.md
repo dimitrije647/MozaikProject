@@ -636,12 +636,44 @@ images (default one per concept, max 10), regenerations (default 0), repair roun
 (default 0). Nothing runs on page load, startup, tests or restart. The image model must be a `gpt-image-*` id your key
 lists; a text model is refused. No price is computed anywhere: only measured tokens and counts are shown.
 
+### Image generation: what is checked, what is recorded, what is never hidden
+
+* **The image model.** The default is `auto`: LaunchPilot reads the model list of *your* key (free) and picks a current
+  `gpt-image-*` model, never a shut-down one. An explicit model is accepted only if it is a GPT Image model, is listed and is not
+  retired. OpenAI keeps **listing** models it has shut down (`gpt-image-1`, `dall-e-2`, `dall-e-3`), so a listing never proves a
+  model works. The plan shows the model that will really be requested and whether it was chosen automatically.
+* **Only a request proves a model works.** Settings > AI providers has **Test image model (billed)**: exactly one image request at the
+  lowest quality and size, after a confirmation, with a cooldown. The picture is discarded. A shut-down model is refused without any
+  request. The result shows OpenAI's HTTP status, error code and (sanitized) message, for example when an organization still needs
+  verification for a GPT Image model. API: `POST /integrations/openai/image-test`. Nothing makes this request by itself.
+* **Four different numbers.** The plan shows concepts requested, original images the limit permits, image requests planned and
+  concepts left to brand-colored backgrounds. With 3 concepts and a limit of 1 you get one request, two concepts marked as skipped
+  because of the configured maximum, and a warning. LaunchPilot never raises the limit for you, and regeneration cannot be used to get
+  around it.
+* **One result per concept, always.** The saved package has `imageResults`: for every concept whether an image was generated, failed
+  or skipped, whether a request was made, the stage (`configuration`, `budget`, `planning`, `provider`, `decoding`, `storage`), the
+  provider status/code, a one-sentence explanation and whether a brand-colored background stands in. A concept with a stand-in is
+  labelled **NOT an AI image** in the Generated images tab and counted in the summary. A failed image makes the run `partial` and a
+  failure that hits every concept (wrong key, no permission, unknown model, no credit) stops further image requests.
+* **Provider errors.** The provider's status, code, parameter and message are kept (sanitized: keys, bearer tokens and session ids
+  are removed, length bounded). The text of an authentication failure is never kept.
+
 ### Manual low-cost test (uses your own key)
 
 Settings > AI providers: model `gpt-4.1-mini`. Workspace: with a completed F3 strategy, choose image model
-`gpt-image-1`, quality `low`, 1 concept, 1 channel, landing page on, max text calls 12, regeneration off, press
+`Automatic` (a current `gpt-image-*` model your key lists; `gpt-image-1` was shut down by OpenAI on 2026-10-23 and is refused), quality `low`, 1 concept, 1 channel, landing page on, max text calls 12, regeneration off, press
 **Preflight** (free), read the counts (1 image request, ~5 text calls), then **Start**. Expect one image, four layouts,
 a review and a package; the Agents tab shows the real events. Then scale to 2 to 3 concepts.
+
+### Workspace stage cards (persisted state)
+
+The five cards and the hero strip on the workspace page, and the F1 to F4 badges on the dashboard, projects list and project
+page, are read from `GET /projects/:id/pipeline` (and the light `pipeline` summary on `GET /projects`). The state is derived
+only from stored `CampaignRun` rows and the saved report, audit, strategy and campaign: **completed** needs a saved result,
+**running / failed / cancelled / interrupted** mirror the newest run, **not started** means the prerequisite result exists, and
+**waiting** names the missing earlier phase. A failed rerun never hides an earlier completed result (both are shown), and a
+result built on an older upstream result is marked as such. The project's own `Ready` / `Draft` label is a user setting and is
+not changed by runs.
 
 ### Limitations
 
@@ -650,11 +682,43 @@ a review and a package; the Agents tab shows the real events. Then scale to 2 to
 * The deterministic checks are word-based; the model review judges meaning. Vision review is opt-in and budgeted.
 * A repair the owner cannot make (or a rejected picture with regeneration off) stays visible as unresolved.
 
+## Run campaign: the full factory (F1 → F2 → F3 → F4 in one go)
+
+The **Run campaign** button (workspace, or `/projects/:id/campaign`) runs the four phases in order through ONE deterministic
+orchestrator (`apps/api/src/mozaik/factory.service.ts`). It does not replace anything: it calls the existing phase services, so
+each phase keeps its own Mozaik runtime, participants, cross-checks, dynamic Channel Scouts / Fixer, events and persistence.
+
+* **Plan first (free).** `POST /projects/:id/factory/preflight` shows which phases are reused (from exactly which saved result) and
+  which run, the models, every limit, the expected counts and the warnings. It makes no paid request (only `GET /models`).
+* **Continue (default) or fresh.** *Continue* reuses ONE coherent chain of completed reports (F4 ← that F3 ← that F2 ← that F1,
+  all from this project, all saved), not the newest report of each kind, and runs only what is missing. *Fresh* runs every phase.
+  Partial reports are reused only with a visible flag (switchable); older F1 reports without a Product Manifest are never reused;
+  a complete chain has "nothing to run"; a new creative round is an explicit option.
+* **State is persisted** (`FactoryRun`, additive migration `20261104090000_factory_run`): status, current phase, the four phase
+  states (pending / reused / running / completed / failed / cancelled / skipped), child run ids, saved result ids, the settings
+  snapshot (never credentials), warnings and the final campaign id. A refresh shows the same run; a restart marks an active run
+  **interrupted** and never resumes or repeats a paid request. One active run per project (partial unique index); a phase started
+  by hand is refused while it runs.
+* **Reliable sequencing.** The orchestrator waits for each phase's own completion (its persisted terminal status and saved result),
+  resolves the new result id, and starts the next phase from it. A failed, cancelled or interrupted phase stops the run; nothing is
+  retried automatically. **Cancel** stops only the active phase of this run and prevents later ones.
+* **Honest result.** `completed` means all four results exist and the campaign package is saved; the label then follows the review:
+  *approved*, *approved with notes*, or *completed with unresolved review issues* (never "ready to publish"). `partial` = the
+  package is saved but a creative participant failed or timed out (for example every image failed and brand-colored backgrounds
+  were used, which are shown as such).
+* **Limits.** Per-phase hard caps (the plan shows their sum). The default preset is the lowest-cost *first test*: reuse F1/F2; F3 up
+  to 14 calls, 3 Channel Scouts, 3 cross-checks, calendar off; F4 with `gpt-4.1-mini` text, an automatically chosen current GPT Image model at `low`, 1 concept,
+  Instagram, landing page, up to 12 text calls, 1 original image, regeneration off, vision off, 2 repair rounds. *Demo quality* is
+  richer and is never preselected. No dollar figure is shown (LaunchPilot does not know your pricing).
+* API: `GET /factory/presets`, `POST /projects/:id/factory/preflight`, `POST /projects/:id/factory`, `GET /projects/:id/factory-runs`,
+  `GET /factory-runs/:id`, `GET /factory-runs/:id/events` (the recorded agent activity of the phases it ran),
+  `POST /factory-runs/:id/cancel`.
+
 ## Tests
 
 ```powershell
 pnpm test:agents    # 208 tests, real Mozaik runtime + real cloud-sdk + fake OpenAI (text and image) server, no database
-pnpm test:api       # 74 e2e tests, needs PostgreSQL on :5433 (fake OpenAI server, no real calls)
+pnpm test:api       # 102 e2e tests, needs PostgreSQL on :5433 (fake OpenAI server, no real calls)
 ```
 
 The API suite creates a separate `launchpilot_test` database next to the dev one (dev data is untouched) and applies the

@@ -12,6 +12,7 @@ import type {
   ProjectDetail,
   ProjectSummary,
   ConnectionTestResult,
+  ImageTestResult,
   OpenAiModelOption,
   OpenAiStatus,
   Provider,
@@ -21,6 +22,12 @@ import type {
   StrategyAnalysis,
   StrategyFull,
   StrategySummary,
+  PipelineData,
+  FactoryActivityItem,
+  FactoryPlan,
+  FactoryPresets,
+  FactoryRunData,
+  StartFactoryInput,
   CampaignFull,
   CampaignReviews,
   CampaignSummary,
@@ -54,6 +61,10 @@ export const keys = {
   strategies: (projectId: string) => ['strategies', projectId] as const,
   strategy: (id: string) => ['strategy', id] as const,
   campaigns: (projectId: string) => ['campaigns', projectId] as const,
+  pipeline: (projectId: string) => ['pipeline', projectId] as const,
+  factoryRuns: (projectId: string) => ['factory-runs', projectId] as const,
+  factoryRun: (id: string) => ['factory-run', id] as const,
+  factoryEvents: (id: string) => ['factory-events', id] as const,
   campaign: (id: string) => ['campaign', id] as const,
   // status is part of the key so the history is refetched when the run reaches a terminal state
   analysis: (runId: string, status?: string) => ['run-analysis', runId, status] as const,
@@ -203,7 +214,7 @@ export const useOpenAiStatus = () =>
 export const useOpenAiModels = () =>
   useQuery({
     queryKey: ['openai-models'],
-    queryFn: () => get<{ selected: string | null; models: OpenAiModelOption[] }>('/integrations/openai/models'),
+    queryFn: () => get<{ selected: string | null; models: OpenAiModelOption[]; suggestedImageModel?: string | null }>('/integrations/openai/models'),
     enabled: false,
     retry: false,
     staleTime: Infinity,
@@ -215,6 +226,9 @@ export const useSaveOpenAiModel = () =>
 /** Makes ONE tiny paid inference call. Only ever triggered by an explicit button press. */
 export const useTestOpenAi = () =>
   useApiMutation((model?: string) => post<ConnectionTestResult>('/integrations/openai/test', model ? { model } : {}), [keys.openai, keys.credentials]);
+
+/** Makes ONE billed image request (lowest quality, smallest size). Only ever triggered by an explicit button press. */
+export const useTestImageModel = () => useApiMutation((imageModel: string) => post<ImageTestResult>('/integrations/openai/image-test', { imageModel }), []);
 
 // ---- Product Discovery ----
 
@@ -318,3 +332,60 @@ export const useRunEventsFull = (runId: string | undefined, status: string | und
     enabled: !!runId,
     refetchInterval: status === 'RUNNING' ? POLL_MS : false,
   });
+
+// ---- Persisted pipeline state ----
+
+/**
+ * The persisted state of F1 to F4 for a project (saved runs and results). It refetches whenever the run list changes (a run
+ * started, finished, failed or was cancelled) and polls while a phase is running, so the cards never show stale placeholders.
+ */
+export const usePipeline = (projectId: string) => {
+  const runs = useProjectRuns(projectId);
+  const signature = (runs.data ?? []).map((r) => `${r.id}:${r.status}`).join('|');
+  return useQuery({
+    queryKey: [...keys.pipeline(projectId), signature] as const,
+    queryFn: () => get<PipelineData>(`/projects/${projectId}/pipeline`),
+    placeholderData: (previous) => previous,
+    refetchInterval: (q) => (q.state.data?.running ? 3000 : false),
+  });
+};
+
+// ---- Full campaign (F1 -> F2 -> F3 -> F4) ----
+
+const ACTIVE_FACTORY = ['queued', 'running'];
+
+export const useFactoryPresets = () => useQuery({ queryKey: ['factory-presets'], queryFn: () => get<FactoryPresets>('/factory/presets'), staleTime: Infinity });
+
+/** The plan the user confirms. Spends nothing (only the free model list is read). */
+export const useFactoryPreflight = (projectId: string) =>
+  useMutation<FactoryPlan, ApiError, StartFactoryInput>({ mutationFn: (body) => post<FactoryPlan>(`/projects/${projectId}/factory/preflight`, body) });
+
+export const useStartFactory = (projectId: string) =>
+  useApiMutation((body: StartFactoryInput) => post<FactoryRunData>(`/projects/${projectId}/factory`, body), [keys.factoryRuns(projectId), keys.runs(projectId)]);
+
+export const useFactoryRuns = (projectId: string) =>
+  useQuery({
+    queryKey: keys.factoryRuns(projectId),
+    queryFn: () => get<FactoryRunData[]>(`/projects/${projectId}/factory-runs`),
+    refetchInterval: (q) => (q.state.data?.some((r) => ACTIVE_FACTORY.includes(r.status)) ? 2000 : false),
+  });
+
+/** One run, read from the database: a browser refresh or a server restart never loses or invents progress. */
+export const useFactoryRun = (id: string | null | undefined) =>
+  useQuery({
+    queryKey: keys.factoryRun(id ?? 'none'),
+    queryFn: () => get<FactoryRunData>(`/factory-runs/${id}`),
+    enabled: !!id,
+    refetchInterval: (q) => (!q.state.data || ACTIVE_FACTORY.includes(q.state.data.status) ? 1500 : false),
+  });
+
+export const useFactoryEvents = (id: string | null | undefined, status: string | undefined) =>
+  useQuery({
+    queryKey: [...keys.factoryEvents(id ?? 'none'), status] as const,
+    queryFn: () => get<{ items: FactoryActivityItem[]; total: number }>(`/factory-runs/${id}/events?limit=600`),
+    enabled: !!id,
+    refetchInterval: !status || ACTIVE_FACTORY.includes(status) ? 1500 : false,
+  });
+
+export const useCancelFactory = (projectId: string) =>
+  useApiMutation((id: string) => post<FactoryRunData>(`/factory-runs/${id}/cancel`), [keys.factoryRuns(projectId), keys.runs(projectId), ['factory-run']]);

@@ -70,6 +70,8 @@ export interface ProjectSummary {
   updatedAt: string;
   intake: { productName: string; marketingGoal: string | null; websiteUrl: string | null } | null;
   _count: { assets: number; notes: number; socials: number };
+  /** Derived from the saved runs and results; `status` above is the user's own lifecycle label. */
+  pipeline?: PipelineSummaryData | null;
 }
 
 export interface ProjectDetail {
@@ -184,6 +186,17 @@ export interface OpenAiModelOption {
   likelyImage?: boolean;
   /** A GPT Image model LaunchPilot can call for F4 (dall-e uses another contract and is not offered). */
   imageSupported?: boolean;
+  /** OpenAI shut this model down: it can still be LISTED, but requests are refused. */
+  retired?: { on: string; replacements: string[] } | null;
+}
+
+/** POST /integrations/openai/image-test: ONE billed image request, only on an explicit press. The image is discarded. */
+export interface ImageTestResult {
+  ok: boolean;
+  model: string;
+  requestMade: boolean;
+  latencyMs: number;
+  error?: { code: string; stage: string; status: number | null; providerCode: string | null; explanation: string };
 }
 
 export interface ConnectionTestResult {
@@ -973,6 +986,27 @@ export interface CampaignUsage {
   layouts: { rendered: number; skipped: number };
 }
 
+/** What happened to ONE concept's original image: generated, failed (stage + the provider's own words) or skipped (limit / configuration). */
+export interface ImageResultData {
+  conceptId: string;
+  conceptName: string;
+  model: string | null;
+  /** false = no request was made for this concept. */
+  requestAttempted: boolean;
+  outcome: 'generated' | 'failed' | 'skipped';
+  stage: 'configuration' | 'budget' | 'planning' | 'provider' | 'decoding' | 'storage' | 'cancelled' | null;
+  errorCode: string | null;
+  providerStatus: number | null;
+  providerCode: string | null;
+  message: string | null;
+  explanation: string | null;
+  /** true = the layouts use a brand-colored background instead of an AI image. */
+  fallbackUsed: boolean;
+  assetId: string;
+  /** true = derived afterwards from the run's recorded events (the campaign was saved before results were recorded). */
+  reconstructed?: boolean;
+}
+
 export interface CampaignPackageData {
   id: string;
   projectId: string;
@@ -986,6 +1020,8 @@ export interface CampaignPackageData {
   concepts: ConceptData[];
   copyVariants: CopyVariantData[];
   imageAssets: CampaignAssetData[];
+  /** One entry per concept (absent in campaigns saved before this existed). */
+  imageResults?: ImageResultData[];
   channelLayouts: ChannelLayoutData[];
   skippedLayouts: { conceptId: string; format: string; channel: ChannelId; reason: string }[];
   landingContent: LandingContentData | null;
@@ -1160,6 +1196,194 @@ export interface CreativePreflight {
   settings: { model: string; imageModel: string | null; imageQuality: string; imageSize: string | null; maxImages: number; maxRegenerations: number; maxLayoutsPerConcept: number; maxRepairRounds: number; visionReviews: number; maxModelCalls: number; maxOutputTokens?: number };
   estimate: { textCalls: { typical: number; max: number; enforcedCap: number }; imageRequests: { planned: number; max: number; regenerationEnabled: boolean }; layouts: { planned: number; note: string } };
   brand: { palette: string[]; fromBrand: boolean; logo: string | null };
-  imageModel: { available: boolean | null; note: string };
+  imageModel: { available: boolean | null; note: string; requested?: string | null; mode?: 'none' | 'auto' | 'explicit' };
   notes: string[];
+}
+
+// ---- Persisted pipeline state (GET /projects/:id/pipeline) ----
+
+export type PhaseKey = 'discovery' | 'audit' | 'strategy' | 'creative';
+export type PhaseState = 'not_started' | 'blocked' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+
+export interface PipelineOutputData {
+  id: string;
+  runId: string;
+  createdAt: string;
+  model: string | null;
+  partial: boolean | null;
+  summary: string | null;
+  stats: { label: string; value: string | number }[];
+  approvalStatus: string | null;
+  /** A newer result exists upstream than the one this was built on. */
+  outdated: string | null;
+}
+
+export interface PipelinePhaseData {
+  phase: PhaseKey;
+  code: 'F1' | 'F2' | 'F3' | 'F4';
+  title: string;
+  state: PhaseState;
+  blockedBy: string | null;
+  latestRun: { id: string; status: RunStatus; startedAt: string; completedAt: string | null; errorMessage: string | null } | null;
+  /** The newest COMPLETED result, even when the latest run failed or is running. */
+  output: PipelineOutputData | null;
+  runs: number;
+  note: string | null;
+}
+
+export interface PipelineData {
+  projectId: string;
+  phases: PipelinePhaseData[];
+  completed: number;
+  running: PhaseKey | null;
+  next: PhaseKey | null;
+}
+
+/** The light summary the project list carries (states and counts only). */
+export interface PipelineSummaryData {
+  completed: number;
+  running: PhaseKey | null;
+  next: PhaseKey | null;
+  states: Record<PhaseKey, PhaseState>;
+  hasOutput: Record<PhaseKey, boolean>;
+}
+
+// ---- Full campaign (F1 -> F2 -> F3 -> F4) ----
+
+export type FactoryStatus = 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'interrupted';
+export type FactoryOutcome = 'in_progress' | 'approved' | 'approved_with_notes' | 'unresolved' | 'partial' | 'failed' | 'cancelled' | 'interrupted';
+export type FactoryPhaseStatus = 'pending' | 'reused' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped';
+export type FactoryMode = 'continue' | 'fresh';
+export type FactoryPresetId = 'first_test' | 'demo';
+
+export interface FactoryPhaseData {
+  phase: PhaseKey;
+  code: 'F1' | 'F2' | 'F3' | 'F4';
+  title: string;
+  action: 'run' | 'reuse';
+  status: FactoryPhaseStatus;
+  runId: string | null;
+  outputId: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: string | null;
+  reused: { createdAt: string; model: string | null; partial: boolean } | null;
+}
+
+export interface FactorySettingsData {
+  model: string | null;
+  f1: { maxModelCalls: number; maxReviews: number; maxOutputTokens: number | null };
+  f2: { maxModelCalls: number; maxReviews: number; maxOutputTokens: number | null };
+  f3: { maxModelCalls: number; maxScouts: number; maxReviews: number; maxOutputTokens: number | null; useHolidayCalendar: boolean; competitorUrls: string[]; goal: string | null; budgetNote: string | null };
+  f4: {
+    imageModel: string | null;
+    imageQuality: 'low' | 'medium' | 'high' | 'auto';
+    imageSize: string | null;
+    concepts: number;
+    channels: ChannelId[] | null;
+    landing: boolean;
+    maxImages: number;
+    maxRegenerations: number;
+    maxLayoutsPerConcept: number;
+    maxRepairRounds: number;
+    visionReviews: number;
+    maxModelCalls: number;
+    maxOutputTokens: number | null;
+  };
+}
+
+export interface FactoryUsage {
+  textCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  imagesGenerated: number;
+  imagesFailed: number;
+  byPhase: Partial<Record<PhaseKey, { textCalls: number; totalTokens: number }>>;
+}
+
+export interface FactoryRunData {
+  id: string;
+  projectId: string;
+  mode: FactoryMode;
+  status: FactoryStatus;
+  outcome: FactoryOutcome;
+  currentPhase: PhaseKey | null;
+  cancelRequested: boolean;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  errorMessage: string | null;
+  warnings: string[];
+  phases: FactoryPhaseData[];
+  chain: { f1ReportId: string | null; f2AuditId: string | null; f3StrategyId: string | null };
+  campaignId: string | null;
+  campaignName: string | null;
+  approvalStatus: ApprovalStatus | null;
+  config: { preset: FactoryPresetId | null; mode: FactoryMode; rerunCreative: boolean; reusePartial: boolean; textModel: string | null; imageModel: string | null; settings: FactorySettingsData | null };
+  usage: FactoryUsage | null;
+}
+
+export interface FactoryActivityItem {
+  id: string;
+  runId: string;
+  phase: PhaseKey;
+  code: 'F1' | 'F2' | 'F3' | 'F4';
+  sequence: number;
+  type: string;
+  participant: string | null;
+  at: string;
+  summary: string;
+  importance: 'major' | 'normal' | 'minor';
+}
+
+export interface FactoryPlanPhase {
+  phase: PhaseKey;
+  code: 'F1' | 'F2' | 'F3' | 'F4';
+  title: string;
+  action: 'run' | 'reuse';
+  reuse: { id: string; runId: string; createdAt: string; model: string | null; partial: boolean; summary: string | null; approvalStatus: string | null } | null;
+  limits: Record<string, unknown> | null;
+  expected: { textCalls?: { cap: number; typical: number | null }; imageRequests?: { planned: number; max: number; regenerationEnabled: boolean }; layouts?: { planned: number; note: string }; maxScouts?: number; maxReviews?: number } | null;
+  measured: { calls: number; tokens: number; images?: number } | null;
+}
+
+export interface FactoryPlan {
+  ok: boolean;
+  blockers: { code: string; message: string }[];
+  warnings: string[];
+  nothingToRun: boolean;
+  project: { id: string; name: string };
+  brief: { language: string | null; targetAudience: string | null; marketingGoal: string | null; targetMarket: string | null };
+  mode: FactoryMode;
+  preset: FactoryPresetId;
+  reusePartial: boolean;
+  rerunCreative: boolean;
+  chain: { f1ReportId: string | null; f2AuditId: string | null; f3StrategyId: string | null; campaignId: string | null };
+  models: { text: { id: string | null; source: 'saved' | 'override' }; image: { id: string | null; requested?: string | null; mode?: 'none' | 'auto' | 'explicit'; quality: string; available: boolean | null; note: string } | null };
+  /** Concepts requested / originals permitted / requests planned / concepts left to brand-colored backgrounds. null when F4 is reused. */
+  imagePlan?: { enabled: boolean; model: string | null; modelMode: 'none' | 'auto' | 'explicit'; conceptsRequested: number; originalImagesPermitted: number; plannedRequests: number; budgetLimitedConcepts: number; regenerationCap: number } | null;
+  settings: FactorySettingsData;
+  phases: FactoryPlanPhase[];
+  totals: { phasesToRun: number; phasesReused: number; textCallCap: number; imageRequests: number; imageRegenerationCap: number; layouts: number };
+  pricing: { dollars: number | null; note: string };
+  limitations: string[];
+}
+
+export interface FactoryPresets {
+  default: FactoryPresetId;
+  presets: Record<FactoryPresetId, FactorySettingsData>;
+}
+
+/** Overrides sent on top of the chosen preset (the backend merges and validates). */
+export interface StartFactoryInput {
+  preset?: FactoryPresetId;
+  mode?: FactoryMode;
+  rerunCreative?: boolean;
+  reusePartial?: boolean;
+  model?: string;
+  f1?: Partial<Pick<FactorySettingsData['f1'], 'maxModelCalls' | 'maxReviews'>>;
+  f2?: Partial<Pick<FactorySettingsData['f2'], 'maxModelCalls' | 'maxReviews'>>;
+  f3?: Partial<Pick<FactorySettingsData['f3'], 'maxModelCalls' | 'maxScouts' | 'maxReviews' | 'useHolidayCalendar'>>;
+  f4?: Partial<Omit<FactorySettingsData['f4'], 'imageSize' | 'maxOutputTokens'>>;
 }

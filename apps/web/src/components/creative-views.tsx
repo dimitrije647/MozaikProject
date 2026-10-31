@@ -4,7 +4,7 @@ import * as React from 'react';
 import { AlertCircle, Check, CircleDashed, Download, ExternalLink, GitFork, Loader2, MinusCircle, OctagonX, Sparkles, UserPlus, XCircle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import type { CampaignAssetView, CampaignFull, CampaignPackageData, CreativeAnalysis, F1Participant, IssueSeverity, ReviewFindingData, RunEvent } from '@/lib/types';
+import type { CampaignAssetView, CampaignFull, CampaignPackageData, CreativeAnalysis, F1Participant, ImageResultData, IssueSeverity, ReviewFindingData, RunEvent } from '@/lib/types';
 import { cn, formatDate } from '@/lib/utils';
 
 /*
@@ -327,14 +327,35 @@ export function ImagesTab({ pkg, assets }: { pkg: CampaignPackageData | null | u
   if (!bases.length) return <Empty text={pkg ? 'No base image was stored for this campaign.' : 'Images appear as the Visual Creator stores them.'} />;
   const current = bases.filter((a) => a.status !== 'superseded');
   const old = bases.filter((a) => a.status === 'superseded');
+  const missing = current.filter((a) => a.source !== 'ai_image');
+  const unexplained = (pkg?.imageResults ?? []).filter((r) => r.outcome !== 'generated' && !!r.explanation);
+  // a concept that was "Not attempted" only echoes the earlier failure: list it only when nothing else explains
+  const real = unexplained.filter((r) => r.requestAttempted || !r.explanation!.startsWith('Not attempted'));
+  const reasons = [...new Set((real.length ? real : unexplained).map((r) => r.explanation!))];
   return (
     <div className="space-y-5">
+      {missing.length > 0 && (
+        <div role="alert" data-testid="images-missing" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <p className="flex items-start gap-2 font-medium">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /> {missing.length} of {current.length} concept(s) have NO AI-generated image. The tiles marked “NOT an AI image” are brand-colored backgrounds that stand in for it.
+          </p>
+          {reasons.length > 0 ? (
+            <ul className="mt-2 list-disc space-y-1 pl-9 text-xs">
+              {reasons.map((r, i) => (
+                <li key={i}>{r}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 pl-6 text-xs">No reason was recorded for this older campaign; see the review and limitations.</p>
+          )}
+        </div>
+      )}
       <p className="text-xs text-muted">
-        Base images are generated once per concept with the image model you chose, through your own OpenAI key, and saved to the project. A brand-colored background means no picture was generated for that concept (the reason is in the review and limitations). Prompts are not stored; only their length and a short description.
+        Base images are generated once per concept with the image model you chose, through your own OpenAI key, and saved to the project. A brand-colored background is never a generated picture: the reason is shown on its tile. Prompts are not stored; only their length and a short description.
       </p>
       <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {current.map((a) => (
-          <ImageCard key={a.id} a={a} name={conceptName(pkg, a.conceptId)} />
+          <ImageCard key={a.id} a={a} name={conceptName(pkg, a.conceptId)} result={pkg?.imageResults?.find((r) => r.conceptId === a.conceptId)} />
         ))}
       </ul>
       {old.length > 0 && (
@@ -351,18 +372,49 @@ export function ImagesTab({ pkg, assets }: { pkg: CampaignPackageData | null | u
   );
 }
 
-function ImageCard({ a, name }: { a: CampaignAssetView; name: string }) {
+const STAGE_LABEL: Record<NonNullable<ImageResultData['stage']>, string> = {
+  configuration: 'Image model / configuration',
+  budget: 'Image limit you configured',
+  planning: 'Picture planning',
+  provider: 'OpenAI refused or failed the request',
+  decoding: 'OpenAI response could not be decoded',
+  storage: 'Storing the delivered image failed',
+  cancelled: 'Run cancelled',
+};
+
+function ImageCard({ a, name, result }: { a: CampaignAssetView; name: string; result?: ImageResultData }) {
+  const ai = a.source === 'ai_image';
   return (
-    <li className="overflow-hidden rounded-2xl border border-cream-300/80 bg-cream-50">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={assetSrc(a)} alt={a.altText ?? name} width={a.width} height={a.height} loading="lazy" className="aspect-square w-full object-cover" />
+    <li data-image-kind={ai ? 'ai' : 'fallback'} className={cn('overflow-hidden rounded-2xl border bg-cream-50', ai ? 'border-cream-300/80' : 'border-red-300')}>
+      <div className="relative">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={assetSrc(a)} alt={ai ? (a.altText ?? name) : `Brand-colored background for ${name} (not an AI image)`} width={a.width} height={a.height} loading="lazy" className={cn('aspect-square w-full object-cover', !ai && 'opacity-80')} />
+        <span className={cn('absolute left-2 top-2 rounded-full px-2 py-0.5 text-[11px] font-semibold', ai ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white')}>{ai ? 'AI-generated image' : 'NOT an AI image'}</span>
+      </div>
       <div className="space-y-1 p-3 text-xs">
         <p className="text-sm font-medium">
           {name} <span className="font-mono text-[11px] text-muted">v{a.version}</span>
         </p>
         <p className="text-muted">
-          {a.source === 'ai_image' ? `${a.model} · ${a.quality} · ${a.requestedSize}` : 'brand-colored background (no image generated)'} · {a.width}×{a.height} · {(a.bytes / 1024).toFixed(0)} KB
+          {ai ? `${a.model} · ${a.quality} · ${a.requestedSize}` : 'brand-colored background, no image was generated for this concept'} · {a.width}×{a.height} · {(a.bytes / 1024).toFixed(0)} KB
         </p>
+        {!ai && (
+          <div className="rounded-lg bg-red-50 px-2 py-1.5 text-red-800">
+            <p className="font-medium">
+              {result?.stage ? (result.stage === 'provider' && !result.requestAttempted ? 'Not sent: an earlier image request already failed' : STAGE_LABEL[result.stage]) : 'Why there is no AI image'}
+              {result && !(result.stage === 'provider' && !result.requestAttempted) ? (result.requestAttempted ? ' · an image request was made' : ' · no image request was made') : ''}
+            </p>
+            <p>{result?.explanation ?? 'No reason could be derived for this campaign.'}</p>
+            {result?.reconstructed ? <p className="mt-0.5 text-[11px] italic">Reconstructed from the events this run recorded: the campaign was saved before per-concept image results existed.</p> : null}
+            {result?.providerStatus ? (
+              <p className="mt-0.5 font-mono text-[11px]">
+                HTTP {result.providerStatus}
+                {result.providerCode ? ` · ${result.providerCode}` : ''}
+                {result.model ? ` · ${result.model}` : ''}
+              </p>
+            ) : null}
+          </div>
+        )}
         {a.promptMetadata && <p className="text-muted">Direction: {a.promptMetadata.directionSummary} ({a.promptMetadata.promptChars} prompt characters)</p>}
         {a.usage && <p className="text-muted">Provider-reported tokens: {a.usage.total.toLocaleString()}</p>}
         <div className="flex gap-2 pt-1">

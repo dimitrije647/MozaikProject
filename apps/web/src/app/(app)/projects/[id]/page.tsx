@@ -23,6 +23,7 @@ import { Input, Select, Textarea } from '@/components/ui/form';
 import { useToast } from '@/components/ui/toast';
 import { EmptyState } from '@/components/empty-state';
 import { ProjectStatusBadge } from '@/components/project-status-badge';
+import { ProjectPipelineBadge } from '@/components/pipeline-ui';
 import { api } from '@/lib/api';
 import {
   keys,
@@ -87,6 +88,7 @@ export default function ProjectDetailPage() {
           <div className="min-w-0">
             <div className="flex items-center gap-3">
               <ProjectStatusBadge status={p.status} />
+              <ProjectPipelineBadge dark projectId={id} />
               <span className="text-xs text-muted-dark">Created {formatDate(p.createdAt)} · Updated {formatDate(p.updatedAt)}</span>
             </div>
             <h1 className="mt-4 text-4xl text-cream-100 sm:text-5xl">{p.name}</h1>

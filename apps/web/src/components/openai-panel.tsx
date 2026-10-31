@@ -6,8 +6,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Field, Input } from '@/components/ui/form';
 import { useToast } from '@/components/ui/toast';
-import { useOpenAiModels, useOpenAiStatus, useSaveOpenAiModel, useTestOpenAi } from '@/lib/hooks';
-import type { ConnectionTestResult } from '@/lib/types';
+import { useOpenAiModels, useOpenAiStatus, useSaveOpenAiModel, useTestImageModel, useTestOpenAi } from '@/lib/hooks';
+import type { ConnectionTestResult, ImageTestResult } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
 /**
@@ -20,6 +20,9 @@ export function OpenAiPanel() {
   const models = useOpenAiModels();
   const save = useSaveOpenAiModel();
   const test = useTestOpenAi();
+  const imageTest = useTestImageModel();
+  const [imageModel, setImageModel] = React.useState('auto');
+  const [imageResult, setImageResult] = React.useState<ImageTestResult | null>(null);
 
   const saved = status.data?.model ?? '';
   const [model, setModel] = React.useState('');
@@ -43,6 +46,15 @@ export function OpenAiPanel() {
       onSuccess: (r) => setResult(r),
       onError: (e) => toast.error(e.message),
     });
+  }
+
+  function runImageTest() {
+    const ok = window.confirm(
+      `Test the image model "${imageModel === 'auto' ? 'chosen automatically from your key' : imageModel}"?\n\nThis sends ONE real image request (lowest quality, 1024x1024) to OpenAI using your key. OpenAI bills it like any image. The picture is discarded. Nothing else is generated.`,
+    );
+    if (!ok) return;
+    setImageResult(null);
+    imageTest.mutate(imageModel, { onSuccess: (r) => setImageResult(r), onError: (e) => toast.error(e.message) });
   }
 
   return (
@@ -111,6 +123,52 @@ export function OpenAiPanel() {
           )}
         </p>
       )}
+
+      <div className="space-y-2 rounded-xl border border-cream-300/80 bg-cream-50 p-4" data-testid="image-model-test">
+        <h4 className="font-sans text-sm font-semibold">Image model</h4>
+        <p className="text-xs text-muted">
+          Being <em>listed</em> does not mean a model still works: OpenAI keeps listing models it has shut down, and some need organization verification. The only proof is an image request. This test makes exactly one, only when you press the button, and it is billed by OpenAI.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <select aria-label="Image model to test" className="rounded-lg border border-cream-300 bg-white px-2 py-1.5 text-xs text-ink" value={imageModel} onChange={(e) => setImageModel(e.target.value)}>
+            <option value="auto">Automatic: a current model your key lists</option>
+            {(models.data?.models ?? [])
+              .filter((m) => m.imageSupported)
+              .map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.id}
+                  {m.retired ? ` — shut down on ${m.retired.on}` : ''}
+                </option>
+              ))}
+          </select>
+          <Button size="sm" variant="outline" onClick={runImageTest} loading={imageTest.isPending}>
+            <FlaskConical className="h-3.5 w-3.5" /> Test image model (billed)
+          </Button>
+          {models.data?.suggestedImageModel && <span className="text-xs text-muted">Suggested from your list: {models.data.suggestedImageModel}</span>}
+        </div>
+        {imageResult && (
+          <div role="status" className={cn('rounded-xl border px-4 py-3 text-sm', imageResult.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-red-200 bg-red-50 text-red-800')}>
+            {imageResult.ok ? (
+              <p className="flex items-center gap-2 font-medium">
+                <CheckCircle2 className="h-4 w-4" /> {imageResult.model} produced an image in {imageResult.latencyMs} ms. It was discarded.
+              </p>
+            ) : (
+              <>
+                <p className="flex items-center gap-2 font-medium">
+                  <XCircle className="h-4 w-4" /> {imageResult.model} cannot be used{imageResult.requestMade ? '' : ' (no request was made)'}
+                </p>
+                <p className="mt-1 text-xs">{imageResult.error?.explanation}</p>
+                {imageResult.error?.status ? (
+                  <p className="mt-1 font-mono text-[11px]">
+                    HTTP {imageResult.error.status}
+                    {imageResult.error.providerCode ? ` · ${imageResult.error.providerCode}` : ''}
+                  </p>
+                ) : null}
+              </>
+            )}
+          </div>
+        )}
+      </div>
 
       {result && (
         <div className={cn('rounded-xl border px-4 py-3 text-sm', result.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-red-200 bg-red-50 text-red-800')} role="status">

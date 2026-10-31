@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/empty-state';
 import { ProjectStatusBadge } from '@/components/project-status-badge';
+import { PipelineBadge } from '@/components/pipeline-ui';
 import { ProviderIcon, STATUS_META } from '@/components/integration-card';
 import { StatCard } from '@/components/stat-card';
 import { useActivity, useMe, useMyIntegrations, useProjects, useProviders } from '@/lib/hooks';
@@ -80,9 +81,9 @@ export default function DashboardPage() {
         <StatCard label="Projects" value={projects.isLoading ? '–' : list.length} icon={FolderKanban} hint="Total campaigns" />
         <StatCard
           label="Ready to run"
-          value={projects.isLoading ? '–' : list.filter((p) => p.status === 'READY').length}
+          value={projects.isLoading ? '–' : list.filter((p) => p.status === 'READY' && !p.pipeline?.completed && !p.pipeline?.running).length}
           icon={Rocket}
-          hint="Briefs awaiting agents"
+          hint="Briefs no phase has run on yet"
         />
         <StatCard label="Integrations" value={mine.isLoading ? '–' : connected} icon={Plug} hint={`of ${providers.data?.length ?? 9} available`} />
         <StatCard
@@ -125,7 +126,10 @@ export default function DashboardPage() {
                         <span className="block truncate text-sm font-medium">{p.name}</span>
                         <span className="block truncate text-xs text-muted">Updated {formatDate(p.updatedAt)}</span>
                       </span>
-                      <ProjectStatusBadge status={p.status} />
+                      <span className="flex flex-col items-end gap-1.5">
+                        <ProjectStatusBadge status={p.status} />
+                        <PipelineBadge summary={p.pipeline} />
+                      </span>
                     </Link>
                   </li>
                 ))}

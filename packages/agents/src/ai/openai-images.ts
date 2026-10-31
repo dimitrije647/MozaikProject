@@ -1,5 +1,5 @@
 import sharp from 'sharp';
-import { ProviderError, toProviderError, toSafeError, type SafeProviderError } from './errors';
+import { ProviderError, toProviderError, toSafeError, toSafeErrorFrom, type SafeProviderError } from './errors';
 import type { OpenAIClient } from './openai-http';
 
 /**
@@ -168,7 +168,7 @@ export class ImageGenerator {
           continue;
         }
         this.failed++;
-        return fail(err.code);
+        return { ok: false, error: toSafeErrorFrom(err) };
       }
     }
     this.failed++;

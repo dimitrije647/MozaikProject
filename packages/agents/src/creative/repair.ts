@@ -2,6 +2,7 @@ import type { ChannelId } from '../strategy/channels';
 import type { CreativeBoard } from './board';
 import type { CreativeFormat } from './formats';
 import type { LayoutOverrides } from './layout';
+import { SYSTEMATIC_IMAGE_FAILURES } from './image-results';
 import type { ReviewFindingRecord, RevisionRecord } from './schemas';
 
 /**
@@ -138,7 +139,11 @@ export function planRepairs(board: CreativeBoard, findings: ReviewFindingRecord[
       // visual
       const asset = board.assets.find((a) => a.id === f.assetRef);
       const conceptId = asset?.conceptId ?? (board.concepts.some((c) => c.id === f.assetRef) ? f.assetRef! : undefined);
+      const result = conceptId ? board.imageResults.find((r) => r.conceptId === conceptId) : undefined;
+      // regeneration must neither get around the image limit the user chose nor repeat a failure that will happen again
+      const cannotRetry = result && (result.stage === 'budget' || result.stage === 'configuration' || result.stage === 'planning' || (result.errorCode !== null && SYSTEMATIC_IMAGE_FAILURES.has(result.errorCode)));
       if (!opts.canRegenerate) none(f, opts.owners.visual, 'Image regeneration is switched off (or its budget is used up), so the image is kept as it is. The issue stays visible in the report.');
+      else if (cannotRetry) none(f, opts.owners.visual, result!.stage === 'budget' ? 'This concept was left without an AI image because of the image limit you chose; regeneration does not get around that limit.' : 'Regenerating would repeat the same failure, so no request is made. Fix the cause named in the finding first.');
       else if (!conceptId) none(f, opts.owners.visual, 'The finding does not say which image it concerns.');
       else {
         (plan.images.get(conceptId) ?? plan.images.set(conceptId, new Set()).get(conceptId)!).add(f.id);

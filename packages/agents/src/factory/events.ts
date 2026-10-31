@@ -92,7 +92,7 @@ export interface FactoryEventPayloads {
   /** F4: the structured landing page content. */
   'landing.proposed': { agent: string; summary: string; content: unknown; missingInformation: string[] };
   /** F4: a base image (or brand-colored base) was produced and STORED; only the asset reference travels, never the bytes. */
-  'visual.generated': { agent: string; conceptId: string; asset: unknown; failed: boolean; error?: SafeProviderError; directionSummary: string };
+  'visual.generated': { agent: string; conceptId: string; asset: unknown; failed: boolean; error?: SafeProviderError; directionSummary: string; /** What happened to this concept's image (generated / failed / skipped, with the reason). */ result?: unknown };
   /** F4: the layouts of one concept were rendered (asset references only). */
   'layout.completed': { agent: string; conceptId: string; assets: unknown[]; layouts: unknown[]; skipped: unknown[] };
   'review.requested': { round: number; scope: { variantIds: string[]; assetIds: string[]; landing: boolean } };

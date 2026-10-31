@@ -39,7 +39,7 @@ export const SAFE_PROVIDER_MESSAGES: Record<ProviderErrorCode, string> = {
 export class ProviderError extends Error {
   constructor(
     readonly code: ProviderErrorCode,
-    readonly options: { retryable?: boolean; status?: number; retryAfterMs?: number } = {},
+    readonly options: { retryable?: boolean; status?: number; retryAfterMs?: number; provider?: ProviderDiagnostics } = {},
   ) {
     super(SAFE_PROVIDER_MESSAGES[code]);
     this.name = 'ProviderError';
@@ -53,6 +53,26 @@ export class ProviderError extends Error {
   get retryAfterMs() {
     return this.options.retryAfterMs;
   }
+  /** What the provider said about this failure (code, parameter, a sanitized message). Never present for authentication failures. */
+  get provider() {
+    return this.options.provider;
+  }
+}
+
+/** The machine-readable part of an error body plus a sanitized, truncated message. Safe to store and to show. */
+export interface ProviderDiagnostics {
+  code?: string;
+  type?: string;
+  param?: string;
+  message?: string;
+}
+
+const KEYISH = /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{6,}|\bBearer\s+\S+|\bsess-[A-Za-z0-9]{6,}/gi;
+/** Removes anything key-shaped, collapses whitespace and truncates. Returns null when nothing is left. */
+export function sanitizeProviderText(value: unknown, max = 240): string | null {
+  if (typeof value !== 'string') return null;
+  const t = value.replace(KEYISH, '[redacted]').replace(/\s+/g, ' ').trim();
+  return t ? t.slice(0, max) : null;
 }
 
 export interface SafeProviderError {
@@ -60,24 +80,46 @@ export interface SafeProviderError {
   message: string;
   /** For invalid_response only: which fields broke which rule (paths and zod messages, never values). */
   detail?: string;
+  /** HTTP status of a provider rejection, when there was one. */
+  status?: number;
+  /** The provider's own machine-readable code / parameter and a sanitized message (never for authentication failures). */
+  providerCode?: string;
+  providerParam?: string;
+  providerMessage?: string;
 }
 
 export const toSafeError = (code: ProviderErrorCode): SafeProviderError => ({ code, message: SAFE_PROVIDER_MESSAGES[code] });
 
+/** The safe error of a ProviderError INCLUDING the provider's diagnostics (status, code, parameter, sanitized message). */
+export function toSafeErrorFrom(err: ProviderError): SafeProviderError {
+  const out: SafeProviderError = toSafeError(err.code);
+  if (err.status !== undefined) out.status = err.status;
+  const d = err.provider;
+  if (d?.code) out.providerCode = d.code;
+  if (d?.param) out.providerParam = d.param;
+  if (d?.message) out.providerMessage = d.message;
+  return out;
+}
+
 /** Maps an HTTP failure to a ProviderError using only status and the body's `error.code`/`type`. */
 export function classifyHttpError(status: number, body: unknown, retryAfterHeader?: string | null): ProviderError {
-  const err = (body as { error?: { code?: unknown; type?: unknown } } | null)?.error;
+  const err = (body as { error?: { code?: unknown; type?: unknown; param?: unknown; message?: unknown } } | null)?.error;
   const code = typeof err?.code === 'string' ? err.code : '';
   const type = typeof err?.type === 'string' ? err.type : '';
+  // Authentication failures echo parts of the key, so nothing of them is kept. Every other failure keeps a sanitized description.
+  const keep = status !== 401 && code !== 'invalid_api_key';
+  const provider: ProviderDiagnostics | undefined = keep
+    ? { code: code || undefined, type: type || undefined, param: typeof err?.param === 'string' ? err.param.slice(0, 80) : undefined, message: sanitizeProviderText(err?.message) ?? undefined }
+    : undefined;
   const retryAfterMs = retryAfterHeader && /^\d+$/.test(retryAfterHeader) ? Math.min(Number(retryAfterHeader) * 1000, 15_000) : undefined;
 
   if (status === 401 || code === 'invalid_api_key') return new ProviderError('invalid_api_key', { status });
-  if (code === 'insufficient_quota' || type === 'insufficient_quota') return new ProviderError('insufficient_quota', { status });
-  if (status === 429) return new ProviderError('rate_limited', { status, retryable: true, retryAfterMs });
-  if (status === 404 || code === 'model_not_found') return new ProviderError('model_unavailable', { status });
-  if (status === 403) return new ProviderError('permission_denied', { status });
-  if (status >= 500 || status === 408 || status === 409) return new ProviderError('provider_unavailable', { status, retryable: true, retryAfterMs });
-  return new ProviderError('bad_request', { status });
+  if (code === 'insufficient_quota' || type === 'insufficient_quota') return new ProviderError('insufficient_quota', { status, provider });
+  if (status === 429) return new ProviderError('rate_limited', { status, retryable: true, retryAfterMs, provider });
+  if (status === 404 || code === 'model_not_found') return new ProviderError('model_unavailable', { status, provider });
+  if (status === 403) return new ProviderError('permission_denied', { status, provider });
+  if (status >= 500 || status === 408 || status === 409) return new ProviderError('provider_unavailable', { status, retryable: true, retryAfterMs, provider });
+  return new ProviderError('bad_request', { status, provider });
 }
 
 /** Anything thrown while calling the provider becomes a ProviderError (never the raw error). */

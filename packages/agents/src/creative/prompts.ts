@@ -88,9 +88,10 @@ export function visualMessage(f3: F3Context, input: CreativeInput, concepts: Cre
 }
 
 /** The deterministic image prompt: model-planned details wrapped in fixed safety and composition rules. */
-export function imagePrompt(d: { subject: string; composition: string; mood: string; colors: string[]; avoid: string[]; promptDetails: string }, business: string, space: 'top' | 'bottom'): string {
+export function imagePrompt(d: { subject: string; composition: string; mood: string; colors: string[]; avoid: string[]; promptDetails: string }, business: string, space: 'top' | 'bottom', concept?: { name: string; keyMessage: string }): string {
   return [
     `Original marketing photograph or illustration for "${business}".`,
+    concept ? `Creative concept "${concept.name}": ${concept.keyMessage}` : '',
     `Subject: ${d.subject}`,
     `Composition: ${d.composition} Keep the ${space} third of the frame calm and uncluttered (soft, low-detail) so text can be placed there later.`,
     `Mood: ${d.mood}.${d.colors.length ? ` Color accents: ${d.colors.join(', ')}.` : ''}`,

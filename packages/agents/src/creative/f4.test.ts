@@ -301,17 +301,25 @@ describe('F4 Creative Production (real Mozaik agents; fake text and image APIs)'
     assert.ok(p.channelLayouts.length >= 6);
     assert.equal(p.usage.images.generated, 0);
     assert.ok(p.limitations.some((l) => /could not be generated|brand-colored/i.test(l)));
-    assert.ok(p.reviewFindings.some((f) => f.kind === 'visual_irrelevant' && f.severity === 'info'));
+    assert.ok(p.reviewFindings.some((f) => f.kind === 'visual_irrelevant' && f.severity === 'major'), 'a failed image is a real finding, not an info note');
     assert.ok(names(o, 'visual.generated').every((v) => v.failed === true && v.error?.code === 'model_unavailable'));
     assert.doesNotMatch(JSON.stringify(o.events), /sk-secret-should-not-appear/);
-    assert.equal(o.fake.imageCalls().length, 3, 'one attempt per concept, no retry storm for a missing model');
+    assert.doesNotMatch(JSON.stringify(p), /sk-secret-should-not-appear/);
+    // a missing model affects every concept: the two requests in flight are the only ones, the third concept is NOT sent and says so
+    assert.equal(o.fake.imageCalls().length, 2, 'no retry storm for a missing model');
+    assert.equal(p.imageResults.length, 3);
+    assert.equal(p.imageResults.filter((r) => r.requestAttempted).length, 2);
+    const skipped = p.imageResults.find((r) => !r.requestAttempted);
+    assert.equal(skipped?.stage, 'provider');
+    assert.ok(p.imageResults.every((r) => r.fallbackUsed && r.outcome === 'failed' && r.explanation));
   });
 
   it('8. quota exceeded during image generation: no retries, graceful fallback, the key and provider text never leak', async () => {
     const o = await run({ openai: { reply: (req) => (req.agent === 'image' ? { status: 429, json: { error: { code: 'insufficient_quota', message: `You exceeded your quota ${KEY}` } } } : undefined) } });
     assert.equal(o.result.status, 'completed', o.result.errorMessage ?? '');
     assert.ok(names(o, 'visual.generated').every((v) => v.error?.code === 'insufficient_quota'));
-    assert.equal(o.fake.imageCalls().length, 3);
+    assert.equal(o.fake.imageCalls().length, 2, 'quota affects every concept: the third is not sent');
+    assert.ok(pkg(o).imageResults.every((r) => r.outcome === 'failed' && r.fallbackUsed));
     assert.doesNotMatch(JSON.stringify([o.events, pkg(o)]), new RegExp(KEY));
     assert.ok(pkg(o).channelLayouts.length > 0);
   });
@@ -620,5 +628,149 @@ describe('F4 Creative Production (real Mozaik agents; fake text and image APIs)'
     assert.equal(o.fake.imageCalls().length, 1);
     assert.equal(textCalls(o).filter((r) => r.agent === 'landing').length, 0);
     assert.equal(state(o, 'Landing Content Builder'), 'skipped');
+  });
+
+  // ---- image generation diagnostics: what happened to EVERY concept's image, and why --------------------------------------------
+
+  it('28. one distinct, concept-grounded request per concept: own prompt, own stored image, a result per concept, a genuine event', async () => {
+    const o = await run();
+    const p = pkg(o);
+    const calls = o.fake.imageCalls();
+    assert.equal(calls.length, 3);
+    const prompts = calls.map((c) => String(c.body?.prompt));
+    assert.equal(new Set(prompts).size, 3, 'three different prompts');
+    for (const concept of p.concepts) assert.ok(prompts.some((t) => t.includes(`Creative concept "${concept.name}"`) && t.includes(concept.keyMessage)), `a prompt names the concept ${concept.name}`);
+    assert.equal(p.imageResults.length, 3);
+    assert.ok(p.imageResults.every((r) => r.outcome === 'generated' && r.requestAttempted && !r.fallbackUsed && r.stage === null && r.model === IMAGE_MODEL));
+    const ai = p.imageAssets.filter((a) => a.kind === 'image' && a.source === 'ai_image');
+    assert.equal(new Set(ai.map((a) => a.conceptId)).size, 3, 'one AI image per concept');
+    assert.deepEqual(new Set(p.imageResults.map((r) => r.assetId)), new Set(ai.map((a) => a.id)), 'every result points at its own stored image');
+    const ev = names(o, 'visual.generated');
+    assert.equal(ev.length, 3);
+    assert.ok(ev.every((v) => v.failed === false && v.result?.outcome === 'generated'));
+    assert.ok(p.channelLayouts.length >= 6);
+  });
+
+  it('29. 3 concepts + maxImages 1: exactly one request; the other two concepts say they were skipped because of the configured maximum', async () => {
+    const o = await run({ config: { maxImages: 1 } });
+    const p = pkg(o);
+    assert.equal(o.fake.imageCalls().length, 1);
+    assert.equal(p.usage.images.requested, 1);
+    assert.equal(p.usage.images.limits.maxImages, 1);
+    assert.equal(p.imageResults.filter((r) => r.outcome === 'generated').length, 1);
+    const budget = p.imageResults.filter((r) => r.outcome === 'skipped');
+    assert.equal(budget.length, 2);
+    for (const r of budget) {
+      assert.equal(r.stage, 'budget');
+      assert.equal(r.requestAttempted, false);
+      assert.ok(r.fallbackUsed);
+      assert.equal(r.explanation, 'Image generation was skipped because the configured maximum is 1 image for 3 concepts.');
+    }
+    assert.ok(p.limitations.some((l) => /2 of 3 concept\(s\) have NO AI-generated image/.test(l)));
+    assert.ok(p.limitations.includes('Image generation was skipped because the configured maximum is 1 image for 3 concepts.'));
+    // a limit the user chose is a minor, visible finding (not a failure) and never raised automatically
+    assert.equal(p.reviewFindings.filter((f) => f.kind === 'visual_irrelevant' && f.severity === 'minor').length, 2);
+    assert.equal(p.reviewFindings.filter((f) => f.kind === 'visual_irrelevant' && f.severity === 'major').length, 0);
+    // fallbacks of different concepts are not one identical rectangle
+    const fallbacks = p.imageAssets.filter((a) => a.kind === 'image' && a.source === 'brand_gradient');
+    assert.equal(fallbacks.length, 2);
+    assert.notEqual(fallbacks[0].sha256, fallbacks[1].sha256);
+  });
+
+  it('30. maxImages 0 with an image model selected: no request, every concept says why, the Visual Creator is skipped', async () => {
+    const o = await run({ config: { maxImages: 0 } });
+    const p = pkg(o);
+    assert.equal(o.fake.imageCalls().length, 0);
+    assert.equal(p.imageResults.length, 3);
+    assert.ok(p.imageResults.every((r) => r.outcome === 'skipped' && r.stage === 'budget' && !r.requestAttempted && /maximum is 0 images for 3 concepts/.test(r.explanation ?? '')));
+    assert.equal(state(o, 'Visual Creator'), 'skipped');
+  });
+
+  it('31. retired image model: no request is sent; every concept explains it and names the replacement models', async () => {
+    const o = await run({ config: { imageModel: 'gpt-image-1', now: new Date('2026-10-31T00:00:00Z') } });
+    const p = pkg(o);
+    assert.equal(o.fake.imageCalls().length, 0, 'a request to a retired model would be refused and pointless');
+    assert.equal(p.imageResults.length, 3);
+    for (const r of p.imageResults) {
+      assert.equal(r.outcome, 'failed');
+      assert.equal(r.stage, 'configuration');
+      assert.equal(r.requestAttempted, false);
+      assert.match(r.explanation ?? '', /shut down gpt-image-1 on 2026-10-23/);
+      assert.match(r.explanation ?? '', /gpt-image-2\.5-sunburst/);
+      assert.ok(r.fallbackUsed);
+    }
+    assert.ok(p.reviewFindings.some((f) => f.kind === 'visual_irrelevant' && f.severity === 'major'));
+    assert.ok(p.limitations.some((l) => /3 of 3 concept\(s\) have NO AI-generated image/.test(l)));
+  });
+
+  it('32. OpenAI refuses the image model (403, organization not verified): the provider reason is kept, sanitized, and shown per concept', async () => {
+    const o = await run({ openai: { reply: (req) => (req.agent === 'image' ? { status: 403, json: { error: { code: 'organization_not_verified', type: 'invalid_request_error', message: `Your organization must be verified to use the model ${IMAGE_MODEL}. Key ${KEY}` } } } : undefined) } });
+    const p = pkg(o);
+    assert.equal(o.fake.imageCalls().length, 2, 'permission failures are systematic: the third concept is not sent');
+    const attempted = p.imageResults.filter((r) => r.requestAttempted);
+    assert.equal(attempted.length, 2);
+    for (const r of attempted) {
+      assert.equal(r.stage, 'provider');
+      assert.equal(r.errorCode, 'permission_denied');
+      assert.equal(r.providerStatus, 403);
+      assert.equal(r.providerCode, 'organization_not_verified');
+      assert.match(r.explanation ?? '', /verif/i);
+      assert.match(r.message ?? '', /must be verified/);
+    }
+    const notSent = p.imageResults.find((r) => !r.requestAttempted);
+    assert.match(notSent?.explanation ?? '', /Not attempted/);
+    assert.doesNotMatch(JSON.stringify([o.events, p]), new RegExp(KEY));
+  });
+
+  it('33. a 400 for an unsupported option keeps the provider status, code, parameter and message (no generic text-model message)', async () => {
+    const o = await run({ openai: { reply: (req) => (req.agent === 'image' ? { status: 400, json: { error: { code: 'invalid_value', type: 'invalid_request_error', param: 'quality', message: "Invalid value: 'ultra'. Supported values are: 'low', 'medium', 'high', and 'auto'." } } } : undefined) } });
+    const p = pkg(o);
+    const r = p.imageResults.find((x) => x.requestAttempted);
+    assert.equal(r?.outcome, 'failed');
+    assert.equal(r?.providerStatus, 400);
+    assert.equal(r?.providerCode, 'invalid_value');
+    assert.match(r?.explanation ?? '', /HTTP 400/);
+    assert.match(r?.explanation ?? '', /quality/);
+    assert.match(r?.explanation ?? '', /Supported values/);
+    assert.doesNotMatch(r?.explanation ?? '', /text model|Responses/i);
+  });
+
+  it('34. a response that is not a valid image is a decoding failure, recorded as such (the request WAS made and billed)', async () => {
+    const o = await run({ openai: { reply: (req) => (req.agent === 'image' ? { status: 200, json: { created: 1, data: [{ b64_json: 'not-an-image'.repeat(20) }] } } : undefined) } });
+    const p = pkg(o);
+    assert.equal(o.fake.imageCalls().length, 3);
+    for (const r of p.imageResults) {
+      assert.equal(r.stage, 'decoding');
+      assert.equal(r.requestAttempted, true);
+      assert.equal(r.outcome, 'failed');
+      assert.match(r.explanation ?? '', /invalid response/i);
+    }
+  });
+
+  it('35. storing a delivered image fails: stage storage, the fallback is used and it is said the image was billed', async () => {
+    class FailingStore extends InMemoryAssetStore {
+      override async save(asset: Parameters<InMemoryAssetStore['save']>[0]) {
+        if (asset.kind === 'image' && asset.source === 'ai_image') throw new Error('disk full');
+        return super.save(asset);
+      }
+    }
+    const o = await run({ store: new FailingStore() });
+    const p = pkg(o);
+    assert.equal(o.fake.imageCalls().length, 3);
+    for (const r of p.imageResults) {
+      assert.equal(r.stage, 'storage');
+      assert.equal(r.requestAttempted, true);
+      assert.match(r.explanation ?? '', /succeeded.*storing it failed/i);
+    }
+    assert.ok(p.channelLayouts.length > 0, 'layouts are still produced from the fallback');
+  });
+
+  it('36. regeneration never gets around the image limit or repeats a systematic failure', async () => {
+    const o = await run({ config: { maxImages: 1, maxRegenerations: 3 }, input: { concepts: 3 } });
+    const p = pkg(o);
+    assert.equal(o.fake.imageCalls().length, 1, 'budget-skipped concepts are not regenerated either');
+    assert.equal(p.imageResults.filter((r) => r.stage === 'budget').length, 2);
+    const m = await run({ openai: { reply: (req) => (req.agent === 'image' ? { status: 403, json: { error: { code: 'permission_denied', message: 'no' } } } : undefined) }, config: { maxRegenerations: 3 } });
+    assert.equal(m.fake.imageCalls().length, 2, 'a 403 is not retried by regeneration');
   });
 });

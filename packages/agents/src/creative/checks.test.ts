@@ -100,13 +100,25 @@ describe('deterministic creative checks', () => {
     assert.ok(out.every((f) => f.responsibleAgent === 'layout' || f.responsibleAgent === 'visual'));
   });
 
-  it('a concept without any exported layout is reported against the concept; a brand-gradient fallback is only an info note', () => {
+  it('a concept without any exported layout is reported against the concept; a failed AI image is a major finding with its reason', () => {
     const b = board([variant()]);
     b.assets.push({ ...layoutAsset({ id: 'base', kind: 'image', channel: null, format: null, source: 'brand_gradient', status: 'rendered', parentAssetId: null, width: 1024, height: 1024 }) });
+    b.imageResults.push({ conceptId: 'K1', conceptName: 'Concept', model: 'gpt-image-test', requestAttempted: true, outcome: 'failed', stage: 'provider', errorCode: 'model_unavailable', providerStatus: 404, providerCode: 'model_not_found', message: 'The model does not exist', explanation: 'OpenAI rejected the selected image model for this account.', fallbackUsed: true, assetId: 'base' });
     const out = assetFindings({ board: b, hasLogo: false, hasPalette: true, imageGeneration: true });
     assert.ok(out.some((f) => f.kind === 'layout_unavailable' && f.assetRef === 'K1' && f.severity === 'major'));
-    assert.ok(out.some((f) => f.kind === 'visual_irrelevant' && f.severity === 'info'));
+    const img = out.find((f) => f.kind === 'visual_irrelevant');
+    assert.equal(img?.severity, 'major', 'a failed image request is a defect of the campaign, not an info note');
+    assert.match(img?.evidence ?? '', /rejected the selected image model/);
     assert.ok(!out.some((f) => f.kind === 'brand_color'));
+  });
+
+  it('a concept left without an AI image only because of the image limit is a minor limitation, never hidden', () => {
+    const b = board([variant()]);
+    b.assets.push({ ...layoutAsset({ id: 'base', kind: 'image', channel: null, format: null, source: 'brand_gradient', status: 'rendered', parentAssetId: null, width: 1024, height: 1024 }) });
+    b.imageResults.push({ conceptId: 'K1', conceptName: 'Concept', model: 'gpt-image-test', requestAttempted: false, outcome: 'skipped', stage: 'budget', errorCode: null, providerStatus: null, providerCode: null, message: null, explanation: 'Image generation was skipped because the configured maximum is 1 image for 3 concepts.', fallbackUsed: true, assetId: 'base' });
+    const f = assetFindings({ board: b, hasLogo: false, hasPalette: true, imageGeneration: true }).find((x) => x.kind === 'visual_irrelevant');
+    assert.equal(f?.severity, 'minor');
+    assert.match(f?.evidence ?? '', /configured maximum is 1 image for 3 concepts/);
   });
 
   it('dedupe keeps one finding per kind, asset and opening words', () => {

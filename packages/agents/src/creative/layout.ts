@@ -34,6 +34,8 @@ export interface LayoutRequest {
   palette: string[];
   logo: Buffer | null;
   overrides?: LayoutOverrides;
+  /** Which brand-colored gradient to draw when `base` is null (the concept's index), so concepts without an image differ. */
+  gradientVariant?: number;
 }
 
 export type LayoutResult =
@@ -87,14 +89,19 @@ async function clipped(lines: string[], fontSize: number, lineH: number, boxW: n
   }
 }
 
-const gradientSvg = (w: number, h: number, palette: string[]) => {
+/** Gradient directions per concept, so the brand-colored fallbacks of different concepts are not one identical rectangle. */
+const GRADIENT_DIRECTIONS: [number, number, number, number][] = [[0, 0, 1, 1], [1, 0, 0, 1], [0, 1, 1, 0], [1, 1, 0, 0], [0.5, 0, 0.5, 1], [0, 0.5, 1, 0.5]];
+
+const gradientSvg = (w: number, h: number, palette: string[], variant = 0) => {
   const a = isHex(palette[0] ?? '') ? palette[0] : '#1f2937';
   const b = isHex(palette[1] ?? '') ? palette[1] : '#0f172a';
-  return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/></svg>`);
+  // six distinct directions (four diagonals, vertical, horizontal); the first brand color always starts the gradient
+  const [x1, y1, x2, y2] = GRADIENT_DIRECTIONS[Math.abs(variant) % GRADIENT_DIRECTIONS.length];
+  return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><linearGradient id="g" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/></svg>`);
 };
 
 /** A brand-colored base image (used when no AI image exists for a concept). */
-export const brandGradient = (size: number, palette: string[]) => sharp(gradientSvg(size, size, palette)).png().toBuffer();
+export const brandGradient = (size: number, palette: string[], variant = 0) => sharp(gradientSvg(size, size, palette, variant)).png().toBuffer();
 
 export async function renderLayout(req: LayoutRequest): Promise<LayoutResult> {
   const { format: f } = req;
@@ -118,7 +125,7 @@ export async function renderLayout(req: LayoutRequest): Promise<LayoutResult> {
     if (upscale > 1.25) flags.push(`upscaled_${upscale.toFixed(2)}x`);
     canvas = await sharp(req.base).resize(W, H, { fit: 'cover', position: sharp.strategy.attention }).png().toBuffer();
   } else {
-    canvas = await sharp(gradientSvg(W, H, req.palette)).png().toBuffer();
+    canvas = await sharp(gradientSvg(W, H, req.palette, req.gradientVariant ?? 0)).png().toBuffer();
   }
 
   // 2. geometry: everything stays inside the safe area

@@ -6,7 +6,7 @@ import { wordTokens } from '../../../creative/checks';
 import type { ReviewClaim } from '../../../discovery/f1/prompts';
 import type { AgentOutcome } from '../../../factory/events';
 import { CREATIVE_COORDINATOR_NAME, CREATIVE_INFO, creativeKeyByName, type CreativeKey, type CreativePlan } from '../../../creative/board';
-import type { AssetRecord, LandingContent, LayoutRecord, ReviewFindingRecord, RevisionRecord, SkippedLayout } from '../../../creative/schemas';
+import type { AssetRecord, ImageResultRecord, LandingContent, LayoutRecord, ReviewFindingRecord, RevisionRecord, SkippedLayout } from '../../../creative/schemas';
 import { CopyOutput } from '../../../creative/schemas';
 import { OnEventTypes, guarded } from '../../run-context';
 import type { F4Env } from './env';
@@ -155,11 +155,17 @@ export class CreativeCoordinator {
     this.landingResolved = true;
   }
 
-  private onVisual(p: { conceptId: string; asset: AssetRecord; failed: boolean; error?: SafeProviderError; directionSummary: string }) {
+  private onVisual(p: { conceptId: string; asset: AssetRecord; failed: boolean; error?: SafeProviderError; directionSummary: string; result?: ImageResultRecord }) {
     const { board } = this.env;
     this.visualSeen.add(p.conceptId);
     board.assets.push(p.asset);
-    if (p.failed) board.note(`The image for a concept could not be generated (${p.error?.message ?? 'unknown reason'}); a brand-colored background was used.`);
+    if (!p.result) return;
+    const i = board.imageResults.findIndex((r) => r.conceptId === p.conceptId);
+    if (i >= 0) board.imageResults[i] = p.result;
+    else board.imageResults.push(p.result);
+    // every concept without an AI image says why (a fallback is never silent); a budget limit is stated once
+    if (p.result.outcome === 'failed') board.note(`No AI image for "${p.result.conceptName}": ${p.result.explanation}`);
+    else if (p.result.outcome === 'skipped' && p.result.stage === 'budget') board.note(p.result.explanation ?? '');
   }
 
   private onLayout(p: { conceptId: string; assets: AssetRecord[]; layouts: LayoutRecord[]; skipped: SkippedLayout[] }) {
@@ -406,6 +412,9 @@ export class CreativeCoordinator {
       for (const a of (patch.assets ?? []) as AssetRecord[]) {
         board.assets.push(a);
         if (a.kind === 'layout') this.changed.assetIds.add(a.id);
+        // a regenerated image replaces the concept's base: its result now points at the new AI image
+        const r = a.kind === 'image' && a.source === 'ai_image' ? board.imageResults.find((x) => x.conceptId === a.conceptId) : undefined;
+        if (r) Object.assign(r, { requestAttempted: true, outcome: 'generated', stage: null, errorCode: null, providerStatus: null, providerCode: null, message: null, explanation: null, fallbackUsed: false, assetId: a.id });
       }
       for (const l of (patch.layouts ?? []) as LayoutRecord[]) {
         const i = board.layouts.findIndex((x) => x.variantId === l.variantId && x.format === l.format && x.conceptId === l.conceptId);

@@ -9,6 +9,7 @@ import type { AssetStore } from '../../creative/assets';
 import { CREATIVE_INFO, CREATIVE_KEYS, type CreativeBoardStore, type CreativePlan, type CreativeSettingsSnapshot } from '../../creative/board';
 import type { CreativeInput, F3Context } from '../../creative/context';
 import { baseSizeFor, formatsForChannels } from '../../creative/formats';
+import { completeImageResults, distinctReasons } from '../../creative/image-results';
 import { CAMPAIGN_SCHEMA_VERSION, CampaignPackage, type ReviewFindingRecord } from '../../creative/schemas';
 import type { F2Context } from '../../strategy/context';
 import { ParticipantRegistry } from '../participant-registry';
@@ -316,7 +317,16 @@ export class F4Program implements RunProgram {
           ? `${unresolved.length} blocker/major issue(s) could not be repaired within ${settings.maxRepairRounds} repair round(s); they are listed unchanged in the review findings.`
           : 'Approved with notes: minor issues or missing parts remain and are listed in the review findings and limitations.';
     const limitations = [...snap.limitations];
+    // one result per concept: generated / failed / skipped, each with the reason (no concept silently shows a fallback)
+    const baseAssetOf = (conceptId: string) => [...snap.assets].reverse().find((a) => a.conceptId === conceptId && a.kind === 'image' && a.status !== 'superseded')?.id ?? null;
+    const visualStatus = snap.participantStatuses.find((s) => s.agent === CREATIVE_INFO.visual.name);
+    const imageResults = completeImageResults({ concepts: snap.concepts, results: snap.imageResults, baseAssetOf, imageGeneration: settings.imageGeneration, model: settings.imageModel, planningError: visualStatus?.state === 'failed' ? (visualStatus.error?.message ?? null) : null });
     if (!settings.imageGeneration) limitations.push('No image model was selected: layouts use brand-colored backgrounds, not generated pictures.');
+    const noAi = imageResults.filter((r) => r.outcome !== 'generated');
+    if (settings.imageGeneration && noAi.length) {
+      limitations.push(`${noAi.length} of ${imageResults.length} concept(s) have NO AI-generated image; their layouts use a brand-colored background.`);
+      for (const reason of distinctReasons(noAi)) limitations.push(reason);
+    }
     if (modelReviewFailed) limitations.push('The model-based review failed in at least one round; only the automatic checks were applied in that round.');
     if (!settings.visionReviews) limitations.push('The exported images were checked by measurement only (size, text fit, contrast, logo); no model looked at them.');
     if (snap.skippedLayouts.length) limitations.push(`${snap.skippedLayouts.length} layout(s) could not be produced cleanly and were not exported (see the format list).`);
@@ -335,6 +345,7 @@ export class F4Program implements RunProgram {
       concepts: snap.concepts,
       copyVariants: snap.variants,
       imageAssets: snap.assets,
+      imageResults,
       channelLayouts: snap.layouts,
       skippedLayouts: snap.skippedLayouts,
       landingContent: snap.landing,

@@ -192,6 +192,34 @@ export const AssetRecord = z.object({
 });
 export type AssetRecord = z.infer<typeof AssetRecord>;
 
+/**
+ * What happened to ONE concept's original image: generated, failed (with the stage and the provider's own words) or skipped
+ * (budget or configuration). This is how a brand-colored fallback is told apart from a real AI image, and why it exists.
+ */
+export const ImageResultRecord = z.object({
+  conceptId: z.string(),
+  conceptName: z.string(),
+  model: z.string().nullable(),
+  /** false = no request was made for this concept (budget, configuration, planning or an earlier systematic failure). */
+  requestAttempted: z.boolean(),
+  outcome: z.enum(['generated', 'failed', 'skipped']),
+  stage: z.enum(['configuration', 'budget', 'planning', 'provider', 'decoding', 'storage', 'cancelled']).nullable(),
+  errorCode: z.string().nullable(),
+  providerStatus: z.number().nullable(),
+  providerCode: z.string().nullable(),
+  /** The provider's own (sanitized) message, or the safe generic one. */
+  message: z.string().nullable(),
+  /** One sentence for the user: what happened and what to do. */
+  explanation: z.string().nullable(),
+  /** true = the layouts use a deterministic brand-colored background instead of an AI image. */
+  fallbackUsed: z.boolean(),
+  /** The base image asset of this concept (the AI image, or the brand-colored fallback). */
+  assetId: z.string(),
+  /** true = not recorded during the run: derived afterwards from the run's recorded events (campaigns saved before results existed). */
+  reconstructed: z.boolean().optional(),
+});
+export type ImageResultRecord = z.infer<typeof ImageResultRecord>;
+
 export const LayoutRecord = z.object({ id: z.string(), conceptId: z.string(), variantId: z.string(), assetId: z.string(), baseAssetId: z.string(), format: z.string(), channel: Channel, headline: z.string(), ctaText: z.string(), flags: z.array(z.string()) });
 export type LayoutRecord = z.infer<typeof LayoutRecord>;
 
@@ -243,6 +271,8 @@ export const CampaignPackage = z.object({
   concepts: z.array(ConceptRecord),
   copyVariants: z.array(CopyVariantRecord),
   imageAssets: z.array(AssetRecord),
+  /** One entry per concept: generated, failed or skipped, with the reason. Older packages have none. */
+  imageResults: z.array(ImageResultRecord).default([]),
   channelLayouts: z.array(LayoutRecord),
   skippedLayouts: z.array(SkippedLayout),
   landingContent: LandingContent.nullable(),

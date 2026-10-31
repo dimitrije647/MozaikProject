@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { StorageDriver } from '../storage/storage.service';
+import { PipelineService } from './pipeline.service';
 import { slugify } from '../common/slug';
 import { CreateProjectDto, UpdateProjectDto } from './projects.dto';
 
@@ -11,6 +12,7 @@ export class ProjectsService {
     private prisma: PrismaService,
     private activity: ActivityLogService,
     private storage: StorageDriver,
+    private pipeline: PipelineService,
   ) {}
 
   /** Throws 404 (not 403) for other users' projects so ids cannot be probed. */
@@ -20,8 +22,8 @@ export class ProjectsService {
     return project;
   }
 
-  list(userId: string) {
-    return this.prisma.project.findMany({
+  async list(userId: string) {
+    const projects = await this.prisma.project.findMany({
       where: { userId },
       orderBy: { updatedAt: 'desc' },
       include: {
@@ -29,6 +31,9 @@ export class ProjectsService {
         _count: { select: { assets: true, notes: true, socials: true } },
       },
     });
+    // Derived from the saved runs and results (read-only); `status` stays the user's own lifecycle label.
+    const pipelines = await this.pipeline.summaries(userId, projects.map((p) => p.id));
+    return projects.map((p) => ({ ...p, pipeline: pipelines.get(p.id) ?? null }));
   }
 
   async create(userId: string, dto: CreateProjectDto) {

@@ -74,8 +74,8 @@ export class StartStrategyDto {
   @IsOptional() @IsBoolean() useHolidayCalendar?: boolean;
 }
 
-const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,99}$/;
-const CHANNELS = ['instagram', 'facebook', 'linkedin', 'youtube', 'tiktok', 'google_search', 'email', 'organic_content', 'community'];
+export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,99}$/;
+export const CHANNELS = ['instagram', 'facebook', 'linkedin', 'youtube', 'tiktok', 'google_search', 'email', 'organic_content', 'community'];
 
 /** F4 Creative Production. Every limit is enforced locally per run; none of them is an OpenAI spending cap. */
 export class StartCreativeDto {
@@ -84,7 +84,7 @@ export class StartCreativeDto {
   /** The completed F3 strategy to build on (its F1 report and F2 audit are resolved from it). Defaults to the newest completed strategy. */
   @IsOptional() @IsString() @MaxLength(60) strategyId?: string;
   /** Image model (GPT Image family only). Omit = no image is generated; layouts use brand-colored backgrounds. */
-  @IsOptional() @IsString() @Matches(/^gpt-image-[A-Za-z0-9._-]{1,40}$/, { message: 'imageModel must be a GPT Image model id (gpt-image-*)' }) imageModel?: string;
+  @IsOptional() @IsString() @Matches(/^(auto|gpt-image-[A-Za-z0-9._-]{1,40})$/, { message: 'imageModel must be "auto" or a GPT Image model id (gpt-image-*)' }) imageModel?: string;
   @IsOptional() @IsIn(['low', 'medium', 'high', 'auto']) imageQuality?: 'low' | 'medium' | 'high' | 'auto';
   @IsOptional() @IsIn(['1024x1024', '1024x1536', '1536x1024']) imageSize?: '1024x1024' | '1024x1536' | '1536x1024';
   /** Creative concepts (1 to 5). Default 3. */
