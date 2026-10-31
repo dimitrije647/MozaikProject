@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { before, describe, it } from 'node:test';
 import { CreativeBoardStore } from './board';
-import { assetFindings, claimFindings, consistencyFindings, dedupe } from './checks';
+import { assetFindings, channelFindings, claimFindings, consistencyFindings, dedupe } from './checks';
+import { foldDiacritics, promiseMatches } from './lexicon';
 import type { AssetRecord, CopyVariantRecord, LandingContent } from './schemas';
 import { buildChain, type Chain } from '../testing/chain';
 import { defaultLanding } from '../testing/fake-creative';
@@ -25,7 +26,7 @@ describe('deterministic creative checks', () => {
     b.landing = l;
     return b;
   };
-  const claims = (variants: CopyVariantRecord[], l: LandingContent | null = landing) => claimFindings({ board: board(variants, l), f1: chain.f1, f3: chain.f3 });
+  const claims = (variants: CopyVariantRecord[], l: LandingContent | null = landing, language = 'en') => claimFindings({ board: board(variants, l), f1: chain.f1, f3: chain.f3, language });
 
   it('clean copy that only states what the material supports raises nothing', () => {
     assert.deepEqual(claims([variant()]), []);
@@ -107,6 +108,57 @@ describe('deterministic creative checks', () => {
     assert.ok(out.some((f) => f.kind === 'layout_unavailable' && f.assetRef === 'K1' && f.severity === 'major'));
     assert.ok(out.some((f) => f.kind === 'visual_irrelevant' && f.severity === 'info'));
     assert.ok(!out.some((f) => f.kind === 'brand_color'));
+  });
+
+  it('promise words are recognized in the campaign language (Serbian, Croatian, German, Spanish...), English words still count, diacritics do not matter', () => {
+    const sr: [string, 'blocker' | 'major'][] = [
+      ['Garantujemo rezultate svima.', 'blocker'],
+      ['Nagrađivani instruktori vas vode.', 'blocker'],
+      ['Nagradivani instruktori vas vode.', 'blocker'],
+      ['Besplatna prva lekcija za sve.', 'major'],
+      ['Najbolja škola ronjenja u gradu.', 'major'],
+      ['Pridružite se 2.500 zadovoljnih polaznika.', 'major'],
+      ['Popust 20% ovog meseca.', 'major'],
+      ['We guarantee results.', 'blocker'],
+    ];
+    for (const [body, severity] of sr) {
+      const out = claims([variant({ body })], landing, 'sr');
+      const f = out.find((x) => x.kind === 'unsupported_claim' && /promise or proof claim/.test(x.finding));
+      assert.ok(f, body);
+      assert.equal(f!.severity, severity, body);
+    }
+    assert.match(claims([variant({ body: 'Nagrađivani instruktori vas vode.' })], landing, 'sr')[0].finding, /"Nagrađivani"/, 'the phrase is quoted as written, with its diacritics');
+    for (const [language, body] of [['hr', 'Jamčimo rezultate.'], ['de', 'Wir garantieren Erfolg.'], ['es', 'Garantizamos resultados.'], ['fr', 'Résultats garantis.'], ['it', 'Risultati garantiti.']] as const) {
+      assert.equal(claims([variant({ body })], landing, language).find((x) => /promise or proof claim/.test(x.finding))?.severity, 'blocker', `${language}: ${body}`);
+    }
+    for (const [language, body] of [['de', 'Kostenlose Probestunde.'], ['es', 'Clase gratis para empezar.'], ['hr', 'Popust za rane prijave.']] as const) {
+      assert.equal(claims([variant({ body })], landing, language).find((x) => /promise or proof claim/.test(x.finding))?.severity, 'major', `${language}: ${body}`);
+    }
+    // plain Serbian copy without promises raises nothing; an unknown language falls back to the English list
+    assert.deepEqual(claims([variant({ body: 'Naučite da ronite polako, sa sertifikovanim instruktorima.' })], landing, 'sr').filter((x) => /promise or proof/.test(x.finding)), []);
+    assert.equal(claims([variant({ body: 'Garantujemo rezultate.' })], landing, 'xx').length, 0, 'an unknown language has no local list');
+    assert.equal(foldDiacritics('Škola Đaka ÄÖÜ é').length, 'Škola Đaka ÄÖÜ é'.length);
+    assert.equal(foldDiacritics('Škola Đaka'), 'skola daka');
+    assert.deepEqual(promiseMatches('Garancija i besplatno', 'sr').map((m) => [m.phrase, m.hard]), [['Garancija', true], ['besplatno', false]]);
+  });
+
+  it('channel limits: platform maximums are major, recommendations minor, channels without limits raise nothing', () => {
+    const long = 'x'.repeat(60);
+    const none = channelFindings(board([variant({ channel: 'organic_content', headline: long, body: 'y'.repeat(400) })]));
+    assert.deepEqual(none, []);
+    const google = channelFindings(board([variant({ channel: 'google_search', placement: 'paid_ad', headline: 'Learn to dive with certified instructors today', body: 'z'.repeat(95) })]));
+    assert.equal(google.length, 2);
+    assert.ok(google.every((f) => f.kind === 'channel_mismatch' && f.severity === 'major' && f.assetRef === 'V1' && f.responsibleAgent === 'copywriter' && f.source === 'deterministic'));
+    assert.match(google[0].finding, /headline of 46 characters; the channel allows at most 30/);
+    assert.match(google[0].suggestedCorrection, /30 characters/);
+    const fb = channelFindings(board([variant({ channel: 'facebook', placement: 'paid_ad', headline: long, body: 'short enough' })]));
+    assert.equal(fb.length, 1);
+    assert.equal(fb[0].severity, 'minor');
+    assert.match(fb[0].finding, /works best with up to 40/);
+    const tags = channelFindings(board([variant({ channel: 'instagram', placement: 'organic_post', hashtags: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] })]));
+    assert.equal(tags.length, 1);
+    assert.match(tags[0].finding, /7 hashtags/);
+    assert.deepEqual(channelFindings(board([variant({ channel: 'instagram', placement: 'paid_ad', headline: 'Take the first step', body: 'Learn to dive safely.' })])), []);
   });
 
   it('dedupe keeps one finding per kind, asset and opening words', () => {

@@ -4,19 +4,20 @@ import type { F1Context } from '../audit/context';
 import type { CreativeBoard } from './board';
 import type { F3Context } from './context';
 import { CREATIVE_FORMATS } from './formats';
+import { foldDiacritics, promiseMatches } from './lexicon';
+import { limitsFor } from './limits';
 import type { LandingContent, ReviewFindingRecord } from './schemas';
 
 /**
  * Deterministic quality checks (the Reviewer's first pass; no model call). They catch what code can prove:
  * claims the strategy forbade, money/percentage figures that exist in no source, promise words (guarantee, award, testimonial,
- * customer counts...) that the supplied material does not support, wrong dimensions, text that does not fit, unreadable
- * contrast, a missing or colliding logo, missing deliverables, and a CTA that differs between the ads and the landing page.
+ * customer counts...) in the campaign language that the supplied material does not support, text longer than a channel
+ * allows or shows, wrong dimensions, text that does not fit, unreadable contrast, a missing or colliding logo, missing
+ * deliverables, and a CTA that differs between the ads and the landing page.
  * Judgment calls (tone, relevance, visual quality) are left to the model reviews.
  */
 export type RawFinding = Omit<ReviewFindingRecord, 'id' | 'round' | 'status' | 'resolvedInRound'>;
 
-const PROMISE_RE = /\b(guarantee[sd]?|risk[- ]free|money[- ]back|#\s?1|number one|best (?:in|of|on)\b|award[- ]winning|awarded|certified by|testimonials?|\d[\d,.]*\+?\s*(?:happy\s+)?(?:customers|clients|students|users|members|reviews|participants)|\d+\s*(?:years?|stars?)\b|\d+\s?%\s?off|discount|free (?:trial|gift|shipping|lesson|session)|limited[- ]time|sale\b|100\s?%)/gi;
-const HARD = /(guarantee|testimonial|award|risk[- ]free|money[- ]back)/i;
 
 /** Word tokens without punctuation: "results." and "results" are the same word. */
 export const wordTokens = (s: string) => new Set(normalizeText(s).replace(/[^\p{L}\p{N}\s]+/gu, ' ').split(/\s+/).filter((t) => t.length > 2));
@@ -34,9 +35,10 @@ const landingTexts = (l: LandingContent): { ref: string; text: string }[] => [
   ...l.trustSignals.map((t) => ({ ref: 'landing', text: t.text })),
 ];
 
-export function claimFindings(args: { board: CreativeBoard; f1: F1Context; f3: F3Context; extraCorpus?: string[] }): RawFinding[] {
+export function claimFindings(args: { board: CreativeBoard; f1: F1Context; f3: F3Context; extraCorpus?: string[]; language?: string }): RawFinding[] {
   const { board, f1, f3 } = args;
   const corpus = corpusOf(f1, f3, args.extraCorpus);
+  const corpusFolded = foldDiacritics(corpus);
   const avoid = f3.report.creativeBrief.claimsToAvoid.map((c) => ({ claim: c.claim, tokens: tokens(c.claim), reason: c.reason }));
   const out: RawFinding[] = [];
   const units: { ref: string; text: string; owner: 'copywriter' | 'landing' }[] = [
@@ -52,10 +54,10 @@ export function claimFindings(args: { board: CreativeBoard; f1: F1Context; f3: F
     }
     const figs = scrubFigures(u.text, corpus);
     if (figs.removed.length) out.push({ kind: 'unsupported_claim', severity: 'major', assetRef: u.ref, finding: `The text contains figure(s) that appear nowhere in the supplied material: ${figs.removed.slice(0, 3).join(', ')}.`, evidence: 'Invented prices, percentages or performance numbers must not appear in advertising.', suggestedCorrection: 'Delete the figure or replace it with a statement the material supports.', responsibleAgent: u.owner === 'landing' ? 'landing' : 'copywriter', source: 'deterministic' });
-    for (const m of u.text.matchAll(PROMISE_RE)) {
-      const phrase = normalizeText(m[0]);
-      if (phrase && !corpus.includes(phrase)) {
-        out.push({ kind: 'unsupported_claim', severity: HARD.test(m[0]) ? 'blocker' : 'major', assetRef: u.ref, finding: `"${m[0].slice(0, 60)}" is a promise or proof claim that the supplied material does not support.`, evidence: 'The phrase is not in the Product Manifest, the audit or the strategy.', suggestedCorrection: 'Remove it or state only what the material supports.', responsibleAgent: u.owner === 'landing' ? 'landing' : 'copywriter', source: 'deterministic' });
+    for (const m of promiseMatches(u.text, args.language)) {
+      const phrase = normalizeText(foldDiacritics(m.phrase));
+      if (phrase && !corpusFolded.includes(phrase)) {
+        out.push({ kind: 'unsupported_claim', severity: m.hard ? 'blocker' : 'major', assetRef: u.ref, finding: `"${m.phrase.slice(0, 60)}" is a promise or proof claim that the supplied material does not support.`, evidence: 'The phrase is not in the Product Manifest, the audit or the strategy.', suggestedCorrection: 'Remove it or state only what the material supports.', responsibleAgent: u.owner === 'landing' ? 'landing' : 'copywriter', source: 'deterministic' });
         break; // one finding per unit is enough to act on
       }
     }
@@ -65,6 +67,29 @@ export function claimFindings(args: { board: CreativeBoard; f1: F1Context; f3: F
   }
   if (board.landing) {
     for (const t of board.landing.trustSignals) if (t.evidence === 'hypothesis') out.push({ kind: 'unsupported_claim', severity: 'blocker', assetRef: 'landing', finding: `A trust signal has no support in the material: "${t.text.slice(0, 100)}".`, evidence: 'Trust signals must come from F1/F2/F3 or the user.', suggestedCorrection: 'Remove the trust signal.', responsibleAgent: 'landing', source: 'deterministic' });
+  }
+  return out;
+}
+
+/** Copy longer than its channel allows (platform maximum: major) or shows before truncation (recommendation: minor). */
+export function channelFindings(board: CreativeBoard): RawFinding[] {
+  const out: RawFinding[] = [];
+  for (const v of board.variants) {
+    for (const l of limitsFor(v.channel, v.placement)) {
+      const value = l.field === 'hashtags' ? v.hashtags.length : (v[l.field] ?? '').length;
+      if (value <= l.max) continue;
+      const what = l.field === 'hashtags' ? `${value} hashtags` : `a ${l.field} of ${value} characters`;
+      out.push({
+        kind: 'channel_mismatch',
+        severity: l.kind === 'platform_max' ? 'major' : 'minor',
+        assetRef: v.id,
+        finding: `The ${v.channel.replace('_', ' ')} ${v.placement.replace('_', ' ')} has ${what}; the channel ${l.kind === 'platform_max' ? 'allows at most' : 'works best with up to'} ${l.max}.`,
+        evidence: l.note,
+        suggestedCorrection: l.field === 'hashtags' ? `Keep at most ${l.max} hashtags.` : `Shorten the ${l.field} to ${l.max} characters or fewer.`,
+        responsibleAgent: 'copywriter',
+        source: 'deterministic',
+      });
+    }
   }
   return out;
 }
