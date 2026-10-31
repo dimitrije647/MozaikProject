@@ -15,7 +15,15 @@ import type {
   OpenAiModelOption,
   OpenAiStatus,
   Provider,
-  ReportFull,
+  ReportFull, RunAnalysis,
+  AuditAnalysis,
+  StartStrategyInput,
+  StrategyAnalysis,
+  StrategyFull,
+  StrategySummary,
+  AuditFull,
+  AuditSummary,
+  SocialDetailInput,
   ReportSummary,
   RunEvent,
   RunView,
@@ -35,7 +43,12 @@ export const keys = {
   openai: ['openai-status'] as const,
   reports: (projectId: string) => ['reports', projectId] as const,
   report: (id: string) => ['report', id] as const,
+  audits: (projectId: string) => ['audits', projectId] as const,
+  audit: (id: string) => ['audit', id] as const,
+  strategies: (projectId: string) => ['strategies', projectId] as const,
+  strategy: (id: string) => ['strategy', id] as const,
   // status is part of the key so the history is refetched when the run reaches a terminal state
+  analysis: (runId: string, status?: string) => ['run-analysis', runId, status] as const,
   runEvents: (runId: string, status?: string) => ['run-events', runId, status] as const,
 };
 
@@ -199,7 +212,7 @@ export const useTestOpenAi = () =>
 
 export const useStartDiscovery = (projectId: string) =>
   useApiMutation(
-    (limits: { maxModelCalls?: number; maxOutputTokens?: number }) => post<RunView>(`/projects/${projectId}/runs/product-discovery`, limits),
+    (limits: { maxModelCalls?: number; maxOutputTokens?: number; maxReviews?: number }) => post<RunView>(`/projects/${projectId}/runs/product-discovery`, limits),
     [keys.runs(projectId), keys.reports(projectId)],
   );
 
@@ -208,3 +221,52 @@ export const useReports = (projectId: string) =>
 
 export const useReport = (reportId: string | null | undefined) =>
   useQuery({ queryKey: keys.report(reportId ?? 'none'), queryFn: () => get<ReportFull>(`/reports/${reportId}`), enabled: !!reportId });
+
+export const useRunAnalysis = (runId: string | undefined, status: string | undefined) =>
+  useQuery({
+    queryKey: keys.analysis(runId ?? 'none', status),
+    queryFn: () => get<RunAnalysis>(`/runs/${runId}/analysis`),
+    enabled: !!runId,
+    refetchInterval: status === 'RUNNING' ? POLL_MS : false,
+  });
+
+// ---- F2 Marketing Audit ----
+
+export const useStartAudit = (projectId: string) =>
+  useApiMutation(
+    (body: { f1ReportId?: string; maxModelCalls?: number; maxOutputTokens?: number; maxReviews?: number; socialDetails?: SocialDetailInput[] }) => post<RunView>(`/projects/${projectId}/runs/marketing-audit`, body),
+    [keys.runs(projectId), keys.audits(projectId)],
+  );
+
+export const useAudits = (projectId: string) =>
+  useQuery({ queryKey: keys.audits(projectId), queryFn: async () => (await get<{ items: AuditSummary[]; nextCursor: string | null }>(`/projects/${projectId}/audits?limit=30`)).items });
+
+export const useAudit = (auditId: string | null | undefined) =>
+  useQuery({ queryKey: keys.audit(auditId ?? 'none'), queryFn: () => get<AuditFull>(`/audits/${auditId}`), enabled: !!auditId });
+
+export const useAuditAnalysis = (runId: string | undefined, status: string | undefined) =>
+  useQuery({
+    queryKey: ['audit-analysis', runId ?? 'none', status] as const,
+    queryFn: () => get<AuditAnalysis>(`/runs/${runId}/analysis`),
+    enabled: !!runId,
+    refetchInterval: status === 'RUNNING' ? POLL_MS : false,
+  });
+
+// ---- F3 Market Research & Strategy ----
+
+export const useStartStrategy = (projectId: string) =>
+  useApiMutation((body: StartStrategyInput) => post<RunView>(`/projects/${projectId}/runs/market-strategy`, body), [keys.runs(projectId), keys.strategies(projectId)]);
+
+export const useStrategies = (projectId: string) =>
+  useQuery({ queryKey: keys.strategies(projectId), queryFn: async () => (await get<{ items: StrategySummary[]; nextCursor: string | null }>(`/projects/${projectId}/strategies?limit=30`)).items });
+
+export const useStrategy = (strategyId: string | null | undefined) =>
+  useQuery({ queryKey: keys.strategy(strategyId ?? 'none'), queryFn: () => get<StrategyFull>(`/strategies/${strategyId}`), enabled: !!strategyId });
+
+export const useStrategyAnalysis = (runId: string | undefined, status: string | undefined) =>
+  useQuery({
+    queryKey: ['strategy-analysis', runId ?? 'none', status] as const,
+    queryFn: () => get<StrategyAnalysis>(`/runs/${runId}/strategy-analysis`),
+    enabled: !!runId,
+    refetchInterval: status === 'RUNNING' ? POLL_MS : false,
+  });

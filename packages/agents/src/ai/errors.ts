@@ -17,7 +17,8 @@ export type ProviderErrorCode =
   | 'invalid_response'
   | 'timeout'
   | 'cancelled'
-  | 'budget_exceeded';
+  | 'budget_exceeded'
+  | 'source_unavailable';
 
 export const SAFE_PROVIDER_MESSAGES: Record<ProviderErrorCode, string> = {
   invalid_api_key: 'OpenAI rejected the API key. Check or replace the key in Settings > AI providers.',
@@ -32,6 +33,7 @@ export const SAFE_PROVIDER_MESSAGES: Record<ProviderErrorCode, string> = {
   timeout: 'The model did not answer in time.',
   cancelled: 'The run was cancelled.',
   budget_exceeded: 'The per-run limit on model calls was reached, so no further calls were made.',
+  source_unavailable: 'The source this agent needs could not be retrieved or read.',
 };
 
 export class ProviderError extends Error {
@@ -56,6 +58,8 @@ export class ProviderError extends Error {
 export interface SafeProviderError {
   code: ProviderErrorCode;
   message: string;
+  /** For invalid_response only: which fields broke which rule (paths and zod messages, never values). */
+  detail?: string;
 }
 
 export const toSafeError = (code: ProviderErrorCode): SafeProviderError => ({ code, message: SAFE_PROVIDER_MESSAGES[code] });

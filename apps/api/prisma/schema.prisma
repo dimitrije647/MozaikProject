@@ -73,6 +73,8 @@ model Project {
   activity ActivityLog[]
   runs     CampaignRun[]
   reports  ProductDiscoveryReport[]
+  audits   MarketingAuditReport[]
+  strategies MarketingStrategyReport[]
 
   @@unique([userId, slug])
   @@index([userId, updatedAt])
@@ -243,6 +245,8 @@ model CampaignRun {
   user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   events  CampaignEvent[]
   report  ProductDiscoveryReport?
+  audit   MarketingAuditReport?
+  strategy MarketingStrategyReport?
 
   // A partial unique index (one RUNNING run per project) is added in the migration SQL,
   // because Prisma cannot express partial indexes in the schema.
@@ -286,6 +290,69 @@ model ProductDiscoveryReport {
 
   project Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   run     CampaignRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  audits  MarketingAuditReport[]
+  strategies MarketingStrategyReport[]
 
   @@index([projectId, createdAt])
+}
+
+/// F2 Marketing Audit output. One per run; reruns create new rows, nothing is overwritten.
+/// Always tied to the exact F1 report it was built on.
+model MarketingAuditReport {
+  id            String   @id @default(cuid())
+  projectId     String
+  runId         String   @unique
+  /// The completed F1 Product Discovery report this audit used (exact version).
+  f1ReportId    String
+  schemaVersion Int
+  language      String
+  /// Model id the user selected for the run (as sent to OpenAI).
+  model         String
+  /// The validated Marketing Audit Report (see MarketingAuditReport in @launchpilot/agents).
+  reportJson    Json
+  /// Token usage, agent outcomes, sources with access type, findings with provenance, cross-checks and the
+  /// input snapshot. Contains the user's own project data, never credentials.
+  metadataJson  Json
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  project  Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  run      CampaignRun            @relation(fields: [runId], references: [id], onDelete: Cascade)
+  f1Report ProductDiscoveryReport @relation(fields: [f1ReportId], references: [id], onDelete: NoAction)
+  strategies MarketingStrategyReport[]
+
+  @@index([projectId, createdAt])
+  @@index([f1ReportId])
+}
+
+/// F3 Market Research & Strategy output. One per run; reruns create new rows, nothing is overwritten.
+/// Always tied to the exact F1 report and F2 audit it was built on.
+model MarketingStrategyReport {
+  id            String   @id @default(cuid())
+  projectId     String
+  runId         String   @unique
+  /// The completed F1 Product Discovery report this strategy used (exact version).
+  f1ReportId    String
+  /// The completed F2 Marketing Audit this strategy used (exact version).
+  f2AuditId     String
+  schemaVersion Int
+  language      String
+  /// Model id the user selected for the run (as sent to OpenAI).
+  model         String
+  /// The validated Campaign Strategy Report (see CampaignStrategyReport in @launchpilot/agents), incl. the F4 creative brief.
+  reportJson    Json
+  /// Token usage, plan with the dynamically created Channel Scouts, sources with access type, findings with
+  /// provenance, cross-checks and the input snapshot. Contains the user's project data, never credentials.
+  metadataJson  Json
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  project  Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  run      CampaignRun            @relation(fields: [runId], references: [id], onDelete: Cascade)
+  f1Report ProductDiscoveryReport @relation(fields: [f1ReportId], references: [id], onDelete: NoAction)
+  f2Audit  MarketingAuditReport   @relation(fields: [f2AuditId], references: [id], onDelete: NoAction)
+
+  @@index([projectId, createdAt])
+  @@index([f1ReportId])
+  @@index([f2AuditId])
 }

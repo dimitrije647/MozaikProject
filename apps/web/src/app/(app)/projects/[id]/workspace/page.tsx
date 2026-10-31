@@ -19,6 +19,8 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/empty-state';
+import { MarketingAuditPanel } from '@/components/marketing-audit-panel';
+import { MarketStrategyPanel } from '@/components/market-strategy-panel';
 import { ProductDiscoveryPanel } from '@/components/product-discovery-panel';
 import { RuntimeTestPanel } from '@/components/runtime-test-panel';
 import { ProjectStatusBadge } from '@/components/project-status-badge';
@@ -60,7 +62,7 @@ export default function WorkspacePage() {
       {/* Banner */}
       <div role="status" className="flex items-start gap-3 rounded-2xl border border-amber-300/70 bg-amber-50 px-5 py-4 text-sm text-amber-900">
         <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-        <p><strong className="font-semibold">Full campaign generation is not enabled yet.</strong> Product Discovery (a text-only AI analysis of your idea) is available below; the audit, strategy, creative and export stages are still to come.</p>
+        <p><strong className="font-semibold">Full campaign generation is not enabled yet.</strong> Product Discovery (F1), the Marketing Audit (F2) and Market Research &amp; Strategy (F3) are available below; creative production and export are still to come.</p>
       </div>
 
       {/* Hero */}
@@ -171,6 +173,10 @@ export default function WorkspacePage() {
       </div>
 
       <ProductDiscoveryPanel projectId={id} />
+
+      <MarketingAuditPanel projectId={id} />
+
+      <MarketStrategyPanel projectId={id} />
 
       <RuntimeTestPanel projectId={id} />
     </div>

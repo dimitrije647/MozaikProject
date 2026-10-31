@@ -151,6 +151,36 @@ export function toWireSchema(schema: z.ZodType): Record<string, unknown> {
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; issues: string[] };
 
 /** Parses a model answer as JSON (tolerating a markdown fence) and validates it against `schema`. */
+/**
+ * Length bounds are removed from the wire schema (OpenAI strict mode rejects them), so a model cannot
+ * know them and regularly overshoots a limit by a few characters or one list item. Trimming that excess is
+ * safe (a trimmed excerpt is still a verbatim prefix) and far cheaper than a repair call. Only
+ * `too_big` problems on strings and arrays are trimmed; every other problem still fails the answer.
+ */
+function trimExcess(json: unknown, issues: z.core.$ZodIssue[]): boolean {
+  let changed = false;
+  for (const i of issues) {
+    if (i.code !== 'too_big' || (i.origin !== 'string' && i.origin !== 'array')) return false;
+    const max = Number(i.maximum);
+    if (!Number.isFinite(max)) return false;
+    let parent: any = json;
+    for (const key of i.path.slice(0, -1)) parent = parent?.[key as never];
+    const last = i.path[i.path.length - 1];
+    if (parent === undefined || parent === null || last === undefined) {
+      return false;
+    }
+    const value = parent[last as never];
+    if (typeof value === 'string' && i.origin === 'string') {
+      parent[last as never] = value.length > max ? `${value.slice(0, Math.max(1, max - 1))}…` : value;
+      changed = true;
+    } else if (Array.isArray(value) && i.origin === 'array') {
+      parent[last as never] = value.slice(0, max);
+      changed = true;
+    } else return false;
+  }
+  return changed;
+}
+
 export function parseModelJson<T>(text: string, schema: z.ZodType<T>): ParseResult<T> {
   const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   let json: unknown;
@@ -159,7 +189,8 @@ export function parseModelJson<T>(text: string, schema: z.ZodType<T>): ParseResu
   } catch {
     return { ok: false, issues: ['The answer was not valid JSON (it may have been cut off by the output limit).'] };
   }
-  const result = schema.safeParse(json);
+  let result = schema.safeParse(json);
+  for (let pass = 0; pass < 3 && !result.success && trimExcess(json, result.error.issues); pass++) result = schema.safeParse(json);
   if (result.success) return { ok: true, value: result.data };
   return {
     ok: false,

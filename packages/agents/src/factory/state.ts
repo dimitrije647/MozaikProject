@@ -1,4 +1,7 @@
 import { RuntimeState } from '@mozaik-ai/core';
+import { AuditBoardStore } from '../audit/board';
+import { F1BoardStore } from '../discovery/f1/board';
+import { StrategyBoardStore } from '../strategy/board';
 import type { BoardName, FactoryPhase } from './phases';
 
 export type CampaignRunStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
@@ -68,6 +71,12 @@ export class FactoryRuntimeState extends RuntimeState {
   currentPhase: FactoryPhase | null = null;
   status: CampaignRunStatus = 'running';
   readonly boards: Record<BoardName, Board> = { intake: {}, audit: {}, market: {}, production: {} };
+  /** F1 shared board (single writer: the Phase Coordinator). */
+  readonly f1 = new F1BoardStore();
+  /** F2 shared board (single writer: the Audit Coordinator). */
+  readonly f2 = new AuditBoardStore();
+  /** F3 shared board (single writer: the Strategy Coordinator). */
+  readonly f3 = new StrategyBoardStore();
   readonly findings: Finding[] = [];
   readonly events: RecordedEvent[] = [];
   readonly startedAt: string = new Date().toISOString();

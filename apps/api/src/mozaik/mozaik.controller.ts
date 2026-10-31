@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { AuthUser, CurrentUser } from '../auth/current-user.decorator';
-import { ListEventsQueryDto, StartDiscoveryDto, StartSmokeTestDto } from './dto/mozaik.dto';
+import { ListAuditsQueryDto, ListEventsQueryDto, StartAuditDto, StartDiscoveryDto, StartSmokeTestDto, StartStrategyDto } from './dto/mozaik.dto';
 import { MozaikService } from './mozaik.service';
 
 @Controller()
@@ -20,6 +20,44 @@ export class MozaikController {
   @Post('projects/:projectId/runs/product-discovery')
   startProductDiscovery(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string, @Body() dto: StartDiscoveryDto) {
     return this.mozaik.startProductDiscovery(u.id, projectId, dto);
+  }
+
+  /** F2 Marketing Audit on a completed F1 report. Uses the user's OpenAI credits; only runs from this explicit call. */
+  @Post('projects/:projectId/runs/marketing-audit')
+  startMarketingAudit(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string, @Body() dto: StartAuditDto) {
+    return this.mozaik.startMarketingAudit(u.id, projectId, dto);
+  }
+
+  @Get('projects/:projectId/audits')
+  audits(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string, @Query() query: ListAuditsQueryDto) {
+    return this.mozaik.listAudits(u.id, projectId, query);
+  }
+
+  @Get('audits/:auditId')
+  audit(@CurrentUser() u: AuthUser, @Param('auditId') auditId: string) {
+    return this.mozaik.getAudit(u.id, auditId);
+  }
+
+  /** F3 Market Research & Strategy on a completed F2 audit. Uses the user's OpenAI credits; only runs from this explicit call. */
+  @Post('projects/:projectId/runs/market-strategy')
+  startMarketStrategy(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string, @Body() dto: StartStrategyDto) {
+    return this.mozaik.startMarketStrategy(u.id, projectId, dto);
+  }
+
+  @Get('projects/:projectId/strategies')
+  strategies(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string, @Query() query: ListAuditsQueryDto) {
+    return this.mozaik.listStrategies(u.id, projectId, query);
+  }
+
+  @Get('strategies/:strategyId')
+  strategy(@CurrentUser() u: AuthUser, @Param('strategyId') strategyId: string) {
+    return this.mozaik.getStrategy(u.id, strategyId);
+  }
+
+  /** Participants (incl. the dynamically created Channel Scouts and why the others were not), sources, findings, cross-checks, usage. */
+  @Get('runs/:runId/strategy-analysis')
+  strategyAnalysis(@CurrentUser() u: AuthUser, @Param('runId') runId: string) {
+    return this.mozaik.getStrategyAnalysis(u.id, runId);
   }
 
   @Get('projects/:projectId/reports')
@@ -45,6 +83,12 @@ export class MozaikController {
   @Get('runs/:runId/events')
   events(@CurrentUser() u: AuthUser, @Param('runId') runId: string, @Query() query: ListEventsQueryDto) {
     return this.mozaik.listEvents(u.id, runId, query);
+  }
+
+  /** Agents, sources, findings (evidence) and cross-checks of a run. */
+  @Get('runs/:runId/analysis')
+  analysis(@CurrentUser() u: AuthUser, @Param('runId') runId: string) {
+    return this.mozaik.getAnalysis(u.id, runId);
   }
 
   @Post('runs/:runId/cancel')

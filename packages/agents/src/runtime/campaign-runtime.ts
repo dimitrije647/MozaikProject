@@ -6,7 +6,7 @@ import {
   type Participant,
 } from '@mozaik-ai/core';
 import type { EmittedEventType, FactoryEventPayloads, RunMode, TerminalReason } from '../factory/events';
-import type { ProductDiscoveryReport } from '../discovery/schemas';
+import type { ProductDiscoveryReportV2 } from '../discovery/f1/schemas';
 import { redact, safeErrorMessage } from '../factory/redact';
 import {
   FactoryRuntimeState,
@@ -16,14 +16,18 @@ import {
   type RecordedEvent,
 } from '../factory/state';
 import { summarizeForHistory } from './history';
-import { DiscoveryProgram, type DiscoveryRunConfig, type ReportMeta } from './programs/discovery-program';
+import { F1Program, type DiscoveryRunConfig, type ReportMeta } from './programs/f1-program';
+import { F2Program, type AuditReportMeta, type AuditRunConfig } from './programs/f2-program';
+import { F3Program, type StrategyReportMeta, type StrategyRunConfig } from './programs/f3-program';
+import type { CampaignStrategyReport } from '../strategy/schemas';
+import type { MarketingAuditReport } from '../audit/schemas';
 import { SmokeProgram, type SmokeTestOptions } from './programs/smoke-program';
 import type { InferenceCredentials } from './providers';
 import { OnAnyEvent, OnEventTypes, guarded, type RunContext, type RunProgram } from './run-context';
 import { enforceTelemetryPolicy } from './telemetry';
 
 export { DEFAULT_SMOKE_TIMEOUT_MS, type SmokeBehavior, type SmokeTestOptions } from './programs/smoke-program';
-export { AGENT_NAMES, type DiscoveryRunConfig, type ReportMeta, type ReportSink } from './programs/discovery-program';
+export { planF1, type DiscoveryRunConfig, type ReportMeta, type ReportSink } from './programs/f1-program';
 
 export interface CampaignRunInput {
   runId: string;
@@ -38,6 +42,10 @@ export interface CampaignRunInput {
   options?: SmokeTestOptions;
   /** product_discovery settings. */
   discovery?: DiscoveryRunConfig;
+  /** marketing_audit settings (needs a completed F1 report, see buildF1Context). */
+  audit?: AuditRunConfig;
+  /** market_strategy settings (needs a completed F1 report and F2 audit, see buildF1Context / buildF2Context). */
+  strategy?: StrategyRunConfig;
   /**
    * Receives every event of the run, already sanitized and compacted, in order. The backend
    * persists them. Returned promises are not awaited by the runtime (Mozaik delivery is synchronous).
@@ -47,7 +55,11 @@ export interface CampaignRunInput {
    * product_discovery: called with the validated report BEFORE the run is completed. The run only
    * completes if this resolves; a rejection fails the run.
    */
-  onReport?: (report: ProductDiscoveryReport, meta: ReportMeta) => Promise<void>;
+  onReport?: (report: ProductDiscoveryReportV2, meta: ReportMeta) => Promise<void>;
+  /** marketing_audit: same contract as onReport, for the Marketing Audit Report. */
+  onAudit?: (report: MarketingAuditReport, meta: AuditReportMeta) => Promise<void>;
+  /** market_strategy: same contract, for the Campaign Strategy Report. */
+  onStrategy?: (report: CampaignStrategyReport, meta: StrategyReportMeta) => Promise<void>;
 }
 
 export interface CampaignRunResult {
@@ -86,13 +98,14 @@ export const MAX_EVENTS_PER_RUN = 600;
 
 // ---- One isolated run ----------------------------------------------------------------------
 
-type BaseRunInput = Omit<CampaignRunInput, 'credentials' | 'discovery' | 'options' | 'onReport'>;
+type BaseRunInput = Omit<CampaignRunInput, 'credentials' | 'discovery' | 'audit' | 'strategy' | 'options' | 'onReport' | 'onAudit' | 'onStrategy'>;
 
 class ActiveRun implements RunContext {
   readonly mozaik = defineRuntime<FactoryRuntimeState>(); // own closure => own runtime, no shared globals
   readonly state: FactoryRuntimeState;
   readonly done: Promise<CampaignRunResult>;
 
+  private readonly abortController = new AbortController();
   private resolveDone!: (r: CampaignRunResult) => void;
   private sequence = 0;
   private closed = false;
@@ -114,6 +127,9 @@ class ActiveRun implements RunContext {
 
   get runId() {
     return this.input.runId;
+  }
+  get signal() {
+    return this.abortController.signal;
   }
   get orchestrator() {
     return this.orchestratorParticipant;
@@ -216,6 +232,11 @@ class ActiveRun implements RunContext {
     this.mozaik.runLoop(agentId, message, input);
   }
 
+  join(participant: Participant) {
+    if (this.closed) return;
+    this.mozaik.join(participant);
+  }
+
   // ---- internals
 
   private record(event: SemanticEvent) {
@@ -261,6 +282,7 @@ class ActiveRun implements RunContext {
     this.state.completedAt = new Date().toISOString();
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
+    this.abortController.abort();
     try {
       this.program.dispose();
     } catch (err) {
@@ -300,8 +322,8 @@ export class MozaikCampaignRuntime implements CampaignRuntime {
     enforceTelemetryPolicy(); // idempotent; guards against the environment changing after construction
     if (this.active.has(input.runId)) throw new RuntimeInitError(`Run ${input.runId} is already active`);
 
-    const { credentials, discovery, options, onReport, ...base } = input;
-    const program = this.createProgram(input.mode, { credentials, discovery, options, onReport });
+    const { credentials, discovery, audit, strategy, options, onReport, onAudit, onStrategy, ...base } = input;
+    const program = this.createProgram(input.mode, { credentials, discovery, audit, strategy, options, onReport, onAudit, onStrategy });
 
     const run = new ActiveRun(base, program, program.defaultTimeoutMs, (id) => this.active.delete(id), this.warn);
     this.active.set(input.runId, run);
@@ -322,7 +344,7 @@ export class MozaikCampaignRuntime implements CampaignRuntime {
 
   private createProgram(
     mode: RunMode,
-    parts: Pick<CampaignRunInput, 'credentials' | 'discovery' | 'options' | 'onReport'>,
+    parts: Pick<CampaignRunInput, 'credentials' | 'discovery' | 'audit' | 'strategy' | 'options' | 'onReport' | 'onAudit' | 'onStrategy'>,
   ): RunProgram {
     if (mode === 'smoke_test') return new SmokeProgram(parts.options, parts.credentials);
     if (mode === 'product_discovery') {
@@ -330,7 +352,24 @@ export class MozaikCampaignRuntime implements CampaignRuntime {
       if (parts.credentials.provider !== 'openai') throw new RuntimeInitError('Product Discovery currently supports OpenAI only');
       if (!parts.discovery?.model?.trim()) throw new RuntimeInitError('Product Discovery needs an explicit model');
       if (!parts.onReport) throw new RuntimeInitError('Product Discovery needs a report sink (onReport)');
-      return new DiscoveryProgram(parts.credentials, parts.discovery, parts.onReport);
+      return new F1Program(parts.credentials, parts.discovery, parts.onReport);
+    }
+    if (mode === 'marketing_audit') {
+      if (!parts.credentials) throw new RuntimeInitError("Marketing Audit needs the user's OpenAI credentials");
+      if (parts.credentials.provider !== 'openai') throw new RuntimeInitError('Marketing Audit currently supports OpenAI only');
+      if (!parts.audit?.model?.trim()) throw new RuntimeInitError('Marketing Audit needs an explicit model');
+      if (!parts.audit.f1) throw new RuntimeInitError('Marketing Audit needs a completed F1 report');
+      if (!parts.onAudit) throw new RuntimeInitError('Marketing Audit needs a report sink (onAudit)');
+      return new F2Program(parts.credentials, parts.audit, parts.onAudit);
+    }
+    if (mode === 'market_strategy') {
+      if (!parts.credentials) throw new RuntimeInitError("Market Strategy needs the user's OpenAI credentials");
+      if (parts.credentials.provider !== 'openai') throw new RuntimeInitError('Market Strategy currently supports OpenAI only');
+      if (!parts.strategy?.model?.trim()) throw new RuntimeInitError('Market Strategy needs an explicit model');
+      if (!parts.strategy.f1 || !parts.strategy.f2) throw new RuntimeInitError('Market Strategy needs a completed F1 report and F2 audit');
+      if (parts.strategy.f2.f1ReportId !== parts.strategy.f1.reportId) throw new RuntimeInitError('The F2 audit was not built on the selected F1 report');
+      if (!parts.onStrategy) throw new RuntimeInitError('Market Strategy needs a report sink (onStrategy)');
+      return new F3Program(parts.credentials, parts.strategy, parts.onStrategy);
     }
     throw new RuntimeInitError(`Run mode "${String(mode)}" is not implemented`);
   }

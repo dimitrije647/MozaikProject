@@ -54,6 +54,8 @@ export function guarded(
 export interface RunContext {
   readonly runId: string;
   readonly state: FactoryRuntimeState;
+  /** Aborted when the run ends (cancel, failure, timeout, shutdown): pass it to every tool call. */
+  readonly signal: AbortSignal;
   /** The orchestrator participant (valid once the run has started). */
   readonly orchestrator: Participant;
   emit<T extends EmittedEventType>(type: T, payload: FactoryEventPayloads[T], from: Participant): void;
@@ -65,6 +67,8 @@ export interface RunContext {
   isClosed(): boolean;
   /** Mozaik agent loop of this run's runtime. */
   runLoop(agentId: string, message: string, input: InferenceInput): void;
+  /** Joins a participant to the live Mozaik runtime (dynamic registration after the run started). */
+  join(participant: Participant): void;
   guard(who: string): (err: unknown) => void;
 }
 

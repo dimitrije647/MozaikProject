@@ -1,7 +1,8 @@
 /**
- * What the Product Discovery agents are allowed to see: the project's TEXT and structured intake.
- * URLs and uploads are listed as "available but not analyzed" (no crawling, repo or file analysis
- * exists yet). No credentials are ever part of this object.
+ * The project data Product Discovery works from: text, structured intake and the LIST of available
+ * sources (website, repository, uploads, social profiles). The sources themselves are retrieved by
+ * deterministic tools at run time; social profiles are listed but never retrieved. No credentials
+ * are ever part of this object.
  */
 export interface DiscoveryInput {
   project: { name: string; description: string | null };
@@ -15,7 +16,7 @@ export interface DiscoveryInput {
     stylePreference: string | null;
   } | null;
   notes: { title: string; content: string }[];
-  availableNotAnalyzed: {
+  availableSources: {
     websiteUrl: string | null;
     githubUrl: string | null;
     socialProfiles: { platform: string; url: string }[];
@@ -84,7 +85,7 @@ export function buildDiscoveryInput(raw: RawDiscoveryData): DiscoveryInput {
       stylePreference: cap(i.stylePreference, 100),
     },
     notes: (raw.notes ?? []).slice(0, LIMITS.notes).map((n) => ({ title: cap(n.title, 160) ?? '', content: cap(n.content, LIMITS.note) ?? '' })),
-    availableNotAnalyzed: {
+    availableSources: {
       websiteUrl: i?.websiteUrl ?? null,
       githubUrl: i?.githubUrl ?? null,
       socialProfiles: (raw.socialProfiles ?? []).slice(0, LIMITS.urls),

@@ -145,6 +145,10 @@ export interface RunView {
   completedAt: string | null;
   errorMessage: string | null;
   reportId: string | null;
+  /** Set for Marketing Audit runs once their report is saved. */
+  auditId: string | null;
+  /** Set for Market Research & Strategy runs once their report is saved. */
+  strategyId: string | null;
 }
 
 export interface RunEvent {
@@ -265,6 +269,8 @@ export interface ReportSummary {
   partial: boolean;
   executiveSummary: string;
   usage: UsageTotals | null;
+  activated?: number | null;
+  skipped?: number | null;
 }
 
 export interface ReportFull {
@@ -275,6 +281,562 @@ export interface ReportFull {
   language: string;
   model: string;
   createdAt: string;
-  report: ProductDiscoveryReportData;
-  metadata: ReportMetadata;
+  /** schemaVersion 1 = legacy text-only report, 2 = F1 seven-agent report. */
+  report: ProductDiscoveryReportData | ProductDiscoveryReportV2Data;
+  metadata: ReportMetadata | ReportMetadataV2;
+}
+
+// ---- F1 (schemaVersion 2) ----
+
+export interface V2Statement {
+  text: string;
+  status: EvidenceStatus;
+  basis: string;
+  findingIds: string[];
+}
+
+export interface ProductManifestData {
+  name: string;
+  tagline: string | null;
+  category: string;
+  industry: string | null;
+  businessType: string;
+  offering: { summary: string; items: string[] };
+  problem: string | null;
+  valueProposition: string | null;
+  targetCustomers: string[];
+  geography: string[];
+  languages: string[];
+  goals: string[];
+  differentiators: string[];
+  brand: { style: string | null; palette: string[]; notes: string | null } | null;
+  onlinePresence: { website: string | null; repository: string | null; socialProfiles: string[] };
+  openQuestions: string[];
+  overallConfidence: number;
+  confidenceNotes: string;
+  evidenceFindingIds: string[];
+}
+
+export interface ProductDiscoveryReportV2Data {
+  schemaVersion: number;
+  language: string;
+  partial: boolean;
+  executiveSummary: string;
+  identity: { name: string; category: string; industry: string | null; businessType: string; summary: string };
+  problemAndSolution: { problem: V2Statement; solution: V2Statement };
+  offerings: V2Statement[];
+  valueProposition: V2Statement;
+  targetCustomers: V2Statement[];
+  differentiation: V2Statement[];
+  websiteFindings: V2Statement[];
+  repositoryFindings: V2Statement[];
+  documentFindings: V2Statement[];
+  visualFindings: V2Statement[];
+  strengths: V2Statement[];
+  weaknessesRisksUnknowns: V2Statement[];
+  evidenceSummary: { narrative: string; contradictions: { topic: string; detail: string; findingIds: string[]; status: 'open' | 'resolved' }[] };
+  missingInformation: string[];
+  recommendedInvestigations: { action: string; priority: 'high' | 'medium' | 'low'; rationale: string }[];
+  productManifest: ProductManifestData;
+}
+
+export type CrosscheckStatus = 'not_requested' | 'pending' | 'agreed' | 'disputed' | 'corrected' | 'insufficient';
+
+export interface F1Finding {
+  id: string;
+  agent: string;
+  category: string;
+  statement: string;
+  classification: EvidenceStatus;
+  sourceType: string;
+  sourceId: string | null;
+  locator: string | null;
+  excerpt: string | null;
+  confidence: number | null;
+  importance: string;
+  adjustment?: string | null;
+  createdAt?: string;
+  crosscheck: { status: CrosscheckStatus; reviewers: string[] };
+}
+
+export interface F1Source {
+  id: string;
+  agent: string;
+  kind: string;
+  label: string;
+  url?: string | null;
+  status: 'retrieved' | 'failed' | 'skipped' | 'unsupported';
+  live: boolean;
+  fixture: boolean;
+  httpStatus?: number | null;
+  error?: string | null;
+  notes: string[];
+  injectionSuspected?: boolean;
+  retrievedAt?: string;
+}
+
+export interface F1Participant {
+  agent: string;
+  state: 'waiting' | 'working' | 'done' | 'failed' | 'skipped' | 'timed_out';
+  reason?: string | null;
+  error?: { code: string; message: string } | null;
+}
+
+export interface F1Crosscheck {
+  requestId: string;
+  claimId: string;
+  producer: string;
+  reviewer: string;
+  status: 'pending' | 'answered' | 'timed_out' | 'failed';
+  verdict?: 'agree' | 'disagree' | 'correct' | 'insufficient_evidence' | null;
+  rationale?: string | null;
+  correction?: string | null;
+  error?: string | null;
+}
+
+export interface F1Plan {
+  activated: { key: string; agent: string; reason: string }[];
+  skipped: { key: string; agent: string; reason: string }[];
+}
+
+export interface ReportMetadataV2 {
+  schemaVersion: number;
+  model: string;
+  provider: string;
+  generatedAt: string;
+  partial: boolean;
+  usage: { total: UsageTotals; perAgent: Record<string, UsageTotals>; callsStarted: number };
+  budget: { maxModelCalls: number; analystTokens: number; reviewTokens: number; synthTokens: number };
+  plan: F1Plan;
+  participants: F1Participant[];
+  sources: F1Source[];
+  findings: F1Finding[];
+  crosschecks: F1Crosscheck[];
+  aiCalls: Record<string, number>;
+  analyzed: { website: boolean; repository: boolean; documents: boolean; visual: boolean };
+  notAnalyzed: { label: string; reason: string }[];
+  policyIssues: { type: string; detail: string }[];
+  tools: { search: string; searchConfigured: boolean; fixtureSources: boolean };
+}
+
+/** GET /runs/:id/analysis: from the saved report when there is one, otherwise folded from events. */
+export interface RunAnalysis {
+  runId: string;
+  status: RunStatus;
+  source: 'report' | 'events';
+  reportId: string | null;
+  plan: F1Plan | null;
+  participants: F1Participant[];
+  sources: F1Source[];
+  findings: F1Finding[];
+  crosschecks: F1Crosscheck[];
+  usage: ReportMetadataV2['usage'] | null;
+  aiCalls: Record<string, number>;
+  notAnalyzed: { label: string; reason: string }[];
+  tools: ReportMetadataV2['tools'] | null;
+  policyIssues: { type: string; detail: string }[];
+}
+
+// ---- F2 Marketing Audit ----
+
+export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+export type AuditArea = 'seo' | 'social' | 'brand' | 'messaging' | 'presence' | 'cross';
+
+export interface AuditStatementData {
+  text: string;
+  status: EvidenceStatus;
+  severity: Severity | null;
+  basis: string;
+  recommendation: string | null;
+  findingIds: string[];
+}
+
+export interface AuditSectionData {
+  assessment: string;
+  statements: AuditStatementData[];
+}
+
+export interface MetricRow {
+  label: string;
+  value: string;
+}
+
+export interface MarketingAuditReportData {
+  schemaVersion: number;
+  language: string;
+  partial: boolean;
+  executiveSummary: string;
+  seo: AuditSectionData;
+  social: AuditSectionData;
+  brand: AuditSectionData;
+  messaging: AuditSectionData;
+  presence: AuditSectionData;
+  mainProblems: { title: string; area: AuditArea; severity: Severity; status: EvidenceStatus; description: string; impact: string; recommendation: string; findingIds: string[] }[];
+  contradictions: { topic: string; detail: string; findingIds: string[]; status: 'open' | 'resolved' }[];
+  strengths: AuditStatementData[];
+  weaknesses: AuditStatementData[];
+  opportunities: { title: string; priority: 'high' | 'medium' | 'low'; area: AuditArea; rationale: string; effort: 'low' | 'medium' | 'high'; findingIds: string[] }[];
+  additionalLimitations: string[];
+  f3Handoff: { positioningQuestions: string[]; audienceHypothesesToTest: string[]; channelHypotheses: string[]; priorityThemes: string[]; constraints: string[] };
+  productContext: { f1ReportId: string; f1SchemaVersion: number; f1GeneratedAt: string | null; name: string; category: string; businessType: string; summary: string; offering: string; valueProposition: string | null; targetCustomers: string[]; f1Confidence: number; f1Partial: boolean };
+  websiteHealth: {
+    websiteUrl: string | null;
+    reachable: boolean | null;
+    pagesAnalyzed: number;
+    robots: string;
+    sitemap: string;
+    brokenInternalLinks: number | null;
+    pageSpeed: { status: 'measured' | 'unavailable'; note: string; metrics: MetricRow[] };
+    perPage: { url: string; status: number; title: string | null; metaDescription: string | null; h1Count: number; canonical: string | null; noindex: boolean; viewport: boolean; structuredData: string[] }[];
+  };
+  socialPlatforms: { platform: string; url: string | null; access: 'live_api' | 'user_provided' | 'export' | 'fixture' | 'unavailable' | 'not_supplied' | 'invalid'; note: string; metrics: MetricRow[] }[];
+  channels: { platform: string; url: string | null; state: string; linkedFromWebsite: boolean | null }[];
+  limitations: string[];
+  evidenceAppendix: {
+    findings: { id: string; agent: string; area: string; kind: string; title: string; statement: string; classification: EvidenceStatus; severity: Severity; sourceId: string | null; locator: string | null; excerpt: string | null; recommendation: string | null; crosscheck: string; at: string }[];
+    sources: { id: string; kind: string; label: string; status: string; origin: string; live: boolean; fixture: boolean; error: string | null }[];
+  };
+}
+
+export interface AuditFindingData {
+  id: string;
+  agent: string;
+  area: AuditArea;
+  kind: string;
+  title: string;
+  statement: string;
+  classification: EvidenceStatus;
+  severity: Severity;
+  sourceType: string;
+  sourceId: string | null;
+  locator: string | null;
+  excerpt: string | null;
+  recommendation: string | null;
+  confidence: number | null;
+  adjustment: string | null;
+  at: string;
+  crosscheck: { status: CrosscheckStatus; reviewers: string[] };
+}
+
+export interface AuditSource extends Omit<F1Source, 'kind'> {
+  kind: string;
+  origin?: string;
+}
+
+export interface AuditMetadata {
+  schemaVersion: number;
+  model: string;
+  generatedAt: string;
+  partial: boolean;
+  usage: ReportMetadataV2['usage'];
+  budget: { maxModelCalls: number; auditorTokens: number; reviewTokens: number; synthTokens: number };
+  f1: { reportId: string; schemaVersion: number; generatedAt: string | null; model: string | null; partial: boolean };
+  plan: F1Plan;
+  participants: F1Participant[];
+  sources: AuditSource[];
+  findings: AuditFindingData[];
+  crosschecks: F1Crosscheck[];
+  aiCalls: Record<string, number>;
+  notAnalyzed: { label: string; reason: string }[];
+  policyIssues: { type: string; detail: string }[];
+  tools: { pagespeed: { configured: boolean; calls: number }; youtube: { configured: boolean; calls: number }; fixtureSources: boolean };
+}
+
+export interface AuditSummary {
+  id: string;
+  runId: string;
+  f1ReportId: string;
+  createdAt: string;
+  language: string;
+  model: string;
+  schemaVersion: number;
+  partial: boolean;
+  executiveSummary: string;
+  usage: UsageTotals | null;
+  activated: number | null;
+  skipped: number | null;
+  findings: number | null;
+}
+
+export interface AuditFull {
+  id: string;
+  projectId: string;
+  runId: string;
+  f1ReportId: string;
+  schemaVersion: number;
+  language: string;
+  model: string;
+  createdAt: string;
+  report: MarketingAuditReportData;
+  metadata: AuditMetadata;
+}
+
+/** GET /runs/:id/analysis for a Marketing Audit run (the same endpoint F1 uses). */
+export interface AuditAnalysis {
+  runId: string;
+  status: RunStatus;
+  kind: 'audit' | 'discovery';
+  source: 'report' | 'events';
+  reportId: string | null;
+  plan: F1Plan | null;
+  participants: F1Participant[];
+  sources: AuditSource[];
+  findings: AuditFindingData[];
+  crosschecks: F1Crosscheck[];
+  usage: ReportMetadataV2['usage'] | null;
+  aiCalls: Record<string, number>;
+  notAnalyzed: { label: string; reason: string }[];
+  policyIssues: { type: string; detail: string }[];
+  f1?: AuditMetadata['f1'] | null;
+}
+
+export interface SocialDetailInput {
+  platform: string;
+  bio?: string;
+  followers?: number;
+  postsPerMonth?: number;
+}
+
+// ---- F3 Market Research & Strategy ----
+
+export type StrategyArea = 'audience' | 'competitor' | 'channel' | 'seasonal' | 'strategy';
+export type ChannelId = 'instagram' | 'facebook' | 'linkedin' | 'youtube' | 'tiktok' | 'google_search' | 'email' | 'organic_content' | 'community';
+
+export interface SegmentDetailData {
+  name: string;
+  kind: 'b2b' | 'b2c' | 'mixed';
+  needs: string[];
+  painPoints: string[];
+  motivations: string[];
+  barriers: string[];
+  decisionProcess: string | null;
+  messagingPreferences: string[];
+  productFit: 'strong' | 'moderate' | 'weak' | 'unknown';
+}
+export interface CompetitorDetailData {
+  name: string;
+  url: string | null;
+  relation: 'direct' | 'indirect' | 'unverified';
+  existence: 'confirmed' | 'unconfirmed';
+  positioning: string | null;
+  offerings: string[];
+  differentiators: string[];
+  weaknesses: string[];
+  crowdedTheme: string | null;
+}
+export interface ChannelDetailData {
+  channel: ChannelId;
+  fit: 'strong' | 'moderate' | 'weak' | 'unsuitable';
+  audienceFit: string;
+  organicSuitability: 'high' | 'medium' | 'low';
+  paidSuitability: 'high' | 'medium' | 'low' | 'unknown';
+  contentTypes: string[];
+  complexity: 'low' | 'medium' | 'high';
+  constraints: string[];
+  measurement: string[];
+  risks: string[];
+  role: 'primary' | 'secondary' | 'test' | 'skip';
+}
+export interface OpportunityDetailData {
+  name: string;
+  window: string;
+  startDate: string | null;
+  endDate: string | null;
+  dateBasis: 'public_holiday_api' | 'recurring_pattern' | 'user_provided' | 'speculative';
+  leadTimeWeeks: number | null;
+  relevance: string;
+  regionNote: string | null;
+}
+
+/** A StrategicFinding on the F3 board. */
+export interface StrategyFindingData {
+  id: string;
+  agent: string;
+  area: StrategyArea;
+  channel: ChannelId | null;
+  kind: string;
+  title: string;
+  statement: string;
+  classification: EvidenceStatus;
+  importance: 'high' | 'medium' | 'low';
+  sourceType: string;
+  sourceId: string | null;
+  locator: string | null;
+  excerpt: string | null;
+  reasoning: string;
+  confidence: number | null;
+  recommendation: string | null;
+  segment: SegmentDetailData | null;
+  competitor: CompetitorDetailData | null;
+  channelEval: ChannelDetailData | null;
+  opportunity: OpportunityDetailData | null;
+  crosscheck: { status: CrosscheckStatus; reviewers: string[] };
+  adjustment: string | null;
+  at: string;
+}
+
+export interface ScoutDecisionData {
+  channel: ChannelId;
+  name: string;
+  selected: boolean;
+  score: number;
+  ruleHits: string[];
+  reason: string;
+}
+
+export interface StrategyStatementData {
+  text: string;
+  status: EvidenceStatus;
+  basis: string;
+  caveat: string | null;
+  findingIds: string[];
+}
+
+export interface F4CreativeBriefData {
+  objective: string;
+  audiencePrimary: string;
+  audienceSecondary: string[];
+  messagingPriorities: string[];
+  channels: { channel: ChannelId; formats: string[]; notes: string }[];
+  visualDirection: string | null;
+  brandConstraints: string[];
+  claimsToAvoid: { claim: string; reason: string }[];
+  requiredEvidence: string[];
+  deliverables: { type: string; channel: ChannelId | null; count: number }[];
+  suggestedConceptCount: number;
+  toneOfVoice: string | null;
+  productIdentity: { name: string; category: string; businessType: string; summary: string; valueProposition: string | null };
+  language: string;
+  visualPalette: string[];
+  visualBasis: 'f1_measured_palette' | 'none';
+  provenance: { f1ReportId: string; f2AuditId: string; strategyRunId: string | null };
+}
+
+type FindingRef = { findingId: string; agent: string; status: EvidenceStatus; confidence: number | null; sourceId: string | null; locator: string | null; crosscheck: string };
+
+export interface CampaignStrategyReportData {
+  schemaVersion: number;
+  language: string;
+  partial: boolean;
+  executiveSummary: string;
+  priorityAudiences: { segmentName: string; priority: 'primary' | 'secondary' | 'later'; rationale: string; findingIds: string[] }[];
+  campaignGoals: { goal: string; measuredBy: string; rationale: string; findingIds: string[] }[];
+  valueProposition: StrategyStatementData;
+  positioning: { statement: StrategyStatementData; differentiators: StrategyStatementData[]; crowdedThemesToAvoid: string[] };
+  mainMessages: { message: string; audience: string; proofNeeded: string[]; findingIds: string[] }[];
+  channels: { channel: ChannelId; role: 'primary' | 'secondary' | 'test'; approach: 'organic' | 'paid' | 'mixed'; rationale: string; formats: string[]; findingIds: string[] }[];
+  organicPaid: { approach: string; paidRole: string; budgetNote: string };
+  timing: { window: string; rationale: string; dateBasis: OpportunityDetailData['dateBasis']; findingIds: string[] }[];
+  contentPillars: { name: string; description: string; channels: ChannelId[]; findingIds: string[] }[];
+  campaignStructure: { phase: string; duration: string; objective: string; activities: string[] }[];
+  kpis: { kpi: string; channel: ChannelId | null; measuredBy: string }[];
+  risks: { risk: string; mitigation: string; findingIds: string[] }[];
+  strategicPriorities: { priority: string; rationale: string; findingIds: string[] }[];
+  disagreements: { topic: string; positions: string[]; resolution: string; resolved: boolean; findingIds: string[] }[];
+  openQuestions: string[];
+  additionalLimitations: string[];
+  productContext: { f1ReportId: string; f1SchemaVersion: number; f1GeneratedAt: string | null; name: string; category: string; businessType: string; summary: string; offering: string; valueProposition: string | null; targetCustomers: string[]; geography: string[]; f1Confidence: number };
+  existingMarketing: { f2AuditId: string; f2SchemaVersion: number; f2GeneratedAt: string | null; ageDays: number | null; stale: boolean; partial: boolean; mainProblems: { title: string; severity: string; area: string; status: EvidenceStatus }[]; notes: string[] };
+  audienceResearch: { segment: SegmentDetailData; status: EvidenceStatus; statement: string; reasoning: string; ref: FindingRef }[];
+  competitorLandscape: { searchProvider: string; searchUsed: boolean; userSuppliedUrls: number; profiles: { competitor: CompetitorDetailData; status: EvidenceStatus; statement: string; ref: FindingRef }[]; gaps: string[] };
+  channelEvaluation: {
+    evaluated: { scout: string; evaluation: ChannelDetailData; status: EvidenceStatus; statement: string; reasoning: string; ref: FindingRef }[];
+    notSelected: { channel: ChannelId; reason: string; score: number }[];
+    selection: { channel: ChannelId; selected: boolean; score: number; ruleHits: string[]; reason: string }[];
+  };
+  seasonalOpportunities: { holidayCalendar: { used: boolean; country: string | null; note: string; holidays: { date: string; name: string }[] }; opportunities: { opportunity: OpportunityDetailData; status: EvidenceStatus; statement: string; ref: FindingRef }[] };
+  evidence: {
+    findingCount: number;
+    byStatus: Record<string, number>;
+    crosschecks: { claimId: string; producer: string; reviewer: string; verdict: string | null; rationale: string | null; status: string }[];
+    sources: { id: string; kind: string; label: string; status: string; origin: string; live: boolean; fixture: boolean; error: string | null }[];
+    findings: { id: string; agent: string; kind: string; title: string; statement: string; classification: EvidenceStatus; sourceId: string | null; locator: string | null; excerpt: string | null; crosscheck: string; at: string }[];
+  };
+  limitations: string[];
+  metrics: MetricRow[];
+  creativeBrief: F4CreativeBriefData;
+}
+
+export interface StrategyMetadata {
+  schemaVersion: number;
+  model: string;
+  generatedAt: string;
+  partial: boolean;
+  usage: ReportMetadataV2['usage'];
+  budget: { maxModelCalls: number; maxScouts: number; maxReviews: number; analystTokens: number; reviewTokens: number; synthTokens: number };
+  f1: { reportId: string; schemaVersion: number; generatedAt: string | null; ageDays: number | null; partial: boolean };
+  f2: { auditId: string; schemaVersion: number; generatedAt: string | null; ageDays: number | null; partial: boolean };
+  plan: (Omit<F1Plan, 'activated'> & { activated: (F1Plan['activated'][number] & { dynamic?: boolean })[] });
+  scoutDecisions: ScoutDecisionData[];
+  participants: F1Participant[];
+  sources: AuditSource[];
+  findings: StrategyFindingData[];
+  crosschecks: F1Crosscheck[];
+  aiCalls: Record<string, number>;
+  notAnalyzed: { label: string; reason: string }[];
+  policyIssues: { type: string; detail: string }[];
+  tools: { search: { provider: string; configured: boolean; used: boolean }; holidays: { used: boolean; calls: number }; fixtureSources: boolean };
+}
+
+export interface StrategySummary {
+  id: string;
+  runId: string;
+  f1ReportId: string;
+  f2AuditId: string;
+  createdAt: string;
+  language: string;
+  model: string;
+  schemaVersion: number;
+  partial: boolean;
+  executiveSummary: string;
+  usage: UsageTotals | null;
+  scouts: number | null;
+  findings: number | null;
+}
+
+export interface StrategyFull {
+  id: string;
+  projectId: string;
+  runId: string;
+  f1ReportId: string;
+  f2AuditId: string;
+  schemaVersion: number;
+  language: string;
+  model: string;
+  createdAt: string;
+  report: CampaignStrategyReportData;
+  metadata: StrategyMetadata;
+}
+
+/** GET /runs/:id/strategy-analysis: from the saved report when there is one, otherwise folded from the persisted events. */
+export interface StrategyAnalysis {
+  runId: string;
+  status: RunStatus;
+  kind: 'strategy' | 'audit' | 'discovery';
+  source: 'report' | 'events';
+  reportId: string | null;
+  plan: StrategyMetadata['plan'] | null;
+  scoutDecisions: ScoutDecisionData[];
+  participants: F1Participant[];
+  sources: AuditSource[];
+  findings: StrategyFindingData[];
+  crosschecks: F1Crosscheck[];
+  usage: ReportMetadataV2['usage'] | null;
+  aiCalls: Record<string, number>;
+  notAnalyzed: { label: string; reason: string }[];
+  policyIssues: { type: string; detail: string }[];
+  f1?: StrategyMetadata['f1'] | null;
+  f2?: StrategyMetadata['f2'] | null;
+}
+
+export interface StartStrategyInput {
+  auditId?: string;
+  maxModelCalls?: number;
+  maxScouts?: number;
+  maxReviews?: number;
+  maxOutputTokens?: number;
+  competitorUrls?: string[];
+  goal?: string;
+  budgetNote?: string;
+  useHolidayCalendar?: boolean;
 }

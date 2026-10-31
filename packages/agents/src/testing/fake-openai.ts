@@ -1,13 +1,21 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { InputAnalysis, ProductDiscoveryReport, TextAnalysis } from '../discovery/schemas';
+import { defaultAuditAnalysis, defaultAuditReport } from './fake-audit';
+import { defaultStrategyAnalysis, defaultStrategyDraft } from './fake-strategy';
+import { parseSources } from './prompt-parse';
+
+export { parseSources, type PromptSource } from './prompt-parse';
+import type { AgentOutput, CrosscheckAnswer, LlmFinding, ProductDiscoveryReportV2, ReportStatement } from '../discovery/f1/schemas';
 
 /**
  * A local fake of the OpenAI HTTP API (POST /v1/responses, GET /v1/models) for automated tests.
  * It speaks real HTTP, so the whole pipeline (Mozaik agent loop, gateway, mapper, HTTP client,
- * timeouts, aborts) runs for real while no network call to OpenAI is made and nothing is billed.
+ * timeouts, aborts, image attachments) runs for real while no network call to OpenAI is made and
+ * nothing is billed. Default answers are valid for the F1 schemas and are built from the prompt the
+ * request actually carried, so they cite real source ids and excerpts.
  */
-export type FakeAgent = 'input' | 'text' | 'synthesizer' | 'other';
+export type FakeAgent = 'input' | 'text' | 'web' | 'repo' | 'files' | 'visual' | 'synthesizer' | 'seo' | 'social' | 'brand' | 'messaging' | 'presence' | 'auditor' | 'audience' | 'competitor' | 'seasonal' | 'scout' | 'strategist' | 'other';
+export type FakeKind = 'analysis' | 'review' | 'synthesis' | 'test';
 
 export interface FakeRequest {
   method: string;
@@ -15,135 +23,240 @@ export interface FakeRequest {
   authorization: string;
   body: Record<string, any> | null;
   agent: FakeAgent;
-  /** Number of requests seen so far for this agent (1-based), including this one. */
+  kind: FakeKind;
+  /** Number of requests seen so far for this agent+kind (1-based), including this one. */
   attempt: number;
   /** Set when the client closed the connection before we answered (an aborted request). */
   aborted: boolean;
+  /** Text of every user message in the request (joined). */
+  userText: string;
+  /** Number of image parts attached to the request. */
+  images: number;
+  /** For Channel Scouts: the channel id from the system instruction. */
+  channel: string | null;
 }
 
 export interface FakeReply {
   status?: number;
-  /** Raw body. Defaults to a successful Responses payload when `text` is given. */
   json?: unknown;
   /** Assistant text for a 200 reply (usually a JSON document). */
   text?: string;
   delayMs?: number;
   headers?: Record<string, string>;
-  /** Token usage to report. */
   usage?: { input: number; output: number; reasoning?: number };
   /** Never answer (to test timeouts and cancellation). */
   hang?: boolean;
 }
 
 export interface FakeOpenAIOptions {
-  /** Return undefined to fall back to the default (valid) reply for that agent. */
+  /** Return undefined to fall back to the default (valid) reply. */
   reply?: (req: FakeRequest) => FakeReply | undefined | Promise<FakeReply | undefined>;
   /** If set, any other key gets a 401 whose body echoes the (fake) key, like the real API does. */
   validKeys?: string[];
   models?: string[];
 }
 
+const ROLE_MARKERS: [string, FakeAgent][] = [
+  ['You are the Input Analyzer', 'input'],
+  ['You are the Text Analyzer', 'text'],
+  ['You are the Web Analyzer', 'web'],
+  ['You are the Repo Analyzer', 'repo'],
+  ['You are the File Analyzer', 'files'],
+  ['You are the Visual Analyzer', 'visual'],
+  ['You are the Product Synthesizer', 'synthesizer'],
+  ['You are the SEO Auditor', 'seo'],
+  ['You are the Social Media Auditor', 'social'],
+  ['You are the Brand Auditor', 'brand'],
+  ['You are the Messaging Auditor', 'messaging'],
+  ['You are the Presence Auditor', 'presence'],
+  ['You are the Audit Synthesizer', 'auditor'],
+  ['You are the Audience Researcher', 'audience'],
+  ['You are the Competitor Researcher', 'competitor'],
+  ['You are Seasonal Intelligence', 'seasonal'],
+  ['Scout (A16)', 'scout'],
+  ['You are the Campaign Strategist', 'strategist'],
+];
+
+const items = (body: Record<string, any> | null): any[] => (Array.isArray(body?.input) ? body!.input : []);
+const textOf = (item: any): string => (Array.isArray(item?.content) ? item.content.map((c: any) => c?.text ?? '').join('') : '');
+
 export function identifyAgent(body: Record<string, any> | null): FakeAgent {
-  const text = JSON.stringify(body?.input?.[0] ?? '');
-  if (text.includes('You are the Input Analyzer')) return 'input';
-  if (text.includes('You are the Text Analyzer')) return 'text';
-  if (text.includes('You are the Product Synthesizer')) return 'synthesizer';
-  return 'other';
+  const system = textOf(items(body)[0]);
+  return ROLE_MARKERS.find(([m]) => system.includes(m))?.[1] ?? 'other';
 }
 
-/** Pulls the supplied project input back out of a prompt, so canned answers can quote it. */
-export function extractProjectInput(body: Record<string, any> | null): { intake?: { shortDescription?: string }; project?: { name?: string } } {
-  const items: any[] = Array.isArray(body?.input) ? body!.input : [];
-  for (const item of items) {
-    const text: string = item?.content?.[0]?.text ?? '';
-    const start = text.indexOf('<project_input>');
-    const end = text.indexOf('</project_input>');
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(text.slice(start + '<project_input>'.length, end));
-      } catch {
-        return {};
+export function userMessages(body: Record<string, any> | null): string[] {
+  return items(body).filter((i) => i?.role === 'user').map(textOf);
+}
+
+function countImages(body: Record<string, any> | null): number {
+  return items(body).reduce((n, i) => n + (Array.isArray(i?.content) ? i.content.filter((c: any) => c?.type === 'input_image').length : 0), 0);
+}
+
+// ---- parsing what the prompt carried -----------------------------------------------------------
+
+/** The first line that has real content (not a locator marker or a "key:" label alone). */
+const contentLine = (text: string, minLen = 12) =>
+  text
+    .split('\n')
+    .map((l) => l.replace(/^(title|description|text|file|format|repository|description): /, '').trim())
+    .find((l) => l.length >= minLen && !/^\[(page|rows|chars)/.test(l) && !/^(pages|format):/.test(l)) ?? '';
+
+export function parseFindingIds(text: string): { id: string; classification: string }[] {
+  return [...text.matchAll(/\[(A\d-\d+)\] \((\w+)/g)].map((m) => ({ id: m[1], classification: m[2] }));
+}
+
+// ---- default (valid) answers -----------------------------------------------------------------------
+
+const F = (f: Partial<LlmFinding> & Pick<LlmFinding, 'category' | 'statement' | 'classification'>): LlmFinding => ({
+  sourceType: 'ai_inference',
+  sourceId: null,
+  locator: null,
+  excerpt: null,
+  confidence: 0.6,
+  importance: 'medium',
+  ...f,
+});
+
+export function defaultAnalysis(agent: FakeAgent, userText: string): AgentOutput {
+  const sources = parseSources(userText);
+  const missing = ['Pricing', 'Opening hours'];
+  switch (agent) {
+    case 'input':
+      return {
+        summary: 'A small business described by the user.',
+        findings: [
+          F({ category: 'offering', statement: 'The user describes the main offering.', classification: 'claimed', sourceType: 'intake_field', locator: 'intake.shortDescription', importance: 'high' }),
+          F({ category: 'geography', statement: 'The business targets a local market.', classification: 'claimed', sourceType: 'intake_field', locator: 'intake.targetMarket', importance: 'medium' }),
+          F({ category: 'hypothesis', statement: 'Customers are mostly local.', classification: 'inferred', importance: 'low' }),
+        ],
+        missingInformation: missing,
+      };
+    case 'text':
+      return {
+        summary: 'The text describes a service offered to local customers.',
+        findings: [
+          F({ category: 'value_proposition', statement: 'The stated value is a reliable local service.', classification: 'claimed', sourceType: 'intake_field', locator: 'intake.shortDescription', importance: 'high' }),
+          F({ category: 'weakness', statement: 'The description gives no pricing.', classification: 'inferred', importance: 'medium' }),
+        ],
+        missingInformation: ['Who is the ideal customer?'],
+      };
+    case 'web': {
+      const page = sources.find((s) => s.kind === 'website');
+      const search = sources.find((s) => s.kind === 'search_result');
+      const findings: LlmFinding[] = [];
+      if (page) {
+        const title = contentLine(page.text.replace(/^title: /, 'title: '), 6);
+        findings.push(F({ category: 'presence', statement: 'The website presents the business under its own name.', classification: 'verified', sourceType: 'website', sourceId: page.id, locator: page.label, excerpt: title.slice(0, 120), importance: 'high' }));
+        const desc = /description: (.+)/.exec(page.text)?.[1];
+        if (desc) findings.push(F({ category: 'offering', statement: 'The website describes what is offered.', classification: 'claimed', sourceType: 'website', sourceId: page.id, locator: page.label, excerpt: desc.slice(0, 160), importance: 'high' }));
       }
+      if (search) findings.push(F({ category: 'presence', statement: 'A search result mentions the business.', classification: 'claimed', sourceType: 'search_result', sourceId: search.id, locator: search.label, excerpt: contentLine(search.text.split('\n').slice(2).join('\n'), 10).slice(0, 120), importance: 'low' }));
+      return { summary: 'What the website documents.', findings, missingInformation: ['Prices are not shown on the website'] };
     }
+    case 'repo': {
+      const readme = sources.find((s) => /README/.test(s.label));
+      const manifest = sources.find((s) => s.kind === 'repository' && /package\.json|requirements|pom|go\.mod|Cargo|composer/.test(s.label));
+      const findings: LlmFinding[] = [];
+      if (readme) findings.push(F({ category: 'repository', statement: 'The README describes the project.', classification: 'claimed', sourceType: 'repository', sourceId: readme.id, locator: readme.label, excerpt: contentLine(readme.text, 10).slice(0, 140), importance: 'high' }));
+      if (manifest) findings.push(F({ category: 'feature', statement: 'The dependency manifest lists the technology stack.', classification: 'verified', sourceType: 'repository', sourceId: manifest.id, locator: manifest.label, excerpt: contentLine(manifest.text, 8).slice(0, 100), importance: 'medium' }));
+      return { summary: 'What the repository contains.', findings, missingInformation: [] };
+    }
+    case 'files': {
+      const doc = sources.find((s) => s.kind === 'document');
+      return {
+        summary: 'What the uploaded documents say.',
+        findings: doc ? [F({ category: 'document', statement: 'The document describes offerings.', classification: 'claimed', sourceType: 'uploaded_file', sourceId: doc.id, locator: doc.label, excerpt: contentLine(doc.text.split('\n').slice(2).join('\n'), 10).slice(0, 140), importance: 'high' })] : [],
+        missingInformation: [],
+      };
+    }
+    case 'visual':
+      return {
+        summary: 'The visual identity of the supplied images.',
+        findings: [F({ category: 'visual', statement: 'The imagery uses a restrained colour palette.', classification: 'inferred', sourceType: 'image', locator: 'image 1', importance: 'medium' })],
+        missingInformation: [],
+      };
+    default:
+      return { summary: '', findings: [], missingInformation: [] };
   }
-  return {};
 }
 
-// ---- Default (valid) answers ---------------------------------------------------------------
-
-export function defaultInputAnalysis(quote: string): InputAnalysis {
-  return {
-    summary: 'A small business described by the user.',
-    category: 'Local service business',
-    businessType: 'service',
-    problem: 'Customers need a reliable provider.',
-    solution: 'The business offers its service directly.',
-    valueProposition: 'Reliable, friendly service.',
-    businessGoals: ['Get more customers'],
-    knownFacts: [
-      { id: 'ia-1', statement: 'The user describes the offering.', status: 'claimed', sourceType: 'intake_field', sourceReference: 'intake.shortDescription', confidence: 0.9, explanation: quote ? `Quote: ${quote}` : null },
-    ],
-    missingInformation: ['Pricing', 'Opening hours'],
-    assumptions: [{ id: 'ia-2', statement: 'Customers are mostly local.', status: 'inferred', sourceType: 'ai_inference', sourceReference: null, confidence: 0.4, explanation: 'Based on the type of business.' }],
-    confidence: 0.6,
-  };
+export function defaultReview(userText: string, verdict: CrosscheckAnswer['answers'][number]['verdict'] = 'agree'): CrosscheckAnswer {
+  const m = /<crosscheck_request>\n([\s\S]*?)\n<\/crosscheck_request>/.exec(userText);
+  let claims: { claimId: string }[] = [];
+  try {
+    claims = JSON.parse(m?.[1] ?? '{}').claims ?? [];
+  } catch {
+    claims = [];
+  }
+  return { answers: claims.map((c) => ({ claimId: c.claimId, verdict, rationale: 'Consistent with the evidence I analyzed.', correction: verdict === 'correct' ? 'A corrected statement.' : null })) };
 }
 
-export function defaultTextAnalysis(): TextAnalysis {
-  const item = (text: string, status: 'claimed' | 'inferred' = 'inferred', basis = 'Inferred from the description') => ({ text, status, basis });
+export function defaultReportV2(userText: string, overrides: Partial<ProductDiscoveryReportV2> = {}): ProductDiscoveryReportV2 {
+  const ids = parseFindingIds(userText);
+  const of = (code: string) => ids.filter((i) => i.id.startsWith(`${code}-`)).map((i) => i.id);
+  const first = (arr: string[]) => (arr.length ? [arr[0]] : []);
+  const all = ids.map((i) => i.id);
+  const st = (text: string, findingIds: string[], status: ReportStatement['status'] = 'inferred'): ReportStatement => ({ text, status, basis: findingIds.length ? `Findings ${findingIds.join(', ')}` : 'No direct finding', findingIds });
+  const name = /"name": "([^"]+)"/.exec(userText)?.[1] ?? 'Test Business';
+  const partial = /Set partial=true/.test(userText);
   return {
-    explanation: 'The text describes a service offered to local customers.',
-    businessType: 'service',
-    featuresOrOfferings: [item('Main service', 'claimed', 'intake.shortDescription')],
-    customerNeeds: [item('Convenience')],
-    differentiators: [item('Personal approach')],
-    strengths: [item('Clear offering', 'claimed', 'intake.shortDescription')],
-    weaknesses: [item('No pricing information')],
-    ambiguities: ['Target audience is not specific'],
-    validationQuestions: ['Who is the ideal customer?'],
-    messagingOpportunities: [item('Emphasize reliability')],
-    evidence: [{ id: 'ta-1', statement: 'The user describes the offering.', status: 'claimed', sourceType: 'intake_field', sourceReference: 'intake.shortDescription', confidence: 0.9, explanation: null }],
-  };
-}
-
-export function defaultReport(overrides: Partial<ProductDiscoveryReport> = {}): ProductDiscoveryReport {
-  const s = (text: string, status: 'claimed' | 'inferred' | 'unknown' = 'inferred', basis = 'Inferred from the supplied description') => ({ text, status, basis });
-  return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     language: 'en',
-    partial: false,
-    executiveSummary: 'An early-stage assessment based only on the supplied text.',
-    overview: { name: 'Test Business', category: 'Local service business', businessType: 'service', summary: 'A local service business.' },
-    problemAndSolution: { problem: s('Customers need a reliable provider.'), solution: s('Direct service.', 'claimed', 'intake.shortDescription') },
-    valueProposition: s('Reliable, friendly service.'),
-    audienceHypotheses: [s('Local customers')],
-    featuresServices: [s('Main service', 'claimed', 'intake.shortDescription')],
-    differentiators: [s('Personal approach')],
-    strengths: [s('Clear offering', 'claimed', 'intake.shortDescription')],
-    weaknessesAndRisks: [s('No pricing information', 'unknown')],
+    partial,
+    executiveSummary: 'An evidence-aware assessment of the business based on the available sources.',
+    identity: { name, category: 'Local service business', industry: null, businessType: 'service', summary: 'A local service business.' },
+    problemAndSolution: { problem: st('Customers need a reliable provider.', first(all)), solution: st('The business offers its service directly.', first(all)) },
+    offerings: [st('Main service', first(all), 'claimed')],
+    valueProposition: st('Reliable, friendly service.', first(all)),
+    targetCustomers: [st('Local customers', first(all))],
+    differentiation: [st('Personal approach', first(all))],
+    websiteFindings: of('A3').length ? [st('The website documents the business.', of('A3'), 'verified')] : [st('Invented website claim', [])],
+    repositoryFindings: of('A4').length ? [st('The repository documents the project.', of('A4'))] : [],
+    documentFindings: of('A5').length ? [st('The documents describe offerings.', of('A5'))] : [],
+    visualFindings: of('A6').length ? [st('The visual identity is restrained.', of('A6'))] : [],
+    strengths: [st('Clear offering', first(all))],
+    weaknessesRisksUnknowns: [st('No pricing information', [], 'unknown')],
+    evidenceSummary: { narrative: 'Findings were cross-checked between agents where possible.', contradictions: [] },
     missingInformation: ['Pricing', 'Opening hours'],
-    evidenceAndAssumptions: [{ id: 'ev-1', statement: 'The user describes the offering.', status: 'claimed', sourceType: 'intake_field', sourceReference: 'intake.shortDescription', confidence: 0.9, explanation: null }],
-    contradictions: [],
-    marketingOpportunities: [s('Emphasize reliability')],
-    nextSteps: [{ action: 'Collect pricing details', priority: 'high', rationale: 'Pricing is missing.' }],
-    followUpQuestions: ['Who is the ideal customer?'],
+    recommendedInvestigations: [{ action: 'Collect pricing details', priority: 'high', rationale: 'Pricing is missing.' }],
+    productManifest: {
+      name,
+      tagline: null,
+      category: 'Local service business',
+      industry: null,
+      businessType: 'service',
+      offering: { summary: 'A local service.', items: ['Main service'] },
+      problem: 'Customers need a reliable provider.',
+      valueProposition: 'Reliable service.',
+      targetCustomers: ['Local customers'],
+      geography: ['Local'],
+      languages: ['English'],
+      goals: ['Get more customers'],
+      differentiators: ['Personal approach'],
+      brand: null,
+      onlinePresence: { website: null, repository: null, socialProfiles: [] },
+      openQuestions: ['Who is the ideal customer?'],
+      overallConfidence: 0.99,
+      confidenceNotes: 'Based on text only.',
+      evidenceFindingIds: all.slice(0, 6),
+    },
     ...overrides,
   };
 }
 
-function defaultAnswer(agent: FakeAgent, body: Record<string, any> | null): string {
-  const input = extractProjectInput(body);
-  if (agent === 'input') return JSON.stringify(defaultInputAnalysis(input.intake?.shortDescription ?? ''));
-  if (agent === 'text') return JSON.stringify(defaultTextAnalysis());
-  if (agent === 'synthesizer') return JSON.stringify(defaultReport());
+function defaultAnswer(kind: FakeKind, agent: FakeAgent, userText: string, channel: string | null = null): string {
+  if (kind === 'review') return JSON.stringify(defaultReview(userText));
+  if (kind === 'synthesis') return JSON.stringify(agent === 'strategist' ? defaultStrategyDraft(userText) : agent === 'auditor' ? defaultAuditReport(userText) : defaultReportV2(userText));
+  if (kind === 'analysis') return JSON.stringify(['audience', 'competitor', 'seasonal', 'scout'].includes(agent) ? defaultStrategyAnalysis(agent as never, userText, channel) : ['seo', 'social', 'brand', 'messaging', 'presence'].includes(agent) ? defaultAuditAnalysis(agent as never, userText) : defaultAnalysis(agent, userText));
   return 'OK';
 }
 
-// ---- Server --------------------------------------------------------------------------------
+// ---- server ------------------------------------------------------------------------------------------
 
 export class FakeOpenAI {
   readonly requests: FakeRequest[] = [];
-  private readonly counts: Record<FakeAgent, number> = { input: 0, text: 0, synthesizer: 0, other: 0 };
+  private readonly counts = new Map<string, number>();
   private server!: Server;
   private readonly sockets = new Set<import('node:net').Socket>();
   url = '';
@@ -166,8 +279,13 @@ export class FakeOpenAI {
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
   }
 
+  calls(agent?: FakeAgent, kind?: FakeKind) {
+    return this.requests.filter((r) => r.path.endsWith('/responses') && (!agent || r.agent === agent) && (!kind || r.kind === kind));
+  }
+
+  /** Back-compat helper. */
   callsFor(agent: FakeAgent) {
-    return this.requests.filter((r) => r.agent === agent && r.path === '/v1/responses');
+    return this.calls(agent);
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse) {
@@ -181,16 +299,25 @@ export class FakeOpenAI {
       body = null;
     }
     const path = req.url ?? '';
-    const agent = path.endsWith('/responses') ? identifyAgent(body) : 'other';
-    if (path.endsWith('/responses')) this.counts[agent]++;
+    const isResponses = path.endsWith('/responses');
+    const agent = isResponses ? identifyAgent(body) : 'other';
+    const users = userMessages(body);
+    const userText = users.join('\n');
+    const kind: FakeKind = !isResponses || agent === 'other' ? 'test' : userText.includes('<crosscheck_request>') ? 'review' : agent === 'synthesizer' || agent === 'auditor' || agent === 'strategist' ? 'synthesis' : 'analysis';
+    const countKey = `${agent}:${kind}`;
+    if (isResponses) this.counts.set(countKey, (this.counts.get(countKey) ?? 0) + 1);
     const record: FakeRequest = {
       method: req.method ?? '',
       path,
       authorization: String(req.headers.authorization ?? ''),
       body,
       agent,
-      attempt: this.counts[agent],
+      kind,
+      attempt: this.counts.get(countKey) ?? 0,
       aborted: false,
+      userText,
+      images: countImages(body),
+      channel: agent === 'scout' ? (/Your channel: [^(]+\(id "([a-z_]+)"\)/.exec(textOf(items(body)[0]))?.[1] ?? null) : null,
     };
     this.requests.push(record);
     res.on('close', () => {
@@ -206,15 +333,14 @@ export class FakeOpenAI {
       return send(res, 200, { object: 'list', data: ids.map((id) => ({ id, object: 'model', created: 1700000000, owned_by: 'openai' })) });
     }
 
-    const custom = await this.options.reply?.(record);
-    const reply = custom ?? {};
+    const reply = (await this.options.reply?.(record)) ?? {};
     if (reply.hang) return; // keep the connection open
     if (reply.delayMs) await new Promise((r) => setTimeout(r, reply.delayMs));
     if (res.destroyed) return;
 
     const status = reply.status ?? 200;
     if (status !== 200) return send(res, status, reply.json ?? { error: { message: 'fake error', code: 'fake' } }, reply.headers);
-    const text = reply.text ?? defaultAnswer(agent, body);
+    const text = reply.text ?? defaultAnswer(kind, agent, userText, record.channel);
     const usage = reply.usage ?? { input: 120, output: 60, reasoning: 0 };
     send(
       res,

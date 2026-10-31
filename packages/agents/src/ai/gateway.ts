@@ -90,6 +90,7 @@ export class InferenceGateway implements InferenceRunner {
   private readonly agentNames = new Map<string, string>(); // ModelContext id -> agent name
   private readonly contextAborts = new Map<string, AbortController>();
   private readonly runAbort = new AbortController();
+  private readonly pendingImages = new Map<string, { mediaType: string; base64: string }[]>();
 
   constructor(
     private readonly client: OpenAIClient,
@@ -99,6 +100,16 @@ export class InferenceGateway implements InferenceRunner {
 
   registerAgent(contextId: string, agentName: string) {
     this.agentNames.set(contextId, agentName);
+  }
+
+  /**
+   * Attaches images to the NEXT request of one agent (vision). Mozaik's context items carry text only,
+   * so the images are appended to the last user message as `input_image` parts (detail "low": a flat,
+   * small token cost per image). They are dropped once a request succeeds, so repair or follow-up
+   * calls do not resend them.
+   */
+  attachImages(contextId: string, images: { mediaType: string; base64: string }[]) {
+    this.pendingImages.set(contextId, images);
   }
 
   usage(): UsageSnapshot {
@@ -137,13 +148,20 @@ export class InferenceGateway implements InferenceRunner {
 
       const signal = AbortSignal.any([this.runAbort.signal, agentAbort.signal, AbortSignal.timeout(this.budget.callTimeoutMs)]);
       try {
+        const request = mapper.toRequest(input) as { input: { role?: string; content?: unknown[] }[] };
+        const images = this.pendingImages.get(contextId);
+        if (images?.length) {
+          const lastUser = [...request.input].reverse().find((i) => i.role === 'user');
+          if (lastUser?.content) for (const img of images) lastUser.content.push({ type: 'input_image', image_url: `data:${img.mediaType};base64,${img.base64}`, detail: 'low' });
+        }
         const body = {
-          ...mapper.toRequest(input),
+          ...request,
           max_output_tokens: Math.min(input.maxOutputTokens ?? this.budget.maxOutputTokens, this.budget.maxOutputTokens),
           store: false, // do not let OpenAI retain the user's product text
         };
         const response = await this.client.createResponse(body, signal);
         const output = mapper.toResponse(response);
+        this.pendingImages.delete(contextId);
         this.record(contextId, output);
         if (!output.items.some((i) => i.type === 'message')) return failure('invalid_response');
         // Drop the raw provider response: Mozaik publishes the whole output as an event payload.

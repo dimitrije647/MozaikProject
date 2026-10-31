@@ -2,82 +2,23 @@
 
 import { AlertTriangle, Ban, CheckCircle2, CircleHelp, FileQuestion, Lightbulb, Link2, Sparkles, Swords, Target, TriangleAlert } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
-import type { EvidenceItem, EvidenceStatus, ReportFull, Statement } from '@/lib/types';
+import { Bullets, EvidenceBadge, EvidenceLegend, Section, Statements } from '@/components/evidence-ui';
+import { ReportViewV2 } from '@/components/report-view-v2';
+import type { EvidenceItem, ProductDiscoveryReportData, ReportFull, ReportMetadata } from '@/lib/types';
 import { cn, formatDate } from '@/lib/utils';
 
-const EVIDENCE: Record<EvidenceStatus, { label: string; className: string; hint: string }> = {
-  verified: { label: 'Verified', className: 'bg-emerald-100 text-emerald-800', hint: 'Independently checked against a source. Not possible in this version.' },
-  claimed: { label: 'Claimed', className: 'bg-amber-100 text-amber-800', hint: 'Stated by you in the input. Not independently verified.' },
-  inferred: { label: 'Inferred', className: 'bg-indigo-100 text-indigo-800', hint: 'An AI conclusion drawn from what you supplied.' },
-  disputed: { label: 'Disputed', className: 'bg-red-100 text-red-700', hint: 'Conflicting information was found.' },
-  unknown: { label: 'Unknown', className: 'bg-cream-200 text-ink-600', hint: 'Cannot be determined from the supplied text.' },
-};
-
-export function EvidenceBadge({ status }: { status: EvidenceStatus }) {
-  const e = EVIDENCE[status] ?? EVIDENCE.unknown;
-  return (
-    <Badge className={cn('shrink-0', e.className)} title={e.hint}>
-      {e.label}
-    </Badge>
-  );
-}
-
-export function EvidenceLegend() {
-  return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl bg-cream-100 px-4 py-3 text-xs text-muted">
-      <span className="font-medium text-ink-600">How to read the labels:</span>
-      {(['claimed', 'inferred', 'disputed', 'unknown'] as EvidenceStatus[]).map((s) => (
-        <span key={s} className="flex items-center gap-1.5">
-          <EvidenceBadge status={s} /> {EVIDENCE[s].hint}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function Section({ title, icon: Icon, children, className }: { title: string; icon: typeof Target; children: React.ReactNode; className?: string }) {
-  return (
-    <section className={cn('rounded-2xl border border-cream-300/80 bg-cream-50 p-5', className)}>
-      <h3 className="mb-3 flex items-center gap-2 font-sans text-[15px] font-semibold">
-        <Icon className="h-4 w-4 text-accent" /> {title}
-      </h3>
-      {children}
-    </section>
-  );
-}
-
-function Statements({ items, empty = 'Nothing identified from the supplied text.' }: { items: Statement[]; empty?: string }) {
-  if (!items.length) return <p className="text-sm text-muted">{empty}</p>;
-  return (
-    <ul className="space-y-2.5">
-      {items.map((s, i) => (
-        <li key={i} className="flex items-start gap-3 text-sm">
-          <EvidenceBadge status={s.status} />
-          <span className="min-w-0">
-            <span className="block">{s.text}</span>
-            {s.basis && <span className="block text-xs text-muted">Basis: {s.basis}</span>}
-          </span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function Bullets({ items, empty }: { items: string[]; empty: string }) {
-  if (!items.length) return <p className="text-sm text-muted">{empty}</p>;
-  return (
-    <ul className="list-disc space-y-1.5 pl-5 text-sm marker:text-accent">
-      {items.map((t, i) => (
-        <li key={i}>{t}</li>
-      ))}
-    </ul>
-  );
-}
+export { EvidenceBadge, EvidenceLegend };
 
 const PRIORITY: Record<string, string> = { high: 'bg-accent text-white', medium: 'bg-ink text-cream-100', low: 'bg-cream-200 text-ink-600' };
 
+/** Routes by schema: v2 = F1 seven-agent report, v1 = legacy text-only report (older saved runs). */
 export function ReportView({ data }: { data: ReportFull }) {
-  const { report: r, metadata: m } = data;
+  return data.schemaVersion >= 2 ? <ReportViewV2 data={data} /> : <LegacyReportView data={data} />;
+}
+
+function LegacyReportView({ data }: { data: ReportFull }) {
+  const r = data.report as ProductDiscoveryReportData;
+  const m = data.metadata as ReportMetadata;
   const notAnalyzed = m.inputSnapshot.availableNotAnalyzed;
   const notAnalyzedItems = [
     notAnalyzed.websiteUrl && `Website: ${notAnalyzed.websiteUrl}`,

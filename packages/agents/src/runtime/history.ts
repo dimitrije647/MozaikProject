@@ -7,8 +7,9 @@ const isObj = (v: unknown): v is Obj => !!v && typeof v === 'object' && !Array.i
  * What gets stored in the event history. Mozaik agent-loop events carry the entire model context
  * (prompts = the user's product text, repeated) and the raw provider response, which would bloat the
  * database and duplicate sensitive content, so those are reduced to small summaries.
- * `finding.posted` and `report.generated` carry full structured content for the OTHER AGENTS, but
- * history keeps only counts: the report itself is stored in ProductDiscoveryReport.
+ * `report.generated` carries the whole report for the orchestrator, but history only notes it was
+ * stored (the report lives in ProductDiscoveryReport). Findings, sources and cross-checks are kept in
+ * full: they are what the Agents / Evidence / Cross-Checks views are built from.
  */
 export function summarizeForHistory(type: string, payload: unknown): Obj | null {
   const p = isObj(payload) ? payload : {};
@@ -40,21 +41,12 @@ export function summarizeForHistory(type: string, payload: unknown): Obj | null 
       const content = isObj(answer.content) ? answer.content : {};
       return { loopId, chars: typeof content.text === 'string' ? content.text.length : 0 };
     }
-    case 'finding.posted': {
-      const f = isObj(p.finding) ? p.finding : {};
-      return { agent: p.agent, kind: p.kind, fields: Object.keys(f).length };
-    }
-    case 'crosscheck.answered':
-      return {
-        phase: p.phase,
-        succeeded: p.succeeded,
-        failed: p.failed,
-        partial: p.partial,
-        issueCount: Array.isArray(p.issues) ? p.issues.length : 0,
-        issues: Array.isArray(p.issues) ? redact(p.issues) : [],
-      };
     case 'report.generated':
       return { stored: 'ProductDiscoveryReport' };
+    case 'audit.completed':
+      return { stored: 'MarketingAuditReport' };
+    case 'strategy.completed':
+      return { stored: 'MarketingStrategyReport' };
     default:
       return null;
   }
