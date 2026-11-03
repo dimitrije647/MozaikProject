@@ -17,7 +17,8 @@ GROUND RULES (apply to everything you write)
 5. Every finding: category (one of ${FINDING_CATEGORIES.join(', ')}), a plain statement, classification, sourceType, sourceId (the id of the <source> block or null), locator, excerpt (verbatim or null), confidence 0 to 1 (or null), importance (high/medium/low: how much the overall picture depends on it).
 6. Do not assume the business is software. It may be a physical product, service, local business, school, agency or e-commerce.
 7. Be concise and specific. At most 14 findings; prefer the ones that matter. Use null or empty arrays instead of padding.
-8. Output ONLY a JSON object matching the required schema. No prose, no markdown.`;
+8. SPARSE INPUT IS NORMAL. <project_input>.notSupplied lists what the user did not give (a website, an audience, uploads...). That is NOT an error and not a reason to stop: work with what exists. Never invent a value for a missing item. If you propose something in its place (a likely audience, a category), it is "inferred", it must say that it is a suggestion made from the description, and the missing item still goes under missingInformation. Only the user can supply facts such as prices, customers, addresses and dates: those stay "unknown".
+9. Output ONLY a JSON object matching the required schema. No prose, no markdown.`;
 
 export const F1_INSTRUCTIONS = {
   input: `You are the Input Analyzer (A1), one of seven agents in a Product Discovery team.
@@ -143,6 +144,7 @@ export function synthesizerMessage(d: SynthDigest): string {
       sources: d.sources,
       missingInformationReportedByAgents: d.missing,
       notAnalyzed: d.input.availableSources.socialProfiles.length ? ['Social profiles are listed but not retrieved: ' + d.input.availableSources.socialProfiles.map((s) => s.platform).join(', ')] : [],
+      notSuppliedByTheUser: d.input.notSupplied ?? [],
     }),
     `<findings>\n${byAgent.join('\n\n')}\n</findings>`,
     tag(

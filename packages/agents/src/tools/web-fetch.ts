@@ -31,6 +31,8 @@ export interface WebFetchOptions {
   maxPages?: number;
   userAgent?: string;
   respectRobots?: boolean;
+  /** Stylesheets and images (fetchAsset) one tool instance may fetch. */
+  maxAssets?: number;
 }
 
 const UA_TOKEN = 'launchpilotbot';
@@ -124,6 +126,8 @@ export class WebFetchTool {
   private readonly cache = new Map<string, FetchResult>();
   private readonly robots = new Map<string, RobotsRules | 'deny_all'>();
   private pagesFetched = 0;
+  private assetsFetched = 0;
+  private readonly maxAssets: number;
 
   constructor(options: WebFetchOptions = {}) {
     this.policy = options.policy ?? DEFAULT_URL_POLICY;
@@ -133,6 +137,7 @@ export class WebFetchTool {
     this.maxPages = options.maxPages ?? 6;
     this.userAgent = options.userAgent ?? 'LaunchPilotBot/1.0 (product discovery; honors robots.txt)';
     this.respectRobots = options.respectRobots ?? true;
+    this.maxAssets = options.maxAssets ?? 6;
   }
 
   get pageCount() {
@@ -185,6 +190,41 @@ export class WebFetchTool {
 
   relevantLinks(page: ExtractedPage, baseUrl: string, max: number) {
     return selectRelevantLinks(page.links, baseUrl, max);
+  }
+
+  /**
+   * Fetches ONE public stylesheet or raster image with the same protections as a page (scheme/port/credential checks, DNS validation of every
+   * hop, robots.txt, timeout, byte limit) and its own small budget of `maxAssets` per instance. The body is returned as bytes and is never
+   * interpreted here. `kind: 'svg'` (logos) returns the SVG TEXT as bytes with a small size limit: it is never rendered as it is, only sanitized and
+   * rasterized by the caller (an SVG can reference other resources); `kind: 'image'` still refuses it.
+   */
+  async fetchAsset(raw: string, o: { kind: 'css' | 'image' | 'svg'; maxBytes?: number; signal?: AbortSignal }): Promise<{ ok: true; finalUrl: string; contentType: string; body: Buffer; truncated: boolean } | { ok: false; code: FetchFailureCode; message: string }> {
+    if (this.assetsFetched >= this.maxAssets) return { ok: false, code: 'page_limit', message: `Asset limit (${this.maxAssets}) for this run reached.` };
+    this.assetsFetched++;
+    const maxBytes = o.maxBytes ?? (o.kind === 'css' ? 400_000 : o.kind === 'svg' ? 300_000 : 2_000_000);
+    const ok = o.kind === 'css' ? /^text\/(css|plain)/i : o.kind === 'svg' ? /^image\/svg\+xml/i : /^image\/(png|jpe?g|webp|gif)/i;
+    try {
+      let current = raw;
+      for (let hop = 0; hop <= this.maxRedirects; hop++) {
+        const url = parseHttpUrl(current, this.policy);
+        await resolveSafe(url.hostname, this.policy);
+        if (this.respectRobots && !(await this.robotsAllows(url, o.signal))) return { ok: false, code: 'robots_disallowed', message: `robots.txt of ${url.origin} does not allow fetching ${url.pathname}.` };
+        const res = await this.request(url, { accept: o.kind === 'css' ? 'text/css,*/*;q=0.1' : o.kind === 'svg' ? 'image/svg+xml' : 'image/png,image/jpeg,image/webp,image/gif;q=0.9', maxBytes, signal: o.signal });
+        if (res.status >= 300 && res.status < 400 && res.headers.location) {
+          current = new URL(res.headers.location, url).toString();
+          continue;
+        }
+        if (res.status >= 400) return { ok: false, code: 'http_error', message: `The server answered HTTP ${res.status}.` };
+        const contentType = String(res.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+        if (!ok.test(contentType)) return { ok: false, code: 'unsupported_content_type', message: `Content type ${contentType || 'unknown'} is not accepted here.` };
+        if (res.truncated && o.kind !== 'css') return { ok: false, code: 'too_large', message: 'The image is larger than the limit.' };
+        return { ok: true, finalUrl: url.toString(), contentType, body: res.body, truncated: res.truncated };
+      }
+      return { ok: false, code: 'too_many_redirects', message: `More than ${this.maxRedirects} redirects.` };
+    } catch (err) {
+      const f = failure(raw, err, o.signal);
+      return f.ok ? { ok: false, code: 'network_error', message: 'The site could not be reached.' } : { ok: false, code: f.code, message: f.message };
+    }
   }
 
   // ---- internals

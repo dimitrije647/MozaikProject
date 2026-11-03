@@ -84,10 +84,10 @@ export default function WorkspacePage() {
               <Row k="Market" v={intake?.targetMarket} />
               <Row k="Language" v={LANGUAGES.find((l) => l.value === intake?.preferredLanguage)?.label} />
               <Row k="Duration" v={intake?.campaignDuration} />
-              <Row k="Style" v={STYLES.find((s) => s.value === intake?.stylePreference)?.label} />
+              {intake?.stylePreference && <Row k="Earlier style note" v={STYLES.find((s) => s.value === intake.stylePreference)?.label ?? intake.stylePreference} />}
               <Row k="Publishing" v={intake?.publishingMode} />
               <div className="border-t border-cream-300/70 pt-3">
-                <p className="mb-2 text-xs uppercase tracking-wider text-muted">Formats</p>
+                <p className="mb-2 text-xs uppercase tracking-wider text-muted">Default formats (confirmed in each campaign)</p>
                 <div className="flex flex-wrap gap-1.5">
                   {p.formats.filter((f) => f.enabled).map((f) => (
                     <span key={f.id} className="rounded-full bg-cream-200 px-2.5 py-1 text-xs">{FORMAT_OPTIONS.find((o) => o.key === f.formatType)?.label}</span>

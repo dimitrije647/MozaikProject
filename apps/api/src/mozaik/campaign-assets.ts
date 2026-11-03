@@ -5,7 +5,7 @@ import type { StorageDriver } from '../storage/storage.service';
 
 /** A stored CampaignAsset row as the agents' AssetRecord (what the Campaign Package and the API expose). */
 export function toAssetRecord(row: CampaignAsset): AssetRecord {
-  const m = (row.metadataJson ?? {}) as { flags?: string[]; promptMetadata?: AssetRecord['promptMetadata']; usage?: AssetRecord['usage'] };
+  const m = (row.metadataJson ?? {}) as { flags?: string[]; promptMetadata?: AssetRecord['promptMetadata']; usage?: AssetRecord['usage']; variationId?: string | null; origin?: AssetRecord['origin']; templateId?: string | null; templateVersion?: number | null; sourceAssetIds?: string[]; rights?: AssetRecord['rights'] };
   return {
     id: row.id,
     kind: row.kind as AssetRecord['kind'],
@@ -28,6 +28,12 @@ export function toAssetRecord(row: CampaignAsset): AssetRecord {
     altText: row.altText,
     promptMetadata: m.promptMetadata ?? null,
     usage: m.usage ?? null,
+    variationId: m.variationId ?? null,
+    // lineage (Hybrid Production); absent on assets saved before it existed
+    ...(m.origin ? { origin: m.origin } : {}),
+    ...(m.templateId ? { templateId: m.templateId, templateVersion: m.templateVersion ?? null } : {}),
+    ...(m.sourceAssetIds?.length ? { sourceAssetIds: m.sourceAssetIds } : {}),
+    ...(m.rights ? { rights: m.rights } : {}),
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -52,7 +58,7 @@ export class DbAssetStore implements AssetStore {
   ) {}
 
   async save(asset: NewAsset): Promise<AssetRecord> {
-    const { data, flags, promptMetadata, usage, ...rest } = asset;
+    const { data, flags, promptMetadata, usage, variationId, origin, templateId, templateVersion, sourceAssetIds, rights, ...rest } = asset;
     const sha256 = (await import('node:crypto')).createHash('sha256').update(data).digest('hex');
     const key = await this.storage.save(this.projectId, `${rest.kind}-${rest.conceptId}.png`, data);
     try {
@@ -78,7 +84,7 @@ export class DbAssetStore implements AssetStore {
           status: rest.status,
           filePath: key,
           altText: rest.altText,
-          metadataJson: { flags, promptMetadata, usage },
+          metadataJson: { flags, promptMetadata, usage, variationId: variationId ?? null, ...(origin ? { origin } : {}), ...(templateId ? { templateId, templateVersion: templateVersion ?? null } : {}), ...(sourceAssetIds?.length ? { sourceAssetIds } : {}), ...(rights ? { rights } : {}) },
         },
       });
       return toAssetRecord(row);

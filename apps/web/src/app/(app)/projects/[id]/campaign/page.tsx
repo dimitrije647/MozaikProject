@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useSearchParams } from 'next/navigation';
 import * as React from 'react';
 import { ArrowLeft, Rocket, TriangleAlert } from 'lucide-react';
 import { CampaignOutputs } from '@/components/campaign-outputs';
@@ -9,6 +9,8 @@ import { EmptyState } from '@/components/empty-state';
 import { CampaignSetup, FactoryRunView, isActive } from '@/components/factory-ui';
 import { Button } from '@/components/ui/button';
 import { useFactoryRun, useFactoryRuns, useProject } from '@/lib/hooks';
+import { COLLECTION_IDS, type CollectionId } from '@/lib/visual';
+import type { FactoryPresetId } from '@/lib/types';
 import { formatDate } from '@/lib/utils';
 
 /** The full campaign: plan (free), run (F1 → F4, one click), live agent activity and the finished result. */
@@ -16,8 +18,16 @@ export default function CampaignPage() {
   const { id } = useParams<{ id: string }>();
   const project = useProject(id);
   const runs = useFactoryRuns(id);
+  // arriving from the Templates page ("Choose in the campaign design"): the setup opens on Hybrid Production with that collection chosen
+  const wanted = useSearchParams().get('collection');
+  const initialCollection = (COLLECTION_IDS as readonly string[]).includes(wanted ?? '') ? (wanted as CollectionId) : null;
   const [selected, setSelected] = React.useState<string | null>(null);
-  const [setup, setSetup] = React.useState(false);
+  const [setup, setSetup] = React.useState(!!initialCollection);
+  // "Continue from saved work" opens the setup with the preset of the stopped run (the plan is free; the budget is approved anew)
+  const [setupPreset, setSetupPreset] = React.useState<FactoryPresetId | undefined>(initialCollection ? 'hybrid_production' : undefined);
+  // "Continue with new images" (NO AI HYBRID, partial campaign): the same setup, with a new creative round already ticked; the nonce re-creates the form
+  const [setupRerun, setSetupRerun] = React.useState(false);
+  const [setupNonce, setSetupNonce] = React.useState(0);
 
   const latest = runs.data?.[0];
   const shownId = selected ?? latest?.id ?? null;
@@ -42,7 +52,7 @@ export default function CampaignPage() {
           <p className="text-xs font-medium uppercase tracking-[0.16em] text-accent">Run campaign</p>
           <h1 className="mt-3 text-4xl text-cream-100 sm:text-5xl">{p.name}</h1>
           <p className="mt-3 max-w-3xl text-[15px] text-muted-dark">
-            One click runs Product Discovery, the Marketing Audit, Market Research &amp; Strategy and Creative Production in order, each with its own team of Mozaik agents, and saves a campaign package you can download. Saved results from earlier work are reused, not paid for again.
+            One click runs Product Discovery, the Marketing Audit, Market Research &amp; Strategy and Creative Production in order, each with its own team of Mozaik agents, and saves a campaign package you can download. Saved results from earlier work are reused, not paid for again. The plan shows an estimate in dollars first, and Full Production, Hybrid Production and NO AI HYBRID ask you to approve a spending limit before anything is paid for.
           </p>
         </div>
       </section>
@@ -54,10 +64,14 @@ export default function CampaignPage() {
           {active && <p className="text-sm text-muted">A campaign run is in progress for this project. The individual phase panels are locked until it finishes or is cancelled.</p>}
 
           {showSetup && (
-            <section aria-label="Configure campaign" className="space-y-3">
+            <section id="configure-campaign" aria-label="Configure campaign" className="space-y-3">
               <h2 className="text-2xl">{latest ? 'Start another run' : 'Configure and review the plan'}</h2>
               <CampaignSetup
+                key={`${setupPreset ?? 'default'}:${setupNonce}`}
                 projectId={id}
+                initialPreset={setupPreset}
+                initialRerunCreative={setupRerun}
+                initialCollection={initialCollection}
                 onStarted={(r) => {
                   setSelected(r.id);
                   setSetup(false);
@@ -91,11 +105,30 @@ export default function CampaignPage() {
                   )}
                 </div>
               </div>
-              <FactoryRunView projectId={id} run={data} />
+              <FactoryRunView
+                projectId={id}
+                run={data}
+                onContinue={() => {
+                  setSetupPreset(data.config.preset ?? undefined);
+                  setSetup(true);
+                  setTimeout(() => document.getElementById('configure-campaign')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+                }}
+              />
               {data.campaignId && (
                 <div className="space-y-3">
                   <h2 className="text-2xl">Final campaign</h2>
-                  <CampaignOutputs campaignId={data.campaignId} projectId={id} outcome={data.outcome} />
+                  <CampaignOutputs
+                    campaignId={data.campaignId}
+                    projectId={id}
+                    outcome={data.outcome}
+                    onContinueNoAi={() => {
+                      setSetupPreset('no_ai_hybrid');
+                      setSetupRerun(true);
+                      setSetupNonce((n) => n + 1);
+                      setSetup(true);
+                      setTimeout(() => document.getElementById('configure-campaign')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+                    }}
+                  />
                 </div>
               )}
             </section>

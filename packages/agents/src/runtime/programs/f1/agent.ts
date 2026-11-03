@@ -1,6 +1,7 @@
 import { createAgent, type Participant, type SemanticEvent, type SituationHandler } from '@mozaik-ai/core';
 import type { z } from 'zod';
 import { toSafeError, type SafeProviderError } from '../../../ai/errors';
+import type { SpendPriority } from '../../../ai/budget';
 import { readProviderErrorCode } from '../../../ai/gateway';
 import { AGENT_INFO, type AgentKey } from '../../../discovery/f1/board';
 import { F1_INSTRUCTIONS, repairMessage } from '../../../discovery/f1/prompts';
@@ -26,6 +27,11 @@ export interface AgentProfile {
 
 export interface JobSpec<T> {
   kind: 'analysis' | 'review' | 'synthesis';
+  /**
+   * What this job is for when money is tight (SpendPriority). Default: analysis and synthesis are essential (1), cross-checks and
+   * corrections are quality work (4). Optional refinements say 5.
+   */
+  priority?: SpendPriority;
   message: string;
   schema: z.ZodType<T>;
   schemaName: string;
@@ -145,6 +151,9 @@ export class PhaseAgent {
       });
     }
     if (spec.images?.length) this.env.gateway.attachImages(this.contextId, spec.images);
+    this.env.gateway.setCallPriority(this.contextId, spec.priority ?? (spec.kind === 'review' ? 4 : 1));
+    // the final document of a phase is a long structured answer: its clock grows with the tokens it may produce
+    this.env.gateway.setLongAnswer(this.contextId, spec.kind === 'synthesis');
     this.loop(spec.message);
   }
 
@@ -191,7 +200,10 @@ export class PhaseAgent {
     const answer = (event.payload as { answer?: { content?: { text?: unknown } } } | null)?.answer;
     const text = typeof answer?.content?.text === 'string' ? answer.content.text : '';
     const code = readProviderErrorCode(text);
-    if (code) return this.finish(() => job.spec.onFailure(toSafeError(code)));
+    if (code) {
+      const detail = this.env.gateway.failureDetail(this.contextId, code);
+      return this.finish(() => job.spec.onFailure(detail ? { ...toSafeError(code), detail } : toSafeError(code)));
+    }
     const parsed = parseModelJson(text, job.spec.schema);
     if (parsed.ok) return this.finish(() => job.spec.onSuccess(parsed.value));
     if (job.repairs < 1) {

@@ -17,14 +17,7 @@ import { SectionHeader } from '@/components/section-header';
 import { ProgressBar, Stepper } from '@/components/stepper';
 import { api, post, put, patch } from '@/lib/api';
 import { keys } from '@/lib/hooks';
-import {
-  DURATIONS,
-  FORMAT_OPTIONS,
-  LANGUAGES,
-  MARKETING_GOALS,
-  SOCIAL_PLATFORMS,
-  STYLES,
-} from '@/lib/constants';
+import { DURATIONS, LANGUAGES, MARKETING_GOALS, SOCIAL_PLATFORMS } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 
 const optionalUrl = z.union([z.literal(''), z.string().url('Enter a full URL, e.g. https://example.com')]);
@@ -44,13 +37,11 @@ const schema = z.object({
     pinterest: optionalUrl,
     youtube: optionalUrl,
   }),
-  marketingGoal: z.string().min(1, 'Pick a main goal'),
+  marketingGoal: z.string(),
   targetMarket: z.string().max(200),
   targetAudience: z.string().max(1000),
   preferredLanguage: z.string(),
   campaignDuration: z.string(),
-  stylePreference: z.string(),
-  formats: z.array(z.string()),
   enableSeoAudit: z.boolean(),
   enableSeasonalCalendar: z.boolean(),
   enableGoogleDriveExport: z.boolean(),
@@ -69,8 +60,6 @@ const DEFAULTS: Values = {
   targetAudience: '',
   preferredLanguage: 'en',
   campaignDuration: '1 month',
-  stylePreference: 'minimal',
-  formats: ['instagram_post'],
   enableSeoAudit: true,
   enableSeasonalCalendar: false,
   enableGoogleDriveExport: false,
@@ -81,7 +70,6 @@ const STEPS = [
   { title: 'Product', hint: 'What are you promoting?', fields: ['productName', 'shortDescription', 'websiteUrl', 'githubUrl'] },
   { title: 'Social presence', hint: 'Where your audience is', fields: ['socials'] },
   { title: 'Marketing goals', hint: 'Goal, market, audience', fields: ['marketingGoal', 'targetMarket', 'targetAudience', 'preferredLanguage', 'campaignDuration'] },
-  { title: 'Creative', hint: 'Style and formats', fields: ['stylePreference', 'formats'] },
   { title: 'Features', hint: 'Toggles and publishing', fields: ['enableSeoAudit', 'enableSeasonalCalendar', 'enableGoogleDriveExport', 'publishingMode'] },
   { title: 'Review', hint: 'Check and save', fields: [] },
 ] as const;
@@ -163,7 +151,6 @@ export default function NewProjectPage() {
         marketingGoal: v.marketingGoal,
         preferredLanguage: v.preferredLanguage,
         campaignDuration: v.campaignDuration,
-        stylePreference: v.stylePreference,
         publishingMode: v.publishingMode,
         enableSeoAudit: v.enableSeoAudit,
         enableSeasonalCalendar: v.enableSeasonalCalendar,
@@ -173,9 +160,6 @@ export default function NewProjectPage() {
         profiles: Object.entries(v.socials)
           .filter(([, url]) => url)
           .map(([platform, url]) => ({ platform, url })),
-      });
-      await put(`/projects/${id}/formats`, {
-        formats: FORMAT_OPTIONS.map((f) => ({ formatType: f.key, enabled: v.formats.includes(f.key) })).filter((f) => f.enabled),
       });
 
       // Upload each bucket. Uploaded buckets are cleared so a retry only re-sends what failed.
@@ -232,7 +216,7 @@ export default function NewProjectPage() {
                   <Field label="Product name" htmlFor="productName" error={errors.productName?.message}>
                     <Input id="productName" placeholder="e.g. Deep Diving School" {...register('productName')} />
                   </Field>
-                  <Field label="Description" htmlFor="shortDescription" optional hint="What it is, who it is for, why it is different.">
+                  <Field label="Description" htmlFor="shortDescription" optional hint="One or two sentences: what it is and who it is for. Hybrid Production needs a short description (a business name and a description are all it requires); everything else on this form is optional.">
                     <Textarea id="shortDescription" {...register('shortDescription')} />
                   </Field>
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -272,7 +256,7 @@ export default function NewProjectPage() {
               {step === 2 && (
                 <>
                   <StepTitle title="Marketing goals" body="Tell the team what success looks like." />
-                  <Field label="Main goal" error={errors.marketingGoal?.message}>
+                  <Field label="Main goal" optional hint="Leave it empty and the AI proposes a goal from your description (labelled as an assumption). Click a selected goal again to clear it." error={errors.marketingGoal?.message}>
                     <Controller
                       control={control}
                       name="marketingGoal"
@@ -282,7 +266,7 @@ export default function NewProjectPage() {
                             <button
                               type="button"
                               key={g.value}
-                              onClick={() => field.onChange(g.value)}
+                              onClick={() => field.onChange(field.value === g.value ? '' : g.value)}
                               className={cn(
                                 'rounded-xl border px-4 py-3 text-left text-sm font-medium transition-all',
                                 field.value === g.value ? 'border-ink bg-ink text-cream-100 shadow-soft' : 'border-cream-300 bg-cream-50 hover:border-ink-600/40',
@@ -318,65 +302,6 @@ export default function NewProjectPage() {
 
               {step === 3 && (
                 <>
-                  <StepTitle title="Creative preferences" body="Pick a visual direction and the formats you want." />
-                  <Field label="Visual style">
-                    <Controller
-                      control={control}
-                      name="stylePreference"
-                      render={({ field }) => (
-                        <div className="grid gap-2 sm:grid-cols-3">
-                          {STYLES.map((s) => (
-                            <button
-                              type="button"
-                              key={s.value}
-                              onClick={() => field.onChange(s.value)}
-                              className={cn(
-                                'rounded-xl border px-4 py-3 text-left transition-all',
-                                field.value === s.value ? 'border-ink bg-ink text-cream-100 shadow-soft' : 'border-cream-300 bg-cream-50 hover:border-ink-600/40',
-                              )}
-                            >
-                              <span className="block text-sm font-medium">{s.label}</span>
-                              <span className={cn('block text-xs', field.value === s.value ? 'text-muted-dark' : 'text-muted')}>{s.hint}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    />
-                  </Field>
-                  <Field label="Formats">
-                    <Controller
-                      control={control}
-                      name="formats"
-                      render={({ field }) => (
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          {FORMAT_OPTIONS.map((f) => {
-                            const on = field.value.includes(f.key);
-                            return (
-                              <button
-                                type="button"
-                                key={f.key}
-                                onClick={() => field.onChange(on ? field.value.filter((x) => x !== f.key) : [...field.value, f.key])}
-                                className={cn(
-                                  'flex items-center justify-between rounded-xl border px-4 py-3 text-sm font-medium transition-all',
-                                  on ? 'border-accent bg-accent-soft/60' : 'border-cream-300 bg-cream-50 hover:border-ink-600/40',
-                                )}
-                              >
-                                {f.label}
-                                <span className={cn('flex h-5 w-5 items-center justify-center rounded-md border', on ? 'border-accent bg-accent text-white' : 'border-cream-300')}>
-                                  {on && <Check className="h-3.5 w-3.5" />}
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    />
-                  </Field>
-                </>
-              )}
-
-              {step === 4 && (
-                <>
                   <StepTitle title="Features" body="Choose what the agents should include when they run." />
                   <div className="space-y-3">
                     <Toggle control={control} name="enableSeoAudit" title="SEO audit" body="Analyse your website and content for search visibility." />
@@ -398,9 +323,9 @@ export default function NewProjectPage() {
                 </>
               )}
 
-              {step === 5 && (
+              {step === 4 && (
                 <>
-                  <StepTitle title="Review & submit" body="Check the brief. You can edit any step before saving." />
+                  <StepTitle title="Review & submit" body="Check the brief. You can edit any step before saving. The look of your campaigns (template collection, colors and output formats) is chosen when you run a campaign, not here." />
                   <ReviewList values={v} files={files} goTo={setStep} />
                 </>
               )}
@@ -509,14 +434,6 @@ function ReviewList({ values: v, files, goTo }: { values: Values; files: FileBuc
     },
     {
       step: 3,
-      title: 'Creative',
-      items: [
-        ['Style', STYLES.find((s) => s.value === v.stylePreference)?.label ?? '–'],
-        ['Formats', v.formats.map((f) => FORMAT_OPTIONS.find((o) => o.key === f)?.label).join(', ') || 'None'],
-      ],
-    },
-    {
-      step: 4,
       title: 'Features',
       items: [
         ['SEO audit', v.enableSeoAudit ? 'On' : 'Off'],

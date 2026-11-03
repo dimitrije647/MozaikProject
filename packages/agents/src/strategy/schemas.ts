@@ -116,6 +116,18 @@ export type StrategyStatement = z.infer<typeof StrategyStatement>;
 const Ids = z.array(z.string().max(24)).max(8);
 const Role = z.enum(['primary', 'secondary', 'test']);
 
+/**
+ * LIMITS OF THE STORED REPORT. The strategist's draft is held to the stricter limits above (that is all the model may write). The policy layer
+ * (policy.ts) then ADDS to three lists on its own: the claims the Marketing Audit flagged, the Channel Scout's finding for a recommended
+ * channel and every disputed finding that the draft left out. The stored report must accept what the policy can produce, and the policy never
+ * produces more: both sides use these numbers (a producer/consumer test fails if they ever drift apart again).
+ */
+export const STORED_LIMITS = { claimsToAvoid: 12, channelFindingIds: 9, disagreements: 50 } as const;
+const StoredIds = z.array(z.string().max(24)).max(STORED_LIMITS.channelFindingIds);
+const ClaimToAvoid = z.object({ claim: text(240), reason: text(240) });
+const ChannelRecommendation = (ids: z.ZodType<string[]>) => z.object({ channel: Channel, role: Role, approach: z.enum(['organic', 'paid', 'mixed']), rationale: text(500), formats: list(80), findingIds: ids });
+const Disagreement = z.object({ topic: text(160), positions: list(300, 4), resolution: text(400), resolved: z.boolean(), findingIds: Ids });
+
 export const CreativeBriefDraft = z.object({
   objective: text(300),
   audiencePrimary: text(200),
@@ -124,7 +136,7 @@ export const CreativeBriefDraft = z.object({
   channels: z.array(z.object({ channel: Channel, formats: list(80), notes: text(240) })).max(5),
   visualDirection: text(400).nullable(),
   brandConstraints: list(240, 6),
-  claimsToAvoid: z.array(z.object({ claim: text(240), reason: text(240) })).max(8),
+  claimsToAvoid: z.array(ClaimToAvoid).max(8),
   requiredEvidence: list(240, 6),
   deliverables: z.array(z.object({ type: text(100), channel: Channel.nullable(), count: z.number().int() })).max(8),
   suggestedConceptCount: z.number().int(),
@@ -145,7 +157,7 @@ export const StrategyDraft = z.object({
   valueProposition: StrategyStatement,
   positioning: z.object({ statement: StrategyStatement, differentiators: z.array(StrategyStatement).max(5), crowdedThemesToAvoid: list(160, 6) }),
   mainMessages: z.array(z.object({ message: text(240), audience: text(120), proofNeeded: list(200, 3), findingIds: Ids })).max(6),
-  channels: z.array(z.object({ channel: Channel, role: Role, approach: z.enum(['organic', 'paid', 'mixed']), rationale: text(500), formats: list(80), findingIds: Ids })).max(6),
+  channels: z.array(ChannelRecommendation(Ids)).max(6),
   organicPaid: z.object({ approach: text(600), paidRole: text(400), budgetNote: text(300) }),
   timing: z.array(z.object({ window: text(100), rationale: text(300), dateBasis: DateBasis, findingIds: Ids })).max(5),
   contentPillars: z.array(z.object({ name: text(100), description: text(300), channels: z.array(Channel).max(4), findingIds: Ids })).max(5),
@@ -153,7 +165,7 @@ export const StrategyDraft = z.object({
   kpis: z.array(z.object({ kpi: text(140), channel: Channel.nullable(), measuredBy: text(200) })).max(8),
   risks: z.array(z.object({ risk: text(250), mitigation: text(250), findingIds: Ids })).max(8),
   strategicPriorities: z.array(z.object({ priority: text(200), rationale: text(300), findingIds: Ids })).max(6),
-  disagreements: z.array(z.object({ topic: text(160), positions: list(300, 4), resolution: text(400), resolved: z.boolean(), findingIds: Ids })).max(6),
+  disagreements: z.array(Disagreement).max(6),
   openQuestions: z.array(text(260)).max(10),
   additionalLimitations: z.array(text(300)).max(8),
   creativeBrief: CreativeBriefDraft,
@@ -166,6 +178,8 @@ const Metric = z.object({ label: z.string(), value: z.string() });
 const Ref = z.object({ findingId: z.string(), agent: z.string(), status: EvidenceStatus, confidence: z.number().nullable(), sourceId: z.string().nullable(), locator: z.string().nullable(), crosscheck: z.string() });
 
 export const F4CreativeBrief = CreativeBriefDraft.extend({
+  /** The model's claims plus the ones the Marketing Audit flagged (policy.ts): a longer list than the draft's. */
+  claimsToAvoid: z.array(ClaimToAvoid).max(STORED_LIMITS.claimsToAvoid),
   /** Copied from F1/F2, never written by a model. */
   productIdentity: z.object({ name: z.string(), category: z.string(), businessType: BusinessType.or(z.string()), summary: z.string(), valueProposition: z.string().nullable() }),
   language: z.string(),
@@ -176,6 +190,9 @@ export const F4CreativeBrief = CreativeBriefDraft.extend({
 export type F4CreativeBrief = z.infer<typeof F4CreativeBrief>;
 
 export const CampaignStrategyReport = StrategyDraft.omit({ creativeBrief: true }).extend({
+  /** Stored limits (see STORED_LIMITS): the policy adds the scout's finding to each channel and every disputed finding to the disagreements. */
+  channels: z.array(ChannelRecommendation(StoredIds)).max(6),
+  disagreements: z.array(Disagreement).max(STORED_LIMITS.disagreements),
   /** 2. Product context from F1 (not written by a model). */
   productContext: z.object({
     f1ReportId: z.string(),

@@ -466,7 +466,7 @@ describe('F4 Creative Production (real Mozaik agents; fake text and image APIs)'
         reply: (req) => {
           if (req.agent !== 'creviewer' || req.images === 0) return undefined;
           n++;
-          return { text: JSON.stringify({ summary: 'One picture looks wrong.', issues: [{ kind: 'visual_defect', severity: 'major', assetRef: shownAssets(req)[0], finding: 'The picture has a visible artifact.', evidence: 'Looked at the exported asset.', suggestedCorrection: 'Generate a cleaner picture.', responsibleAgent: 'visual' }] }) };
+          return { text: JSON.stringify({ summary: 'One picture looks wrong.', issues: [{ kind: 'visual_defect', severity: 'major', assetRef: shownAssets(req)[0], finding: 'The picture has a visible artifact.', evidence: 'Looked at the exported asset.', suggestedCorrection: 'Generate a cleaner picture.', responsibleAgent: 'visual' }], scores: null }) };
         },
       },
     });
@@ -488,7 +488,7 @@ describe('F4 Creative Production (real Mozaik agents; fake text and image APIs)'
         reply: (req) => {
           if (req.agent !== 'creviewer' || req.images === 0 || !first) return undefined;
           first = false;
-          return { text: JSON.stringify({ summary: 'x', issues: [{ kind: 'visual_defect', severity: 'major', assetRef: shownAssets(req)[0], finding: 'The picture has a visible artifact.', evidence: 'e', suggestedCorrection: 'Generate a cleaner picture.', responsibleAgent: 'visual' }] }) };
+          return { text: JSON.stringify({ summary: 'x', issues: [{ kind: 'visual_defect', severity: 'major', assetRef: shownAssets(req)[0], finding: 'The picture has a visible artifact.', evidence: 'e', suggestedCorrection: 'Generate a cleaner picture.', responsibleAgent: 'visual' }], scores: null }) };
         },
       },
     });
@@ -513,7 +513,7 @@ describe('F4 Creative Production (real Mozaik agents; fake text and image APIs)'
         reply: (req) => {
           if (req.agent !== 'creviewer' || req.images === 0 || !first) return undefined;
           first = false;
-          return { text: JSON.stringify({ summary: 'x', issues: [{ kind: 'low_contrast', severity: 'major', assetRef: shownAssets(req)[0], finding: 'The headline is hard to read on this picture.', evidence: 'Looked at the exported asset.', suggestedCorrection: 'Add a stronger scrim behind the text.', responsibleAgent: 'layout' }] }) };
+          return { text: JSON.stringify({ summary: 'x', issues: [{ kind: 'low_contrast', severity: 'major', assetRef: shownAssets(req)[0], finding: 'The headline is hard to read on this picture.', evidence: 'Looked at the exported asset.', suggestedCorrection: 'Add a stronger scrim behind the text.', responsibleAgent: 'layout' }], scores: null }) };
         },
       },
     });

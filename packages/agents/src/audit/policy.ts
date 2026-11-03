@@ -4,7 +4,7 @@ import type { EvidenceStatus } from '../discovery/schemas';
 import { AUDIT_INFO, SEVERITIES, type AuditArea, type AuditBoard, type AuditFinding, type AuditKey, type Severity } from './board';
 import type { AuditFacts, F1Context } from './context';
 import type { AuditReportDraft, LlmAuditFinding, MarketingAuditReport } from './schemas';
-import { AUDIT_REPORT_VERSION } from './schemas';
+import { AUDIT_REPORT_VERSION, STORED_AUDIT_LIMITS } from './schemas';
 
 /**
  * The F2 evidence policy, enforced IN CODE on everything the audit agents produce.
@@ -21,7 +21,7 @@ import { AUDIT_REPORT_VERSION } from './schemas';
  */
 
 export interface AuditPolicyIssue {
-  type: 'reference_normalized' | 'unknown_source' | 'excerpt_not_found' | 'verified_downgraded' | 'claim_downgraded' | 'statement_capped' | 'severity_capped' | 'unknown_f1_finding' | 'contradiction_added';
+  type: 'reference_normalized' | 'unknown_source' | 'excerpt_not_found' | 'verified_downgraded' | 'claim_downgraded' | 'statement_capped' | 'severity_capped' | 'unknown_f1_finding' | 'contradiction_added' | 'list_capped';
   agent: string;
   detail: string;
 }
@@ -188,6 +188,10 @@ export function finalizeAuditReport(
     const rec = board.crosschecks.find((c) => c.claimId === f.id && c.verdict === 'disagree');
     contradictions.push({ topic: f.title, detail: `${f.agent}: ${f.statement}${rec ? ` | ${rec.reviewer} disagrees: ${rec.rationale ?? ''}` : ''}`.slice(0, 700), findingIds: [f.id], status: 'open' });
     issues.push({ type: 'contradiction_added', agent: who, detail: `Disputed finding ${f.id} was missing from the contradictions and was added.` });
+  }
+  if (contradictions.length > STORED_AUDIT_LIMITS.contradictions) {
+    issues.push({ type: 'list_capped', agent: who, detail: `${contradictions.length - STORED_AUDIT_LIMITS.contradictions} further contradiction(s) are not listed (the audit lists at most ${STORED_AUDIT_LIMITS.contradictions}); every disputed finding stays in the evidence appendix.` });
+    contradictions.length = STORED_AUDIT_LIMITS.contradictions;
   }
 
   const f1 = args.f1;

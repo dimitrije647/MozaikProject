@@ -14,6 +14,7 @@ import {
   redact,
   resolveOpenAIBaseUrl,
   safeErrorMessage,
+  SpendBudget,
   type AiProvider,
   type CampaignManifest,
   type CampaignRunHandle,
@@ -25,21 +26,33 @@ import {
   type CampaignStrategyReport,
   type StrategyReportMeta,
   type StrategyRunConfig,
-  buildF2Context,
+  checkSavedChain,
   type AuditRunConfig,
   type DocumentInput,
   type MarketingAuditReport,
-  buildF1Context,
   type ImageInput,
   type ProductDiscoveryReportV2,
   type ReportMeta,
   type SmokeTestOptions,
-  buildF3Context,
   buildCampaignZip,
+  creditsText,
+  buildOriginalsZip,
+  buildCreativesZip,
+  creativesZipFileName,
+  originalsZipFileName,
   zipFileName,
   renderLandingHtml,
   derivePalette,
   estimateCreativeRun,
+  capOutputTokens,
+  forecastAllocation,
+  planHybrid,
+  designFormatIds,
+  isNoAi,
+  imageCostEstimate,
+  imageModelWarning,
+  missingSlots,
+  prepareContinuationSeed,
   reconstructImageResults,
   OpenAIClient,
   CampaignPackage,
@@ -52,12 +65,19 @@ import {
 } from '@launchpilot/agents';
 import { StorageDriver } from '../storage/storage.service';
 import { DbAssetStore, readAll, toAssetRecord } from './campaign-assets';
+import { HybridInputsService } from './hybrid-support';
+import { ImageLibraryService } from '../visual/image-library.service';
+import { ProjectBrandService } from '../visual/project-brand.service';
 import { PrismaService } from '../common/prisma.service';
 import { ProjectsService } from '../projects/projects.service';
 import { ApiCredentialsService } from '../api-credentials/api-credentials.module';
 import { EventWriter } from './event-writer';
 import { CAMPAIGN_RUNTIME } from './types/runtime.token';
+import { estimateCost, type CostEstimate } from './cost-estimate';
 import { chooseImageModel } from './image-model-choice';
+import { chainException } from './report-errors';
+import { VisualService } from '../visual/visual.service';
+import type { ContinueImagesDto } from './dto/factory.dto';
 import { ListAuditsQueryDto, ListEventsQueryDto, StartAuditDto, StartCreativeDto, StartDiscoveryDto, StartSmokeTestDto, StartStrategyDto } from './dto/mozaik.dto';
 
 const RESULT_TO_DB: Record<CampaignRunResult['status'], RunStatus> = {
@@ -124,6 +144,10 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     private credentials: ApiCredentialsService,
     @Inject(CAMPAIGN_RUNTIME) private runtime: CampaignRuntime,
     private storage: StorageDriver,
+    private hybridInputs: HybridInputsService,
+    private visual: VisualService,
+    private library: ImageLibraryService,
+    private brandSvc: ProjectBrandService,
   ) {}
 
   /**
@@ -283,7 +307,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
    * model. Requires an intentional call; nothing here runs on page load.
    * `testHooks` (timeouts etc.) is for tests only and is not reachable through HTTP.
    */
-  async startProductDiscovery(userId: string, projectId: string, dto: StartDiscoveryDto = {}, testHooks: Partial<DiscoveryRunConfig> = {}, opts: { factoryRunId?: string } = {}) {
+  async startProductDiscovery(userId: string, projectId: string, dto: StartDiscoveryDto = {}, testHooks: Partial<DiscoveryRunConfig> = {}, opts: { factoryRunId?: string; spendCapUsd?: number | null; ledger?: SpendBudget; depth?: boolean } = {}) {
     const project = await this.projects.assertOwned(userId, projectId);
 
     const cred = await this.credentials.getDecryptedCredential(userId, 'openai');
@@ -327,6 +351,9 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
             maxModelCalls: dto.maxModelCalls,
             maxOutputTokens: dto.maxOutputTokens,
             maxReviews: dto.maxReviews,
+            spendCapUsd: opts.spendCapUsd ?? null,
+            ledger: opts.ledger,
+            depth: opts.depth === true,
             baseUrl: resolveOpenAIBaseUrl(),
             ...testHooks,
           },
@@ -364,15 +391,17 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
    * Nothing runs without this explicit call; a missing F1 report is never fabricated.
    * `testHooks` (timeouts, test tools) is for tests only and is not reachable through HTTP.
    */
-  async startMarketingAudit(userId: string, projectId: string, dto: StartAuditDto = {}, testHooks: Partial<AuditRunConfig> = {}, opts: { factoryRunId?: string } = {}) {
+  async startMarketingAudit(userId: string, projectId: string, dto: StartAuditDto = {}, testHooks: Partial<AuditRunConfig> = {}, opts: { factoryRunId?: string; spendCapUsd?: number | null; ledger?: SpendBudget; depth?: boolean } = {}) {
     const project = await this.projects.assertOwned(userId, projectId);
     const f1Row = dto.f1ReportId
       ? await this.prisma.productDiscoveryReport.findFirst({ where: { id: dto.f1ReportId, projectId, project: { userId } } })
       : await this.prisma.productDiscoveryReport.findFirst({ where: { projectId, schemaVersion: { gte: 2 }, run: { status: RunStatus.COMPLETED } }, orderBy: { createdAt: 'desc' } });
     if (dto.f1ReportId && !f1Row) throw new NotFoundException('Product Discovery report not found');
     if (!f1Row) throw new UnprocessableEntityException('Marketing Audit needs a completed Product Discovery (F1) report. Run Product Discovery first.');
-    const f1 = buildF1Context(f1Row);
-    if (!f1) throw new UnprocessableEntityException('That Product Discovery report is from an earlier version and has no Product Manifest. Run Product Discovery again.');
+    // free check before anything is requested: the report must be readable by this version (exact report and field are named if not)
+    const f1Check = checkSavedChain({ projectId, f1: f1Row, expect: ['F1'] });
+    if (!f1Check.ok) throw chainException('Marketing Audit', f1Check);
+    const f1 = f1Check.contexts.f1!;
 
     const { credentials, model } = await this.openAiFor(userId, dto.model, 'Marketing Audit');
     const [intake, socials, assets, notes] = await Promise.all([
@@ -406,7 +435,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
           mode: 'marketing_audit',
           manifest: this.buildManifest(project, intake),
           credentials,
-          audit: { f1, input, model, documents, images, maxModelCalls: dto.maxModelCalls, maxOutputTokens: dto.maxOutputTokens, maxReviews: dto.maxReviews, baseUrl: resolveOpenAIBaseUrl(), ...testHooks },
+          audit: { f1, input, model, documents, images, maxModelCalls: dto.maxModelCalls, maxOutputTokens: dto.maxOutputTokens, maxReviews: dto.maxReviews, spendCapUsd: opts.spendCapUsd ?? null, ledger: opts.ledger, depth: opts.depth === true, baseUrl: resolveOpenAIBaseUrl(), ...testHooks },
           onEvent: writer.push,
           // Saved BEFORE the run is marked COMPLETED (the runtime waits for this promise).
           onAudit: async (report: MarketingAuditReport, meta: AuditReportMeta) => {
@@ -486,7 +515,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
    * never fabricated or silently combined across projects.
    * `testHooks` (timeouts, test tools, the clock) is for tests only and is not reachable through HTTP.
    */
-  async startMarketStrategy(userId: string, projectId: string, dto: StartStrategyDto = {}, testHooks: Partial<StrategyRunConfig> = {}, opts: { factoryRunId?: string } = {}) {
+  async startMarketStrategy(userId: string, projectId: string, dto: StartStrategyDto = {}, testHooks: Partial<StrategyRunConfig> = {}, opts: { factoryRunId?: string; spendCapUsd?: number | null; ledger?: SpendBudget; depth?: boolean } = {}) {
     const project = await this.projects.assertOwned(userId, projectId);
     const auditRow = dto.auditId
       ? await this.prisma.marketingAuditReport.findFirst({ where: { id: dto.auditId, projectId, project: { userId } } })
@@ -499,10 +528,10 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     // The audit points at the F1 report it was built on; that report must belong to the SAME project.
     const f1Row = await this.prisma.productDiscoveryReport.findFirst({ where: { id: auditRow.f1ReportId, projectId, project: { userId } } });
     if (!f1Row) throw new UnprocessableEntityException('The selected audit refers to a Product Discovery report that does not belong to this project.');
-    const f1 = buildF1Context(f1Row);
-    if (!f1) throw new UnprocessableEntityException('The Product Discovery report behind that audit is from an earlier version and has no Product Manifest. Run Product Discovery and the Marketing Audit again.');
-    const f2 = buildF2Context(auditRow);
-    if (!f2) throw new UnprocessableEntityException('That Marketing Audit report could not be read (unexpected format). Run the Marketing Audit again.');
+    const check = checkSavedChain({ projectId, f1: f1Row, f2: auditRow, expect: ['F1', 'F2'] });
+    if (!check.ok) throw chainException('Market Strategy', check);
+    const f1 = check.contexts.f1!;
+    const f2 = check.contexts.f2!;
 
     const { credentials, model } = await this.openAiFor(userId, dto.model, 'Market Strategy');
     const [intake, socials] = await Promise.all([this.prisma.productIntake.findUnique({ where: { projectId } }), this.prisma.socialProfile.findMany({ where: { projectId } })]);
@@ -536,7 +565,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
           mode: 'market_strategy',
           manifest: this.buildManifest(project, intake),
           credentials,
-          strategy: { f1, f2, input, model, maxModelCalls: dto.maxModelCalls, maxScouts: dto.maxScouts, maxReviews: dto.maxReviews, maxOutputTokens: dto.maxOutputTokens, baseUrl: resolveOpenAIBaseUrl(), ...testHooks },
+          strategy: { f1, f2, input, model, maxModelCalls: dto.maxModelCalls, maxScouts: dto.maxScouts, maxReviews: dto.maxReviews, maxOutputTokens: dto.maxOutputTokens, spendCapUsd: opts.spendCapUsd ?? null, ledger: opts.ledger, depth: opts.depth === true, baseUrl: resolveOpenAIBaseUrl(), ...testHooks },
           onEvent: writer.push,
           // Saved BEFORE the run is marked COMPLETED (the runtime waits for this promise).
           onStrategy: async (report: CampaignStrategyReport, meta: StrategyReportMeta) => {
@@ -734,23 +763,36 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
       this.prisma.marketingAuditReport.findFirst({ where: { id: strategyRow.f2AuditId, projectId, project: { userId } } }),
     ]);
     if (!f1Row || !f2Row || f2Row.f1ReportId !== f1Row.id) throw new UnprocessableEntityException('The selected strategy refers to a Product Discovery report or Marketing Audit that does not belong to this project.');
-    const f1 = buildF1Context(f1Row);
-    const f2 = buildF2Context(f2Row);
-    const f3 = buildF3Context(strategyRow);
-    if (!f1 || !f2 || !f3) throw new UnprocessableEntityException('A report in the F1 -> F2 -> F3 chain could not be read (older format). Run the Strategy again.');
+    // ONE free check of the whole chain: each report read through the shared contract, ownership and lineage verified. If a report cannot be
+    // read, the message names the report, the field and whether anything has to run again (it never says "older format, run it again" by default).
+    const chain = checkSavedChain({ projectId, f1: f1Row, f2: f2Row, f3: strategyRow });
+    if (!chain.ok) throw chainException('Creative Production', chain);
+    const f1 = chain.contexts.f1!;
+    const f2 = chain.contexts.f2!;
+    const f3 = chain.contexts.f3!;
 
     const { credentials, model } = await this.openAiFor(userId, dto.model, 'Creative Production');
+    // NO AI HYBRID: refused (never silently changed) when anything asks for an image; no image model is looked up, so no image model is ever chosen
+    const noAi = isNoAi(dto.hybrid as never);
+    if (noAi) {
+      const asks: string[] = [];
+      if (dto.imageModel?.trim()) asks.push('an image model was selected');
+      if ((dto.maxImages ?? 0) > 0) asks.push(`${dto.maxImages} image request(s) were allowed`);
+      if ((dto.maxRegenerations ?? 0) > 0) asks.push('image regeneration was allowed');
+      if (dto.variations === true) asks.push('several original images per concept were requested');
+      if (Number((dto.hybrid as { originals?: unknown } | undefined)?.originals ?? 0) > 0) asks.push('original AI images were requested');
+      if (asks.length) throw new UnprocessableEntityException(`NO AI HYBRID never generates images, so this request was refused: ${asks.join('; ')}. Nothing was sent to OpenAI.`);
+    }
     // "auto" picks a current GPT Image model from the key's own list; a retired or unlisted model is refused BEFORE anything is spent
-    const requestedImageModel = dto.imageModel?.trim() || null;
-    const choice = chooseImageModel(requestedImageModel, requestedImageModel ? await this.listModelIds(credentials.apiKey) : null);
+    const requestedImageModel = noAi ? null : dto.imageModel?.trim() || null;
+    const choice = chooseImageModel(requestedImageModel, requestedImageModel ? await this.listModelIds(credentials.apiKey) : null, new Date(), dto.imageModelStrategy ?? 'economy', dto.imageQuality ?? 'low');
     if (choice.blocker) throw new UnprocessableEntityException(choice.blocker.message);
     const imageModel = choice.model;
-    const imageModelCheck: { available: boolean | null; note: string; requested: string | null; mode: 'none' | 'auto' | 'explicit' } = { available: choice.available, note: choice.note, requested: requestedImageModel, mode: choice.mode };
+    const imageModelCheck = { available: choice.available, note: choice.note, requested: requestedImageModel, mode: choice.mode, strategy: choice.strategy, reason: choice.reason, alternatives: choice.alternatives, verification: choice.verification, documented: choice.documented };
 
-    const [intake, logoAsset] = await Promise.all([
-      this.prisma.productIntake.findUnique({ where: { projectId } }),
-      this.prisma.projectAsset.findFirst({ where: { projectId, type: 'logo', mimeType: { startsWith: 'image/' } }, orderBy: { createdAt: 'desc' } }),
-    ]);
+    const [intake, logoAsset] = await Promise.all([this.prisma.productIntake.findUnique({ where: { projectId } }), this.brandSvc.logoAsset(projectId)]);
+    // brand content the owner approved with Get Content (null when Get Content was never used: the run then behaves exactly as before)
+    const brandCtx = await this.brandSvc.brandContext(projectId, logoAsset?.id ?? null);
     const recommended = f3.report.channels.map((c) => c.channel as string);
     const channels = (dto.channels?.length ? dto.channels : recommended.slice(0, 4)).filter((c): c is ChannelId => (CHANNEL_IDS as readonly string[]).includes(c));
     if (!channels.length) channels.push('instagram');
@@ -765,21 +807,36 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     };
     const logo = logoAsset ? await readAll(this.storage.read(logoAsset.filePath)).catch(() => null) : null;
     const { palette, fromBrand } = await derivePalette(f1.palette, logo);
+    // Hybrid Production: references and brand images come from this project only; the settings are normalized by the server
+    const hybridIn = dto.hybrid ? await this.hybridInputs.prepare(projectId, dto.hybrid as never, true) : null;
+    // several ORIGINAL images per concept (Full Production, Hybrid Production): maxImages is the number of originals, shared out by the allocation planner
+    const variations = !!imageModel && (dto.variations === true || !!hybridIn);
     const settings = {
       model,
       imageModel,
       imageQuality: dto.imageQuality ?? ('low' as const),
       imageSize: dto.imageSize ?? null,
-      maxImages: imageModel ? Math.min(dto.maxImages ?? concepts, concepts) : 0,
-      maxRegenerations: imageModel ? (dto.maxRegenerations ?? 0) : 0,
+      maxImages: imageModel ? (variations ? Math.min(dto.maxImages ?? hybridIn?.hybrid.originals ?? 20, 40) : Math.min(dto.maxImages ?? concepts, concepts)) : 0,
+      maxRegenerations: imageModel && !variations ? (dto.maxRegenerations ?? 0) : 0,
       maxLayoutsPerConcept: dto.maxLayoutsPerConcept ?? 4,
       maxRepairRounds: dto.maxRepairRounds ?? 2,
       visionReviews: dto.visionReviews ?? 0,
-      maxModelCalls: dto.maxModelCalls ?? 16,
+      maxModelCalls: dto.maxModelCalls ?? (variations ? 60 : 16),
       maxOutputTokens: dto.maxOutputTokens,
+      variations,
+      layoutsPerOriginal: dto.layoutsPerOriginal ?? 3,
+      imageConcurrency: dto.imageConcurrency ?? 2,
+      maxVariants: dto.maxVariants ?? (variations || noAi ? 24 : 12),
+      approvedBudgetUsd: dto.approvedBudgetUsd ?? null,
+      depth: dto.depth === true,
+      hybrid: hybridIn ? { ...hybridIn.hybrid, originals: imageModel ? Math.min(dto.maxImages ?? hybridIn.hybrid.originals, 40) : hybridIn.hybrid.originals } : null,
     };
-    const estimate = estimateCreativeRun({ concepts, landing: input.landing, imageGeneration: !!imageModel, maxImages: settings.maxImages, maxRegenerations: settings.maxRegenerations, maxLayoutsPerConcept: settings.maxLayoutsPerConcept, maxRepairRounds: settings.maxRepairRounds, visionReviews: settings.visionReviews, maxModelCalls: settings.maxModelCalls, channels: input.channels.length });
-    return { project, intake, f1, f2, f3, credentials, input, settings, estimate, palette, fromBrand, logo, logoName: logoAsset?.originalName ?? null, imageModelCheck, strategyRow };
+    // the plan of originals as it can be known BEFORE the run (the real concepts do not exist yet: equal weights)
+    const hybridForecast = settings.hybrid ? planHybrid({ concepts: Array.from({ length: concepts }, (_, i) => ({ id: `K${i + 1}`, name: `Concept ${i + 1}`, channels: input.channels })), originals: imageModel ? settings.hybrid.originals : 0, templateCreatives: settings.hybrid.templateCreatives, channelPriority: input.channels, fixedSize: settings.imageSize, brandImages: hybridIn?.brandImageCount ?? 0, basis: 'forecast', formatIds: designFormatIds(settings.hybrid) }) : null;
+    const allocation = hybridForecast ? hybridForecast.allocation : variations ? forecastAllocation({ target: settings.maxImages, conceptCount: concepts, channels: input.channels, fixedSize: settings.imageSize, layoutsPerOriginal: settings.layoutsPerOriginal }) : null;
+    const planChunk = Math.max(3, Math.min(24, Math.floor(capOutputTokens(model, 9000).tokens / 450)));
+    const estimate = estimateCreativeRun({ concepts, landing: input.landing, imageGeneration: !!imageModel, maxImages: settings.maxImages, maxRegenerations: settings.maxRegenerations, maxLayoutsPerConcept: settings.maxLayoutsPerConcept, maxRepairRounds: settings.maxRepairRounds, visionReviews: settings.visionReviews, maxModelCalls: settings.maxModelCalls, channels: input.channels.length, depth: settings.depth, variations: allocation ? { target: allocation.allocated, expectedLayouts: allocation.expectedLayouts, planChunk } : undefined, extraCalls: settings.hybrid ? (settings.hybrid.directionRefine ? 1 : 0) + (settings.hybrid.selection === 'assisted' ? 1 : 0) : 0 });
+    return { project, intake, f1, f2, f3, credentials, input, settings, estimate, allocation, palette, fromBrand, logo, brandCtx, logoName: logoAsset?.originalName ?? null, imageModelCheck, strategyRow, hybridIn, hybridForecast };
   }
 
   /** GET /models (free, no inference): the model ids the user's key lists. null = could not tell (outage), never "no models". */
@@ -801,8 +858,9 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
       input: r.input,
       settings: r.settings,
       estimate: r.estimate,
+      allocation: r.allocation,
       brand: { palette: r.palette, fromBrand: r.fromBrand, logo: r.logoName },
-      imageModel: r.imageModelCheck,
+      imageModel: { ...r.imageModelCheck, warning: r.settings.imageModel ? imageModelWarning(r.settings.imageModel) : null },
       notes: [
         'Every limit is enforced by LaunchPilot per run; none of them is an OpenAI spending cap.',
         r.settings.imageModel ? `Each image request is billed by OpenAI for ${r.settings.imageModel} at quality "${r.settings.imageQuality}"; LaunchPilot records only what the provider reports and shows no price.` : 'No image model is selected, so no image request is made.',
@@ -817,9 +875,17 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
    * (the Fixer only if the review finds something to repair). Uses the user's own OpenAI key for text AND images; nothing runs
    * without this explicit call. `testHooks` (timeouts, fake tools) is for tests only and is not reachable through HTTP.
    */
-  async startCreativeProduction(userId: string, projectId: string, dto: StartCreativeDto = {}, testHooks: Partial<CreativeRunConfig> = {}, opts: { factoryRunId?: string } = {}) {
+  async startCreativeProduction(userId: string, projectId: string, dto: StartCreativeDto = {}, testHooks: Partial<CreativeRunConfig> = {}, opts: { factoryRunId?: string; spendCapUsd?: number | null; ledger?: SpendBudget; depth?: boolean; continueFrom?: { row: { id: string; f3StrategyId: string }; pkg: CampaignPackage } } = {}) {
     const r = await this.resolveCreative(userId, projectId, dto);
     const { f1, f2, f3, input, settings } = r;
+    const spendCapUsd = opts.spendCapUsd ?? settings.approvedBudgetUsd;
+    // several originals per concept are many paid requests: they never start without an approved spending limit
+    // ... and an image model whose price is not published means the cost is unknown until the first image: the user must say they know
+    if (settings.variations && settings.maxImages > 0 && !opts.factoryRunId && settings.imageModel && imageCostEstimate(settings.imageModel, settings.imageQuality, settings.imageSize ?? '1024x1024').usd === null) {
+      // the unknown price is accepted inside the ONE spending approval, which names the maximum number of image requests (computed from the plan)
+      if (dto.approvedImageRequests !== settings.maxImages) throw new UnprocessableEntityException(`Image pricing is not available for ${settings.imageModel}, so your spending approval must also cover the maximum number of image requests (${settings.maxImages}). Approve the plan as shown (approvedImageRequests: ${settings.maxImages}) or choose a model with a published price. Nothing has been sent to OpenAI.`);
+    }
+    if (settings.variations && settings.maxImages > 0 && !opts.factoryRunId && !(spendCapUsd && spendCapUsd > 0)) throw new UnprocessableEntityException('Several original images per concept are many paid requests. Approve a spending limit (approvedBudgetUsd) first; LaunchPilot refuses requests that would exceed it.');
     return this.launchRun({
       factoryRunId: opts.factoryRunId,
       userId,
@@ -832,6 +898,8 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
           data: { projectId, runId: run.id, f1ReportId: f1.reportId, f2AuditId: f2.auditId, f3StrategyId: f3.strategyId, schemaVersion: CAMPAIGN_SCHEMA_VERSION, language: input.language, model: settings.model, imageModel: settings.imageModel, status: 'running', campaignName: `${f3.report.productContext.name} — creative campaign`.slice(0, 120) },
         });
         const assets = new DbAssetStore(this.prisma, this.storage, projectId, campaign.id);
+        // image-only continuation: copy what succeeded under the NEW campaign (the earlier one is never touched)
+        const seed = opts.continueFrom ? await prepareContinuationSeed(opts.continueFrom.pkg, new DbAssetStore(this.prisma, this.storage, projectId, opts.continueFrom.row.id), assets, opts.continueFrom.pkg.lineage?.revision ?? 1) : undefined;
         return this.runtime.startRun({
           runId: run.id,
           projectId,
@@ -857,9 +925,33 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
             visionReviews: settings.visionReviews,
             maxModelCalls: settings.maxModelCalls,
             maxOutputTokens: settings.maxOutputTokens,
+            variations: settings.variations,
+            layoutsPerOriginal: settings.layoutsPerOriginal,
+            imageConcurrency: settings.imageConcurrency,
+            maxVariants: settings.maxVariants,
+            spendCapUsd: spendCapUsd ?? null,
+            ledger: opts.ledger,
+            depth: opts.depth ?? settings.depth,
+            ...(seed ? { seed } : {}),
+            ...(settings.hybrid && r.hybridIn
+              ? {
+                  hybrid: isNoAi(settings.hybrid)
+                    ? {
+                        settings: settings.hybrid,
+                        brandImages: r.hybridIn.brandImages,
+                        referencePalettes: r.hybridIn.referencePalettes,
+                        // search and download happen during the run ONLY in automatic stock mode, with the providers the user approved
+                        discovery: settings.hybrid.imagery.autoStock ? this.visual.discoveryPort({ includePaid: settings.hybrid.imagery.allowPaidSearch }) : null,
+                        acquire: settings.hybrid.imagery.autoStock ? this.visual.acquirePort(userId, projectId) : null,
+                        discoveredBefore: await this.library.discoveredCount(projectId),
+                      }
+                    : { settings: settings.hybrid, brandImages: r.hybridIn.brandImages, referencePalettes: r.hybridIn.referencePalettes, discovery: this.visual.discoveryPort() },
+                }
+              : {}),
             palette: r.palette,
             hasBrandPalette: r.fromBrand,
             logo: r.logo,
+            ...(r.brandCtx ? { brand: r.brandCtx } : {}),
             assets,
             baseUrl: resolveOpenAIBaseUrl(),
             ...testHooks,
@@ -886,6 +978,96 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  // ---- image-only continuation --------------------------------------------------------------------------------------------
+
+  /** The finished campaign a continuation builds on, and the planned images that do not exist yet. 404 for other users' campaigns. */
+  private async continuationBase(userId: string, campaignId: string) {
+    const row = await this.ownedCampaign(userId, campaignId);
+    if (row.status !== 'completed' || !row.packageJson) throw new ConflictException('Only a finished campaign can be continued.');
+    const parsed = CampaignPackage.safeParse(row.packageJson);
+    if (!parsed.success) throw new UnprocessableEntityException('The stored campaign package could not be read.');
+    const pkg = parsed.data;
+    if (isNoAi(pkg.hybrid?.settings)) throw new UnprocessableEntityException('This campaign was made with NO AI HYBRID, which never generates images, so there are no images to continue. To use pictures you have added since, start the campaign again from the same strategy: Product Discovery, the Marketing Audit and the Strategy are reused, not run again.');
+    if (!pkg.imageAllocation || !pkg.imageVariations.length) throw new UnprocessableEntityException('This campaign was made with one image per concept, so there is no image plan to continue. Run Full Production or Hybrid Production to get several original images per concept.');
+    const missing = missingSlots(pkg.imageAllocation, pkg.imageVariations);
+    // Hybrid Production: template creatives that were never rendered (failed, or waiting for an original) are rendered now, locally and for free
+    const hy = pkg.hybrid;
+    const templatesPending = !!hy && (hy.counts.templates.rendered + hy.counts.templates.fallbackRendered < hy.counts.templates.planned || hy.creatives.some((c) => c.status === 'fallback_rendered'));
+    if (!missing.length && !templatesPending) throw new ConflictException('Every planned image and template creative of this campaign already exists, so there is nothing to continue.');
+    return { row, pkg, missing, templatesPending };
+  }
+
+  private continuationDto(row: { f3StrategyId: string; model: string; imageModel: string | null; metadataJson: unknown }, pkg: CampaignPackage, missing: number, dto: ContinueImagesDto): StartCreativeDto {
+    const meta = (row.metadataJson ?? {}) as { inputSnapshot?: { channels?: string[] } };
+    const channels = meta.inputSnapshot?.channels?.length ? meta.inputSnapshot.channels : [...new Set(pkg.copyVariants.map((v) => v.channel as string))];
+    return {
+      strategyId: row.f3StrategyId,
+      model: dto.model ?? row.model, // the text model of the earlier campaign: never switched silently
+      imageModel: dto.imageModel ?? row.imageModel ?? 'auto',
+      imageQuality: dto.imageQuality ?? (['low', 'medium', 'high', 'auto'].includes(pkg.usage.images.quality ?? '') ? (pkg.usage.images.quality as 'low') : 'medium'),
+      concepts: pkg.concepts.length,
+      channels,
+      landing: !!pkg.landingContent,
+      maxImages: Math.min(dto.maxImages ?? missing, missing),
+      variations: true,
+      ...(pkg.hybrid ? { hybrid: pkg.hybrid.settings as never, imageModelStrategy: 'quality' as const } : {}),
+      visionReviews: dto.visionReviews ?? (missing === 0 ? 0 : 2),
+      maxRepairRounds: 1,
+      maxModelCalls: 8,
+      approvedBudgetUsd: dto.approvedBudgetUsd,
+      confirmUnpricedImages: dto.confirmUnpricedImages,
+      approvedImageRequests: dto.approvedImageRequests,
+    } as StartCreativeDto;
+  }
+
+  /** What an image-only continuation would do and cost. Free: no paid request. */
+  async preflightImageContinuation(userId: string, campaignId: string, dto: ContinueImagesDto = {}) {
+    const { row, pkg, missing } = await this.continuationBase(userId, campaignId);
+    const r = await this.resolveCreative(userId, row.projectId, this.continuationDto(row, pkg, missing.length, dto));
+    const willRequest = Math.min(r.settings.maxImages, missing.length);
+    const slots = missing.slice(0, willRequest);
+    const outputCap = capOutputTokens(r.settings.model, 6000).tokens;
+    const cost: CostEstimate = estimateCost({
+      textModel: r.settings.model,
+      imageModel: r.settings.imageModel,
+      imageQuality: r.settings.imageQuality,
+      imageSizes: slots.map((s) => s.size),
+      phases: [{ phase: 'creative', runs: true, typicalCalls: r.settings.visionReviews > 0 ? 1 : 0, capCalls: r.settings.maxModelCalls, outputCap }],
+      profiles: {},
+      targetUsd: null,
+      approvedUsd: dto.approvedBudgetUsd ?? null,
+      listedImageModels: null,
+    });
+    const records = new Map(pkg.imageVariations.map((v) => [v.variationId, v]));
+    return {
+      ok: true,
+      parent: { id: row.id, name: row.campaignName, revision: pkg.lineage?.revision ?? 1, imageCounts: pkg.imageCounts },
+      missing: missing.map((s) => ({ variationId: s.variationId, conceptName: pkg.concepts.find((c) => c.id === s.conceptId)?.name ?? s.conceptId, variationName: records.get(s.variationId)?.variationName ?? null, status: records.get(s.variationId)?.status ?? 'planned', explanation: records.get(s.variationId)?.explanation ?? null, size: s.size })),
+      willRequest,
+      reuse: { concepts: pkg.concepts.length, copyVariants: pkg.copyVariants.length, landing: !!pkg.landingContent, originals: pkg.imageVariations.filter((v) => v.status === 'generated').length, layouts: pkg.channelLayouts.length },
+      notRerun: ['Product Discovery', 'Marketing Audit', 'Market Research & Strategy', 'Copywriter', 'Landing Content Builder'],
+      settings: { imageModel: r.settings.imageModel, imageQuality: r.settings.imageQuality, maxImages: willRequest, visionReviews: r.settings.visionReviews, imageConcurrency: r.settings.imageConcurrency, textModel: r.settings.model },
+      imageModel: { ...r.imageModelCheck, warning: r.settings.imageModel ? imageModelWarning(r.settings.imageModel) : null },
+      cost,
+      mustConfirm: missing.length > 0,
+      ...(pkg.hybrid ? { hybrid: { templatesPlanned: pkg.hybrid.counts.templates.planned, templatesDelivered: pkg.hybrid.counts.templates.rendered + pkg.hybrid.counts.templates.fallbackRendered, note: 'Template creatives that do not exist yet are rendered locally from the originals (no image request, no cost). Creatives made without their planned original are rendered again properly once it exists.' } } : {}),
+    };
+  }
+
+  /**
+   * Generates ONLY the missing images of a finished campaign, as a NEW campaign (revision) that reuses the strategy, the copy, the landing
+   * content and every original that succeeded. Billed by OpenAI: it needs an approved spending limit and an explicit confirmation, and the
+   * earlier campaign is never modified.
+   */
+  async startImageContinuation(userId: string, campaignId: string, dto: ContinueImagesDto, testHooks: Partial<CreativeRunConfig> = {}) {
+    const { row, pkg, missing } = await this.continuationBase(userId, campaignId);
+    // only missing IMAGES are billed; template creatives are rendered locally and need no approval
+    if (missing.length > 0 && (dto.confirmCost !== true || !(dto.approvedBudgetUsd && dto.approvedBudgetUsd > 0))) throw new UnprocessableEntityException('Generating the missing images is billed by OpenAI. Review the estimate, approve a spending limit (approvedBudgetUsd) and confirm the cost (confirmCost) to start.');
+    const pre = await this.preflightImageContinuation(userId, campaignId, dto);
+    if (pre.cost.budget.status === 'below_estimate') throw new UnprocessableEntityException(pre.cost.budget.message);
+    return this.startCreativeProduction(userId, row.projectId, this.continuationDto(row, pkg, missing.length, dto), testHooks, { spendCapUsd: dto.approvedBudgetUsd, continueFrom: { row, pkg } });
+  }
+
   private campaignSummary(r: { id: string; projectId: string; runId: string; f1ReportId: string; f2AuditId: string; f3StrategyId: string; schemaVersion: number; language: string; model: string; imageModel: string | null; status: string; approvalStatus: string | null; campaignName: string; packageJson: unknown; createdAt: Date }) {
     const pkg = (r.packageJson ?? null) as Partial<CampaignPackage> | null;
     const assets = pkg?.imageAssets ?? [];
@@ -908,6 +1090,10 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
       variants: pkg?.copyVariants?.length ?? null,
       layouts: pkg?.channelLayouts?.length ?? null,
       generatedImages: pkg ? assets.filter((a) => a.kind === 'image' && a.source === 'ai_image' && a.status !== 'superseded').length : null,
+      imageCounts: pkg?.imageCounts ?? null,
+      imageTarget: pkg?.imageAllocation?.target ?? null,
+      lineage: pkg?.lineage ?? null,
+      cost: pkg?.cost ?? null,
       findings: pkg?.reviewFindings?.length ?? null,
       unresolved: pkg?.approval?.unresolvedFindingIds?.length ?? null,
       usage: pkg?.usage ?? null,
@@ -999,8 +1185,41 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     const parsed = CampaignPackage.safeParse(r.packageJson);
     if (!parsed.success) throw new UnprocessableEntityException('The stored campaign package could not be read');
     const meta = (r.metadataJson ?? {}) as { brand?: { palette?: string[] } };
-    const { zip, manifest } = await buildCampaignZip(parsed.data, new DbAssetStore(this.prisma, this.storage, r.projectId, r.id), { palette: meta.brand?.palette ?? [] });
+    const strategy = await this.prisma.marketingStrategyReport.findUnique({ where: { id: r.f3StrategyId }, select: { reportJson: true } });
+    // credits of the licensed pictures this campaign was built from (a template creative lists its source pictures as "brand:<asset id>")
+    const used = new Set(parsed.data.imageAssets.flatMap((a) => a.sourceAssetIds ?? []).filter((s) => s.startsWith('brand:')).map((s) => s.slice(6)));
+    const provenance = used.size ? await this.prisma.imageProvenance.findMany({ where: { projectId: r.projectId, assetId: { in: [...used] } } }).catch(() => []) : [];
+    const credits = creditsText(provenance.map((p) => ({ provider: p.provider, attribution: p.attribution, pageUrl: p.pageUrl, license: p.license, attributionRequired: p.attributionRequired })));
+    // NO AI HYBRID: the original pictures the rights allow handing on (never a stock original whose license forbids it)
+    const sources = parsed.data.hybrid?.imagery ? await this.library.exportSources(r.projectId, parsed.data.hybrid.imagery.library.filter((l) => l.redistributeOriginal).map((l) => l.id)) : [];
+    // the approved logo file travels with the package metadata (only when Get Content approved one and it was used)
+    const logoRef = parsed.data.hybrid?.brand?.logo ?? null;
+    const logoRow = logoRef?.assetId ? await this.prisma.projectAsset.findFirst({ where: { id: logoRef.assetId, projectId: r.projectId } }) : null;
+    const logoData = logoRow ? await readAll(this.storage.read(logoRow.filePath)).catch(() => null) : null;
+    const brandRow = logoRow ? await this.brandSvc.content(r.projectId) : null;
+    const logo = logoRow && logoData ? { fileName: logoRow.originalName, data: logoData, rights: ((brandRow?.logoRightsJson as { license?: string; verification?: string } | null)?.license ?? null) } : null;
+    const { zip, manifest } = await buildCampaignZip(parsed.data, new DbAssetStore(this.prisma, this.storage, r.projectId, r.id), { palette: meta.brand?.palette ?? [], strategy: strategy?.reportJson ?? undefined, ...(credits ? { credits } : {}), ...(sources.length ? { sources } : {}), ...(logo ? { logo } : {}) });
     return { zip, filename: zipFileName(parsed.data), manifest };
+  }
+
+  /** Only the original AI images of a campaign, as a ZIP (for "download all originals"). */
+  async exportOriginals(userId: string, campaignId: string) {
+    const r = await this.ownedCampaign(userId, campaignId);
+    const parsed = r.packageJson ? CampaignPackage.safeParse(r.packageJson) : null;
+    if (!parsed?.success) throw new ConflictException(r.status === 'running' ? 'The campaign is still being produced' : 'This campaign has no package (the run did not finish)');
+    if (!parsed.data.imageVariations.length) throw new UnprocessableEntityException('This campaign has one image per concept and no list of original images; download the full package instead.');
+    const { zip } = await buildOriginalsZip(parsed.data, new DbAssetStore(this.prisma, this.storage, r.projectId, r.id));
+    return { zip, filename: originalsZipFileName(parsed.data) };
+  }
+
+  /** Hybrid Production downloads: only the template creatives, or every finished creative (originals + template creatives), as a ZIP. */
+  async exportCreatives(userId: string, campaignId: string, scope: 'templates' | 'all') {
+    const r = await this.ownedCampaign(userId, campaignId);
+    const parsed = r.packageJson ? CampaignPackage.safeParse(r.packageJson) : null;
+    if (!parsed?.success) throw new ConflictException(r.status === 'running' ? 'The campaign is still being produced' : 'This campaign has no package (the run did not finish)');
+    if (!parsed.data.hybrid) throw new UnprocessableEntityException('This campaign has no template creatives (it was not made with Hybrid Production); download the full package instead.');
+    const { zip } = await buildCreativesZip(parsed.data, new DbAssetStore(this.prisma, this.storage, r.projectId, r.id), scope);
+    return { zip, filename: creativesZipFileName(parsed.data, scope) };
   }
 
   /**
@@ -1014,7 +1233,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     type Obj = Record<string, any>;
     const [campaign, events] = await Promise.all([this.prisma.creativeCampaign.findFirst({ where: { runId } }), this.prisma.campaignEvent.findMany({ where: { runId }, orderBy: { sequence: 'asc' }, take: 1500 })]);
     const n = (v: unknown) => (Array.isArray(v) ? v.length : 0);
-    const TIMELINE = new Set(['phase.started', 'task.assigned', 'task.completed', 'copy.proposed', 'landing.proposed', 'visual.generated', 'layout.completed', 'crosscheck.requested', 'crosscheck.answered', 'review.requested', 'review.completed', 'participant.registered', 'participant.idle', 'fix.requested', 'revision.requested', 'revision.applied', 'revision.completed', 'campaign.completed', 'phase.completed', 'phase.failed', 'factory.completed', 'factory.failed', 'factory.cancelled']);
+    const TIMELINE = new Set(['images.sourcing.requested', 'images.sourced', 'image.generation.refused', 'phase.started', 'task.assigned', 'task.completed', 'copy.proposed', 'landing.proposed', 'visual.generated', 'layout.completed', 'crosscheck.requested', 'crosscheck.answered', 'review.requested', 'review.completed', 'participant.registered', 'participant.idle', 'fix.requested', 'revision.requested', 'revision.applied', 'revision.completed', 'campaign.completed', 'phase.completed', 'phase.failed', 'factory.completed', 'factory.failed', 'factory.cancelled']);
     const summarize = (type: string, p: Obj): string => {
       switch (type) {
         case 'copy.proposed': return `${n(p.concepts)} concept(s), ${n(p.variants)} copy variant(s) proposed`;
@@ -1033,6 +1252,9 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
         case 'revision.completed': return `round ${p.round}: ${(p.results ?? []).filter((r: Obj) => r.status === 'applied').length} of ${n(p.results)} repair(s) applied`;
         case 'task.assigned': return `${p.agent} assigned: ${p.task}`;
         case 'task.completed': return `${p.agent}: ${p.outcome}${p.error ? ` (${p.error.message})` : ''}${p.reason ? ` (${p.reason})` : ''}`;
+        case 'images.sourcing.requested': return `Visual Researcher asked to source pictures for ${Number(p.slots) || 0} creative(s)`;
+        case 'images.sourced': return String(p.summary ?? 'pictures sourced').slice(0, 200);
+        case 'image.generation.refused': return `an image-generation request was refused before anything was sent (${Number(p.count) || 0})`;
         case 'campaign.completed': return 'campaign package saved';
         default: return '';
       }

@@ -132,7 +132,7 @@ export default function ProjectDetailPage() {
                   <Item label="Target market" value={intake.targetMarket} />
                   <Item label="Language" value={LANGUAGES.find((l) => l.value === intake.preferredLanguage)?.label} />
                   <Item label="Duration" value={intake.campaignDuration} />
-                  <Item label="Visual style" value={STYLES.find((s) => s.value === intake.stylePreference)?.label} />
+                  {intake.stylePreference && <Item label="Earlier style note" value={STYLES.find((s) => s.value === intake.stylePreference)?.label ?? intake.stylePreference} />}
                   <Item label="Target audience" value={intake.targetAudience} className="sm:col-span-2" />
                   <Item label="Description" value={intake.shortDescription} className="sm:col-span-2" />
                 </dl>

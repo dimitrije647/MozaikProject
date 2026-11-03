@@ -24,6 +24,12 @@ export interface OpenAIClientOptions {
   baseUrl?: string;
   /** Injectable for tests. */
   fetch?: typeof fetch;
+  /**
+   * NO AI HYBRID: this client can never create an image. `createImage` throws before any request is built, whoever calls it. The refusal is
+   * reported to `onImageRefused` (a safe, secret-free callback) so the run can record that an attempt was made and stopped.
+   */
+  forbidImages?: boolean;
+  onImageRefused?: () => void;
 }
 
 /**
@@ -35,11 +41,20 @@ export class OpenAIClient {
   readonly #apiKey: string;
   readonly #baseUrl: string;
   readonly #fetch: typeof fetch;
+  readonly #forbidImages: boolean;
+  readonly #onImageRefused: (() => void) | undefined;
 
   constructor(options: OpenAIClientOptions) {
     this.#apiKey = options.apiKey;
     this.#baseUrl = (options.baseUrl ?? resolveOpenAIBaseUrl()).replace(/\/$/, '');
     this.#fetch = options.fetch ?? fetch;
+    this.#forbidImages = options.forbidImages === true;
+    this.#onImageRefused = options.onImageRefused;
+  }
+
+  /** True when this client refuses every image request (NO AI HYBRID). */
+  get imagesForbidden(): boolean {
+    return this.#forbidImages;
   }
 
   /** POST /responses. Throws ProviderError (safe message only) on any failure. */
@@ -49,6 +64,15 @@ export class OpenAIClient {
 
   /** POST /images/generations (GPT Image models). Throws ProviderError (safe message only) on any failure. */
   async createImage(body: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    if (this.#forbidImages) {
+      // refused HERE, before a request exists: nothing is sent, nothing can be billed
+      try {
+        this.#onImageRefused?.();
+      } catch {
+        /* a reporting failure never turns a refusal into a request */
+      }
+      throw new ProviderError('image_generation_forbidden');
+    }
     return this.#request('POST', '/images/generations', body, signal);
   }
 

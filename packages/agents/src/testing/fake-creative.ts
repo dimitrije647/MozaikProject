@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import sharp from 'sharp';
 import type { ChannelId } from '../strategy/channels';
 import { limitsFor } from '../creative/limits';
-import type { CopyOutput, CopyRevisionOutput, LandingOutput, LandingRevisionOutput, ReviewOutput, VisualDirections } from '../creative/schemas';
+import type { ConceptCritique, CopyOutput, CopyRevisionOutput, LandingOutput, LandingRevisionOutput, ReviewOutput, VariationDirections, VisualDirections } from '../creative/schemas';
 
 /**
  * Default (valid) answers of the F4 agents for the fake OpenAI server. They are built from the prompt the request actually
@@ -58,7 +59,7 @@ export function defaultCopy(userText: string): CopyOutput {
   const variants: CopyOutput['variants'] = [];
   concepts.forEach((c, i) => {
     channels.slice(0, 3).forEach((ch, j) => {
-      if (variants.length >= 12) return;
+      if (variants.length >= Math.max(12, n * Math.min(3, channels.length))) return; // every concept gets copy, however many there are (5 concepts x 3 channels = 15)
       const placement = j === 0 ? 'paid_ad' : 'organic_post';
       variants.push({
         conceptKey: c.key,
@@ -103,8 +104,30 @@ export function defaultLanding(userText: string): LandingOutput {
   };
 }
 
-export function defaultVisual(userText: string): VisualDirections {
-  const task = block(userText, 'task') as { concepts?: { key: string; name: string; visualIdea: string }[] } | null;
+const SCENES = ['harbor at sunrise', 'wooden table with warm cups', 'quiet garden path', 'busy open workshop', 'rooftop terrace at dusk', 'stone staircase in soft rain', 'sunlit studio window', 'long beach with drifting kites', 'lantern-lit courtyard', 'mountain trail above clouds', 'glass atrium with tall plants', 'street market with colorful awnings', 'lakeside pier at noon', 'cozy corner with open books', 'bright kitchen counter', 'forest clearing with mist', 'narrow alley with hanging lights', 'wide meadow under a pale sky', 'river bridge at golden hour', 'calm library reading room', 'seaside promenade', 'clay pottery bench', 'orchard rows in bloom', 'harvest table outdoors'];
+
+export function defaultVisual(userText: string): VisualDirections | VariationDirections {
+  const task = block(userText, 'task') as { concepts?: { key: string; name: string; visualIdea: string }[]; slots?: { slotId: string; concept: string; number: number; role: string; cameraPerspective: string; lighting: string }[] } | null;
+  // several originals per concept: one clearly different proposal per slot, built from the slot's own seeds
+  if (task?.slots?.length) {
+    return {
+      summary: `Planned ${task.slots.length} image(s) without any text.`,
+      variations: task.slots.map((s, i) => ({
+        slotId: s.slotId,
+        name: `${s.concept} picture ${s.number}`,
+        goal: `Show ${s.role.split(':')[0].toLowerCase()} number ${i + 1}`,
+        medium: i % 2 ? 'documentary-style photograph' : 'editorial photograph',
+        subject: `${SCENES[i % SCENES.length]} for ${s.concept}, image ${s.number}`,
+        setting: `${SCENES[(i + 3) % SCENES.length]} seen from the side`,
+        focalPoint: `the main subject near the ${SCENES[(i + 5) % SCENES.length]}`,
+        composition: `${s.cameraPerspective} framing, the ${SCENES[(i + 7) % SCENES.length]} off to one side, calm lower third`,
+        mood: 'Calm and trustworthy',
+        avoid: ['text', 'logos'],
+        altText: `Illustration ${i + 1} for ${s.concept}`,
+        promptDetails: `${s.lighting}; unique detail ${i + 1}`,
+      })),
+    };
+  }
   const concepts = task?.concepts ?? [];
   return {
     summary: `Planned ${concepts.length} base image(s) without any text.`,
@@ -112,9 +135,18 @@ export function defaultVisual(userText: string): VisualDirections {
   };
 }
 
-export const defaultCreativeReview = (): ReviewOutput => ({ summary: 'The copy and landing content are consistent with the strategy and the brief.', issues: [] });
+export const defaultCreativeReview = (): ReviewOutput => ({ summary: 'The copy and landing content are consistent with the strategy and the brief.', issues: [], scores: { productAccuracy: 4, brandConsistency: 4, audienceRelevance: 4, objectiveAlignment: 4, originality: 4, crossChannelConsistency: 4 } });
 
-const BAD = /\b(guarantee[sd]?|risk[- ]free|money[- ]back|award[- ]winning|awarded|certified by|testimonials?|discounts?|limited[- ]time|sale|best in)\b|\d+\s?%\s?off|\d[\d,.]*\+?\s*(?:happy\s+)?(?:customers|clients|students|users)/gi;
+/** A concept critique that keeps every concept (a test overrides it to make the critique ask for a revision). */
+export function defaultConceptCritique(userText: string): ConceptCritique {
+  const list = (block(userText, 'concepts_to_critique') ?? []) as { id: string; name: string; visualIdea: string }[];
+  return {
+    summary: `Reviewed ${list.length} concept(s): each names the product, differs from the others and gives a picture something to show.`,
+    concepts: list.map((c) => ({ conceptId: c.id, specificity: 4, originality: 4, audienceFit: 4, visualPotential: 4, verdict: 'keep' as const, problem: '', artDirection: `Show ${c.visualIdea || c.name} as a documentary-style photograph with one clear focal point.`, visualIdeaRevision: null })),
+  };
+}
+
+const BAD = /\b(guarantee[sd]?|risk[- ]free|money[- ]back|award[- ]winning|awarded|certified by|testimonials?|discounts?|limited[- ]time|sale|best in)\b|\d+\s?%\s?off|\d[\d,.]*\+?\s*(?:happy\s+)?(?:customers|clients|students|users)|\bhttps?:\/\/\S+|\bwww\.\S+|\b[a-z0-9-]{2,}\.(?:com|net|org|io|rs|app|ai)\b\S*|\b(?:until|by)\s+\d{1,2}\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)\b/gi;
 export const sanitize = (s: string, fallback = 'Learn more') => {
   const out = s.replace(BAD, '').replace(/\s{2,}/g, ' ').replace(/\s+([,.!])/g, '$1').trim();
   return out.length >= 2 ? out : fallback;
@@ -152,12 +184,51 @@ export function defaultLandingRevision(userText: string): LandingRevisionOutput 
 
 const cache = new Map<string, string>();
 /** A valid PNG (never a real picture): a soft gradient with a few shapes, so crops have something to hold on to. */
-export async function fakeImageBase64(size: string): Promise<string> {
-  const hit = cache.get(size);
+export async function fakeImageBase64(size: string, prompt = ''): Promise<string> {
+  // the picture depends on the prompt: two different prompts give two different files, the same prompt the same one
+  const key = `${size}|${prompt}`;
+  const hit = cache.get(key);
   if (hit) return hit;
   const [w, h] = size.split('x').map(Number);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2b6f8f"/><stop offset="1" stop-color="#d9b27c"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><circle cx="${w * 0.7}" cy="${h * 0.3}" r="${Math.min(w, h) * 0.12}" fill="#f4e3c1" opacity="0.9"/><rect x="${w * 0.1}" y="${h * 0.45}" width="${w * 0.35}" height="${h * 0.1}" fill="#1b4a63" opacity="0.7"/></svg>`;
+  const hex = createHash('sha1').update(prompt).digest('hex');
+  const c1 = `#${hex.slice(0, 6)}`;
+  const c2 = `#${hex.slice(6, 12)}`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${prompt ? c1 : '#2b6f8f'}"/><stop offset="1" stop-color="${prompt ? c2 : '#d9b27c'}"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><circle cx="${w * 0.7}" cy="${h * 0.3}" r="${Math.min(w, h) * 0.12}" fill="#f4e3c1" opacity="0.9"/><rect x="${w * 0.1}" y="${h * 0.45}" width="${w * 0.35}" height="${h * 0.1}" fill="#1b4a63" opacity="0.7"/></svg>`;
   const b64 = (await sharp(Buffer.from(svg)).png().toBuffer()).toString('base64');
-  cache.set(size, b64);
+  cache.set(key, b64);
   return b64;
+}
+
+/** A valid Visual Researcher answer built from the CURRENT BRIEF line of the prompt (keeps the style, rewords the guidance). */
+export function defaultDirectionRefinement(userText: string) {
+  const line = userText.split('\n').find((l) => l.startsWith('{"styleId"'));
+  let cur: Record<string, any> = {};
+  try {
+    cur = JSON.parse(line ?? '{}');
+  } catch {
+    cur = {};
+  }
+  return {
+    styleId: cur.styleId ?? 'modern_corporate',
+    secondaryStyleIds: [] as string[],
+    rationale: 'Refined for this business: a calm, specific look that fits its audience.',
+    composition: cur.composition?.length ? cur.composition : ['One clear subject with a calm area for text'],
+    mood: cur.mood?.length ? cur.mood : ['calm'],
+    imageSubjects: cur.imageSubjects?.length ? cur.imageSubjects : ['people at work in a real setting'],
+    imageTreatment: cur.imageTreatment?.length ? cur.imageTreatment : ['natural light'],
+    channelNotes: cur.channelNotes ?? [],
+    limitations: [] as string[],
+  };
+}
+
+/** A valid Template Selector answer: for each SLOT, the SECOND template of its shortlist when there is one (so a test can see a re-ranking). */
+export function defaultTemplatePicks(userText: string) {
+  const picks: { slotId: string; templateId: string; reason: string }[] = [];
+  for (const block of userText.split(/\n(?=SLOT )/)) {
+    const slot = /^SLOT (\S+)/.exec(block)?.[1];
+    if (!slot) continue;
+    const ids = [...block.matchAll(/^\s+- (\S+) \|/gm)].map((m) => m[1]);
+    if (ids.length) picks.push({ slotId: slot, templateId: ids[1] ?? ids[0], reason: 'Suits the concept and keeps the campaign varied.' });
+  }
+  return { picks };
 }

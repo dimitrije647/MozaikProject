@@ -1,4 +1,5 @@
 import { MarketingAuditReport } from '../audit/schemas';
+import { readStoredReport, type ReadNotes, type ReportFailure } from '../contracts/report-contract';
 import type { F1Context } from '../audit/context';
 
 /**
@@ -27,16 +28,19 @@ interface StoredAuditMeta {
 
 const SEV = ['critical', 'high', 'medium', 'low', 'info'];
 
-/** Returns null when the stored audit is not a valid F2 report. */
-export function buildF2Context(row: { id: string; f1ReportId: string; schemaVersion: number; reportJson: unknown; metadataJson: unknown; createdAt: Date }): F2Context | null {
-  const parsed = MarketingAuditReport.safeParse(row.reportJson);
-  if (!parsed.success) return null;
+export type ReadF2 = { ok: true; context: F2Context; notes: ReadNotes } | { ok: false; failure: ReportFailure };
+
+/** Reads a stored F2 audit through the shared contract (version check, validation, the list of adjustments). The stored row is not changed. */
+export function readF2Report(row: { id: string; f1ReportId: string; schemaVersion: number; reportJson: unknown; metadataJson: unknown; createdAt: Date }): ReadF2 {
+  const read = readStoredReport('F2', row, MarketingAuditReport);
+  if (!read.ok) return read;
+  const parsed = { data: read.data };
   const meta = (row.metadataJson ?? {}) as StoredAuditMeta;
   const findings = [...(meta.findings ?? [])]
     .sort((a, b) => SEV.indexOf(a.severity) - SEV.indexOf(b.severity))
     .slice(0, 40)
     .map((f) => ({ id: f.id, agent: f.agent, area: f.area, kind: f.kind, title: String(f.title).slice(0, 140), statement: String(f.statement).slice(0, 400), classification: f.classification, severity: f.severity, locator: f.locator ?? null, excerpt: f.excerpt ? String(f.excerpt).slice(0, 240) : null, recommendation: f.recommendation ? String(f.recommendation).slice(0, 240) : null }));
-  return {
+  const context: F2Context = {
     auditId: row.id,
     schemaVersion: row.schemaVersion,
     generatedAt: meta.generatedAt ?? row.createdAt.toISOString(),
@@ -46,6 +50,13 @@ export function buildF2Context(row: { id: string; f1ReportId: string; schemaVers
     report: parsed.data,
     findings,
   };
+  return { ok: true, context, notes: read.notes };
+}
+
+/** Returns null when the stored audit cannot be read (readF2Report says exactly why). */
+export function buildF2Context(row: { id: string; f1ReportId: string; schemaVersion: number; reportJson: unknown; metadataJson: unknown; createdAt: Date }): F2Context | null {
+  const r = readF2Report(row);
+  return r.ok ? r.context : null;
 }
 
 /** The business's own brief for the campaign (current project data; F1/F2 describe the past). */

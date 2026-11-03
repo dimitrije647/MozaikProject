@@ -26,8 +26,12 @@ export interface F1Settings {
   analystTokens: number;
   reviewTokens: number;
   synthTokens: number;
+  /** How long the synthesis task may take (follows the clock of its request when the clocks scale). */
+  synthTimeoutMs: number;
   maxModelCalls: number;
   maxReviews: number;
+  /** Deeper work: after the usual one-review-per-producer round, claims that were not reviewed yet are reviewed by ANOTHER agent (up to maxReviews). */
+  depth: boolean;
   agentTimeoutMs: number;
   reviewTimeoutMs: number;
   maxWebPages: number;

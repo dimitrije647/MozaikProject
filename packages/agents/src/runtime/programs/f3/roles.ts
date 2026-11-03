@@ -232,7 +232,7 @@ export async function prepareCompetitor(env: F3Env, agent: PhaseAgent): Promise<
       reason: 'No competitor material could be retrieved: reported as insufficient research, without a model call.',
       output: {
         summary: 'There is not enough live research to identify competitors. No competitor is named, because naming one without a source would be invented.',
-        findings: [gapFinding('Insufficient live competitor research', 'No competitor page or search result could be retrieved, so no competitor is named and no competitive positioning is claimed.', 'Add competitor website URLs or names to the project, or configure a search provider (TAVILY_API_KEY), and run the strategy again.')],
+        findings: [gapFinding('Insufficient live competitor research', 'No competitor page or search result could be retrieved, so no competitor is named, no competitor figure is invented and no competitive positioning is claimed as a finding. Where the strategy talks about the category, it is a labelled hypothesis.', 'Add competitor website URLs or names to the project, or configure a search provider (TAVILY_API_KEY), and run the strategy again.')],
         missingInformation: facts.gaps.slice(0, 8),
       },
     };

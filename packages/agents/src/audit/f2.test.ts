@@ -569,7 +569,12 @@ describe('F2 Marketing Audit (real Mozaik agents; fixtures for everything extern
     completed(o);
     assert.deepEqual(meta(o).plan.skipped.map((s) => s.agent), ['SEO Auditor', 'Social Media Auditor', 'Brand Auditor']);
     assert.ok(meta(o).plan.skipped.every((s) => s.reason.length > 5));
+    // missing OPTIONAL input is reported as "Not evaluated", with what was skipped, never as a failure and never silently
+    assert.ok(meta(o).plan.skipped.every((s) => s.reason.startsWith('Not evaluated — ')), meta(o).plan.skipped.map((s) => s.reason).join(' | '));
+    assert.match(meta(o).plan.skipped.find((s) => s.key === 'seo')!.reason, /no website supplied.*SEO analysis was skipped/);
+    assert.match(meta(o).plan.skipped.find((s) => s.key === 'social')!.reason, /no social profile supplied.*strategy still recommends a social approach/);
     assert.equal(meta(o).partial, false, 'skipped is not failed');
+    assert.ok(meta(o).findings.some((f) => f.agent === 'Messaging Auditor'), 'the audit still produces findings from the product description (messaging)');
     assert.equal(names(o, 'participant.idle').filter((p) => p.skipped).length, 3);
     // Presence has nothing to compare: deterministic result, no model call
     assert.equal(openai.calls('presence').length, 0);

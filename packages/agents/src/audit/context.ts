@@ -1,4 +1,5 @@
 import { ProductDiscoveryReportV2 } from '../discovery/f1/schemas';
+import { readStoredReport, type ReadNotes, type ReportFailure } from '../contracts/report-contract';
 import type { PageSpeedOutcome } from '../tools/pagespeed';
 import type { PresenceFacts } from '../tools/presence';
 import type { SiteAudit } from '../tools/seo';
@@ -27,15 +28,20 @@ interface StoredMeta {
   sources?: { id: string; kind: string; label: string; url?: string | null; status: string; live?: boolean; fixture?: boolean }[];
 }
 
-/** Returns null when the stored report is not a valid F1 v2 report (older reports have no Product Manifest). */
-export function buildF1Context(row: { id: string; schemaVersion: number; reportJson: unknown; metadataJson: unknown }): F1Context | null {
-  if (row.schemaVersion < 2) return null;
-  const parsed = ProductDiscoveryReportV2.safeParse(row.reportJson);
-  if (!parsed.success) return null;
+export type ReadF1 = { ok: true; context: F1Context; notes: ReadNotes } | { ok: false; failure: ReportFailure };
+
+/**
+ * Reads a stored F1 report through the shared contract (version check, validation, a list of the deterministic adjustments). Older
+ * reports (version 1) have no Product Manifest and are refused with that reason, never patched up. The stored row is not changed.
+ */
+export function readF1Report(row: { id: string; schemaVersion: number; reportJson: unknown; metadataJson: unknown }): ReadF1 {
+  const read = readStoredReport('F1', row, ProductDiscoveryReportV2);
+  if (!read.ok) return read;
+  const parsed = { data: read.data };
   const meta = (row.metadataJson ?? {}) as StoredMeta;
   const sources = (meta.sources ?? []).map((s) => ({ id: s.id, kind: s.kind, label: String(s.label).slice(0, 200), url: s.url ?? null, status: s.status, live: !!s.live, fixture: !!s.fixture }));
   const byId = new Map(sources.map((s) => [s.id, s]));
-  return {
+  const context: F1Context = {
     reportId: row.id,
     schemaVersion: row.schemaVersion,
     generatedAt: meta.generatedAt ?? null,
@@ -49,6 +55,13 @@ export function buildF1Context(row: { id: string; schemaVersion: number; reportJ
     sources,
     palette: parsed.data.productManifest.brand?.palette ?? [],
   };
+  return { ok: true, context, notes: read.notes };
+}
+
+/** Returns null when the stored report cannot be read (readF1Report says exactly why). */
+export function buildF1Context(row: { id: string; schemaVersion: number; reportJson: unknown; metadataJson: unknown }): F1Context | null {
+  const r = readF1Report(row);
+  return r.ok ? r.context : null;
 }
 
 // ---- data the tools collected for one F2 run ----------------------------------------------------------

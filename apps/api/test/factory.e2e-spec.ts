@@ -4,6 +4,8 @@ import JSZip from 'jszip';
 import { defaultCopy } from '@launchpilot/agents/dist/testing/fake-creative';
 import { FakeOpenAI, type FakeOpenAIOptions, type FakeReply, type FakeRequest } from '@launchpilot/agents/dist/testing/fake-openai';
 import { buildPhasePlan, chooseChain, LineageError, mergeSettings, outcomeOf, type Candidates } from '../src/mozaik/factory-plan';
+import { FactoryService } from '../src/mozaik/factory.service';
+import { MozaikService } from '../src/mozaik/mozaik.service';
 import { configureOpenAi, createApp, createProject, loginUser, registerUser, sleep, waitForTerminal, type TestUser } from './helpers';
 
 // The full campaign (F1 -> F2 -> F3 -> F4) through ONE call: the Factory Orchestrator drives the EXISTING phase services, so every
@@ -192,8 +194,10 @@ describe('Factory Orchestrator (one-click F1 -> F2 -> F3 -> F4)', () => {
     expect(phase(p, 'strategy').limits).toMatchObject({ maxModelCalls: 14, maxScouts: 3, maxReviews: 3, useHolidayCalendar: false });
     expect(phase(p, 'creative').limits).toMatchObject({ concepts: 1, channels: ['instagram'], landing: true, maxModelCalls: 12, maxImages: 1, maxRegenerations: 0, visionReviews: 0, maxRepairRounds: 2 });
     expect(p.totals).toMatchObject({ phasesToRun: 4, phasesReused: 0, textCallCap: 12 + 12 + 14 + 12, imageRequests: 1, imageRegenerationCap: 0, layouts: 3 });
-    expect(p.pricing.dollars).toBeNull();
-    expect(p.pricing.note).toMatch(/not an OpenAI spending cap/);
+    // a dollar ESTIMATE from the price book (never presented as a guarantee or as an OpenAI billing cap)
+    expect(typeof p.pricing.dollars === 'number' || p.pricing.dollars === null).toBe(true);
+    expect(p.pricing.note).toMatch(/not a guarantee or an invoice/);
+    expect(p.pricing.note).toMatch(/not an OpenAI billing cap/);
     expect(p.brief.targetAudience).toBe('Beginners aged 18 to 35');
     // free: only the model list was asked; no text or image request
     expect(textCalls()).toHaveLength(0);
@@ -686,6 +690,39 @@ describe('Factory Orchestrator (one-click F1 -> F2 -> F3 -> F4)', () => {
     expect([camp.status, camp.packageJson]).toEqual(['cancelled', null]);
     expect(c4.campaignId).toBeNull();
   }, 200_000);
+
+  it('REGRESSION: a cancel that races with the start of a phase is never lost (the child run id is saved between the cancel reading the run and saving the cancel flag)', async () => {
+    // found in a full-suite run: the child was never cancelled, the cancel call returned "running" after its 20 s wait, and only a later server restart ended the child.
+    // Forced here: the child is already running while its run id is not saved yet, and the cancel's read of the run is held back until the loop has saved the id and found no cancel flag.
+    const { user, projectId } = await readyUser('fac-c3-race');
+    await savedChain(user, projectId, 2);
+    await useFake({ reply: (r) => (r.agent === 'audience' ? { hang: true } : undefined) });
+    const mozaik = app.get(MozaikService) as any;
+    const factory = app.get(FactoryService) as any;
+    const realStart = mozaik.startMarketStrategy.bind(mozaik);
+    const realOwned = factory.owned.bind(factory);
+    const slowStart = jest.spyOn(mozaik, 'startMarketStrategy').mockImplementation(async (...args: unknown[]) => {
+      const started = await realStart(...args);
+      await sleep(600); // the child is running; the orchestrator has not saved its run id yet
+      return started;
+    });
+    try {
+      const s3 = (await startF(user, projectId).expect(201)).body;
+      await waitUntil(() => fake.requests.some((r) => r.agent === 'audience'));
+      jest.spyOn(factory, 'owned').mockImplementationOnce(async (...args: unknown[]) => {
+        const row = await realOwned(...args); // read now: the child's run id is not in it
+        await sleep(900); // the loop saves the id (about 500 ms from now) and reads the flag (not set yet) before this cancel saves it
+        return row;
+      });
+      const cancelled = (await user.agent.post(`/factory-runs/${s3.id}/cancel`).expect(200)).body;
+      expect(cancelled.status).toBe('cancelled');
+      expect(states(cancelled)).toEqual(['reused', 'reused', 'cancelled', 'skipped']);
+      expect(fake.requests.filter((r) => r.agent === 'audience').every((r) => r.aborted)).toBe(true);
+    } finally {
+      slowStart.mockRestore();
+      (factory.owned as jest.SpyInstance).mockRestore?.();
+    }
+  }, 120_000);
 
   it('a server restart while a campaign run is active marks it INTERRUPTED (never completed, never resumed, no paid request)', async () => {
     const { user, projectId } = await readyUser('fac-restart');

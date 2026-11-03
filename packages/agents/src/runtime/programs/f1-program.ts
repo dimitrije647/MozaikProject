@@ -1,6 +1,9 @@
 import type { InferenceRunnerConfig, Participant, SituationHandler } from '@mozaik-ai/core';
 import { toSafeError } from '../../ai/errors';
+import { SpendBudget, scopeFor } from '../../ai/budget';
+import { resolveGeneration, synthesisTaskTimeoutMs, type GenerationTimeout } from '../../ai/timeouts';
 import { DEFAULT_BUDGET, InferenceGateway, type InferenceBudget, type UsageSnapshot } from '../../ai/gateway';
+import { capOutputTokens } from '../../ai/pricing';
 import { OpenAIClient } from '../../ai/openai-http';
 import {
   AGENT_INFO,
@@ -49,6 +52,12 @@ export interface DiscoveryRunConfig {
   maxModelCalls?: number;
   /** `max_output_tokens` for analysts. Reviews use less, the synthesizer up to twice as much. Default 3000. */
   maxOutputTokens?: number;
+  /** The approved spending limit in US dollars for THIS run; null/absent = none. Enforced before every paid request. */
+  spendCapUsd?: number | null;
+  /** The campaign-wide spend ledger shared by every phase (the factory passes it). Absent = this run gets a ledger of its own with `spendCapUsd`. */
+  ledger?: SpendBudget;
+  /** Deeper work where it adds something (more cross-check passes; F4: a concept critique before the images). */
+  depth?: boolean;
   /** Maximum number of cross-check requests (each costs one model call). Default 4. */
   maxReviews?: number;
   /** Deadline per analyst, including tool retrieval and the model call. Default 150 s. */
@@ -56,6 +65,8 @@ export interface DiscoveryRunConfig {
   /** Deadline per cross-check review. Default 90 s. */
   reviewTimeoutMs?: number;
   callTimeoutMs?: number;
+  /** Scales the clock of long structured answers with their output cap (default: on, unless callTimeoutMs is fixed). Tests may tune it. */
+  generation?: Partial<GenerationTimeout>;
   /** Deadline for the whole run. Default 10 min. */
   timeoutMs?: number;
   maxRetries?: number;
@@ -178,12 +189,18 @@ export class F1Program implements RunProgram {
     config: DiscoveryRunConfig,
     private readonly sink: ReportSink,
   ) {
-    const analystTokens = clamp(config.maxOutputTokens, 800, 8000, 3000);
+    // never above what the chosen model supports (a limit that was not verified is capped conservatively)
+    const analystTokens = capOutputTokens(config.model, clamp(config.maxOutputTokens, 800, 16000, 3000)).tokens;
     const synthTokens = Math.min(8000, analystTokens * 2);
+    const generation = resolveGeneration(config.generation, config.callTimeoutMs !== undefined);
     const budget: InferenceBudget = {
+      spend: scopeFor(config.ledger, config.spendCapUsd, 'F1'),
+      // a cut-off answer is asked again with a larger cap (up to what the model supports) instead of failing the agent
+      escalateTo: capOutputTokens(config.model, 16000).tokens,
       maxModelCalls: clamp(config.maxModelCalls, 1, 40, 16),
       maxOutputTokens: synthTokens,
       callTimeoutMs: clamp(config.callTimeoutMs, 50, 300_000, DEFAULT_BUDGET.callTimeoutMs),
+      generation,
       maxRetries: clamp(config.maxRetries, 0, 3, DEFAULT_BUDGET.maxRetries),
       retryBaseDelayMs: clamp(config.retryBaseDelayMs, 1, 30_000, DEFAULT_BUDGET.retryBaseDelayMs),
     };
@@ -199,11 +216,15 @@ export class F1Program implements RunProgram {
       synthTokens,
       maxModelCalls: budget.maxModelCalls,
       maxReviews: clamp(config.maxReviews, 0, 8, 4),
+      depth: config.depth === true,
       agentTimeoutMs: clamp(config.agentTimeoutMs, 50, 600_000, 150_000),
+      synthTimeoutMs: clamp(config.agentTimeoutMs, 50, 600_000, 150_000),
       reviewTimeoutMs: clamp(config.reviewTimeoutMs, 50, 600_000, 90_000),
       maxWebPages: clamp(config.maxWebPages, 1, 8, 4),
       fixtureSources: config.fixtureSources === true,
     };
+    // the synthesis writes the longest answer of the phase: its task deadline follows the clock of its request (and the one larger re-ask)
+    if (generation) this.settings.synthTimeoutMs = Math.max(this.settings.agentTimeoutMs, synthesisTaskTimeoutMs(synthTokens, budget.escalateTo, generation));
     this.tools = {
       web: config.tools?.web ?? new WebFetchTool({ maxPages: this.settings.maxWebPages }),
       search: config.tools?.search ?? createWebSearchFromEnv(),
@@ -380,7 +401,7 @@ export class F1Program implements RunProgram {
             missing: [...new Set(snap.missingInformation.map((m) => m.text))].slice(0, 24),
             partial,
           };
-          self.openTask(settings.agentTimeoutMs, () => {
+          self.openTask(settings.synthTimeoutMs, () => {
             ctx.emit('task.completed', { agent: name, outcome: 'failed', error: toSafeError('timeout') }, self.participant);
             ctx.emit('phase.failed', { phase: PHASE, reason: 'synthesis_failed', errors: [{ agent: name, error: toSafeError('timeout') }] }, self.participant);
           });

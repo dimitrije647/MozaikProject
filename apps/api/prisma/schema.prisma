@@ -53,6 +53,8 @@ model User {
   activity     ActivityLog[]
   runs         CampaignRun[]
   factoryRuns  FactoryRun[]
+  pinterestConnection PinterestConnection?
+  pinterestStates     PinterestOAuthState[]
 }
 
 model Project {
@@ -78,6 +80,13 @@ model Project {
   strategies MarketingStrategyReport[]
   campaigns CreativeCampaign[]
   campaignAssets CampaignAsset[]
+  designDraft    CampaignDesignDraft?
+  brandAnalyses  BrandPaletteAnalysis[]
+  discoveryRuns  VisualDiscoveryRun[]
+  imageProvenance ImageProvenance[]
+  projectImages   ProjectImage[]
+  getContentRuns  GetContentRun[]
+  brandContent    ProjectBrandContent?
   factoryRuns FactoryRun[]
 
   @@unique([userId, slug])
@@ -118,7 +127,9 @@ model ProjectAsset {
   fileSize     Int
   createdAt    DateTime @default(now())
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project    Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  provenance ImageProvenance?
+  projectImage ProjectImage?
 
   @@index([projectId])
 }
@@ -464,6 +475,10 @@ model FactoryRun {
   phasesJson      Json
   /// Honest notes (partial inputs reused, a requested channel the strategy did not recommend, ...).
   warningsJson    Json      @default("[]")
+  /// The campaign budget ledger (ONE shared budget for text, images and reviews): approved, known, estimated, reserved and uncertain spend,
+  /// the remaining amount and how far it can be trusted, requests started. Saved while the run goes (so a refresh shows it) and at the end.
+  /// null for runs made before the shared budget existed: they keep their configJson/usage and are read as they were.
+  ledgerJson      Json?
   /// The exact chain in use (F4 -> this F3 -> this F2 -> this F1), filled as each result is resolved or saved.
   f1ReportId      String?
   f2AuditId       String?
@@ -483,4 +498,215 @@ model FactoryRun {
   // because Prisma cannot express partial indexes in the schema.
   @@index([projectId, createdAt])
   @@index([userId])
+}
+
+/// OPTIONAL Pinterest connection (browse the user's OWN boards for visual inspiration). One per user, tenant-isolated by userId.
+/// Pinterest's developer guidelines say: "you may not store any information accessed through any Pinterest Materials including
+/// the API". So this row holds ONLY the OAuth tokens (AES-256-GCM via CryptoService, never returned by any endpoint) and token
+/// metadata. No board, Pin, image or account-profile data (not even the username) is ever persisted.
+model PinterestConnection {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  /// Scopes granted, as returned by the token endpoint (token metadata, e.g. "boards:read pins:read").
+  scopes           String
+  /// Encrypted access token (iv.tag.ciphertext). Null once the connection is dead (expired / revoked): the tokens are wiped.
+  accessTokenEnc   String?
+  refreshTokenEnc  String?
+  accessExpiresAt  DateTime?
+  refreshExpiresAt DateTime?
+  /// connected | expired | revoked | error
+  status           String    @default("connected")
+  /// A short, safe, non-Pinterest-content reason for the last failure. Never a token or an upstream response body.
+  lastError        String?
+  connectedAt      DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// Single-use, short-lived OAuth `state` (CSRF protection). Only a SHA-256 hash of the nonce is stored. The browser redirect
+/// from Pinterest carries no session header, so this row is what identifies the user at the callback. Pinterest's docs do not
+/// mention PKCE, so none is used.
+model PinterestOAuthState {
+  id         String    @id @default(cuid())
+  userId     String
+  stateHash  String    @unique
+  /// In-app path to return the browser to after the flow (validated; never an absolute URL).
+  returnPath String?
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// The campaign design a user is composing for a project before a run starts: template collection, palette (with where each color came
+/// from and which ones were edited by hand), output formats and picture sourcing. One draft per project; starting a run copies it into
+/// that run's settings, so a later edit never changes a campaign that already ran.
+model CampaignDesignDraft {
+  id         String   @id @default(cuid())
+  projectId  String   @unique
+  userId     String
+  designJson Json
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+/// A cached brand-color analysis (website, repository, logo, uploaded pictures), so editing the palette never fetches a site again.
+/// `fingerprint` hashes what was analyzed (addresses and asset ids); a changed input is a new analysis.
+model BrandPaletteAnalysis {
+  id          String   @id @default(cuid())
+  projectId   String
+  fingerprint String
+  resultJson  Json
+  analyzedAt  DateTime @default(now())
+  expiresAt   DateTime
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, fingerprint])
+}
+
+/// A web visual discovery result (licensed candidates and reference links), cached for 24 hours as the picture providers require.
+model VisualDiscoveryRun {
+  id         String   @id @default(cuid())
+  projectId  String
+  userId     String
+  queryKey   String
+  resultJson Json
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, queryKey])
+}
+
+/// Where a licensed picture in a project came from: provider, creator, license, credit line and the hash of the stored file.
+/// A row exists only for pictures the user chose to add; reference-only results never become assets and never get a row.
+model ImageProvenance {
+  id                  String   @id @default(cuid())
+  projectId           String
+  assetId             String   @unique
+  provider            String
+  providerImageId     String
+  pageUrl             String
+  creator             String?
+  creatorUrl          String?
+  license             String
+  licenseUrl          String?
+  attribution         String?
+  attributionRequired Boolean  @default(false)
+  /// provider_license | user_reviewed
+  licenseBasis        String
+  sha256              String
+  width               Int
+  height              Int
+  acquiredAt          DateTime @default(now())
+  acquiredById        String
+  /// NO AI HYBRID: what kind of source this is (LICENSED_STOCK for the rows that existed before; BRAND_ASSET for a website or repository picture the owner attested)
+  sourceKind          String   @default("LICENSED_STOCK")
+  /// the address the file was fetched from (website picture URL, repository blob page). Null for rows that predate it.
+  originalUrl         String?
+  /// 64-bit perceptual hash (16 hex digits) of the stored file, for near-duplicate detection
+  perceptualHash      String?
+  /// the full rights record at import time (permissions, who attested and when). Null for rows that predate it.
+  rightsJson          Json?
+
+  project Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  asset   ProjectAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+/// NO AI HYBRID: every picture a project could use in a campaign (its uploads, website / repository / social candidates and the pictures imported from
+/// them), with its rights. A candidate is a record only: its file is fetched when the owner confirms the rights, and then `assetId` points at the
+/// stored copy. The campaign uses only rows that are approved AND whose rights pass the export gate.
+model ProjectImage {
+  id           String    @id @default(cuid())
+  projectId    String
+  /// upload | website | github | social | stock
+  source       String
+  /// photo | logo. Logo candidates belong to Get Content; the AVAILABLE IMAGES gallery lists photographs only.
+  role         String    @default("photo")
+  /// candidate | approved | rejected
+  status       String
+  /// identifies the picture inside its source: a normalized address stem, "owner/repo@path", "provider:id" or an asset id
+  dedupeKey    String
+  title        String
+  pageUrl      String?
+  /// where the file can be fetched once the rights are confirmed (never fetched before). Null for uploads and social links.
+  remoteUrl    String?
+  creator      String?
+  width        Int?
+  height       Int?
+  /// the words known about the picture (alt text, caption, file name), used for ranking
+  text         String    @default("")
+  /// the rights record (see ImageRights in @launchpilot/agents)
+  rightsJson   Json
+  /// local measurements of the stored file; null for a candidate
+  analysisJson Json?
+  /// the deterministic score and its parts
+  scoreJson    Json?
+  score        Float     @default(0)
+  assetId      String?   @unique
+  metaJson     Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  decidedAt    DateTime?
+
+  project Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  asset   ProjectAsset? @relation(fields: [assetId], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, source, dedupeKey])
+  @@index([projectId, status])
+}
+
+/// One Get Content run: the optional discovery of a project's logo, photographs and brand colors from the material it already supplied. Free of OpenAI.
+/// Results (candidates) live in ProjectImage; this row keeps the progress of each source, the notes and a snapshot of the palette suggestion that was shown.
+model GetContentRun {
+  id          String    @id @default(cuid())
+  projectId   String
+  userId      String
+  /// running | completed | partial | failed | cancelled | interrupted
+  status      String
+  /// what was analysed (addresses, assets): an unchanged project reuses a recent run
+  fingerprint String
+  sourcesJson Json
+  summaryJson Json?
+  notesJson   Json?
+  /// the palette suggestion shown to the user (a snapshot: the Campaign Design editor stays the only palette store)
+  paletteJson Json?
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+  expiresAt   DateTime?
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, startedAt])
+}
+
+/// The brand content the owner approved for a project: the canonical logo (a ProjectAsset of type logo) and when content was last approved. One row per project.
+model ProjectBrandContent {
+  id             String    @id @default(cuid())
+  projectId      String    @unique
+  logoAssetId    String?
+  /// upload | website | github
+  logoSource     String?
+  logoFileName   String?
+  logoSha256     String?
+  logoWidth      Int?
+  logoHeight     Int?
+  logoRightsJson Json?
+  approvedAt     DateTime?
+  approvedById   String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }

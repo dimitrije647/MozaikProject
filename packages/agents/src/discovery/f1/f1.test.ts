@@ -203,7 +203,8 @@ describe('F1 Product Discovery (real Mozaik agents; fixtures for everything exte
       docInput('notes.txt', Buffer.from('We were founded in 2015 by two instructors.')),
     ];
     const uploads = [...documents.map((d) => ({ originalName: d.name, type: 'doc', mimeType: d.mimeType })), { originalName: 'setup.exe', type: 'other', mimeType: 'application/x-msdownload' }];
-    const o = await run(makeInput({ uploads }), { documents });
+    // a PDF is parsed in its own worker thread: starting it can take seconds on a machine under load, and the agent's deadline (8 s here) must not be what this test measures
+    const o = await run(makeInput({ uploads }), { documents, agentTimeoutMs: 60_000 });
     completed(o);
     const docs = meta(o).sources.filter((s) => s.kind === 'document');
     assert.equal(docs.filter((s) => s.status === 'retrieved').length, 3);
@@ -237,7 +238,7 @@ describe('F1 Product Discovery (real Mozaik agents; fixtures for everything exte
     const documents = [docInput('brochure.pdf', buildPdf(['Open water course for beginners']))];
     const images = [imageInput('logo.png', await makePng(300, 300, '#336699'))];
     const input = makeInput({ websiteUrl: site.origin, githubUrl: 'https://github.com/acme/taskflow', uploads: [{ originalName: 'brochure.pdf', type: 'doc', mimeType: 'application/pdf' }, { originalName: 'logo.png', type: 'logo', mimeType: 'image/png' }], socials: [{ platform: 'instagram', url: 'https://instagram.com/x' }] });
-    const o = await run(input, { documents, images, tools: { web: webTool(), github: new GitHubRepositoryTool({ baseUrl: gh.origin }) } });
+    const o = await run(input, { documents, images, agentTimeoutMs: 60_000, tools: { web: webTool(), github: new GitHubRepositoryTool({ baseUrl: gh.origin }) } });
     completed(o);
     assert.deepEqual(meta(o).plan.activated.map((a) => a.key), ['input', 'text', 'web', 'repo', 'files', 'visual', 'synthesizer']);
     assert.equal(meta(o).plan.skipped.length, 0);
@@ -260,6 +261,46 @@ describe('F1 Product Discovery (real Mozaik agents; fixtures for everything exte
     assert.deepEqual([r.websiteFindings, r.repositoryFindings, r.documentFindings, r.visualFindings].map((x) => x.length), [0, 0, 0, 0]);
     assert.ok(meta(o).policyIssues.some((i) => i.type === 'section_cleared' && /Website/.test(i.detail)), 'invented website section was emptied by the policy');
     assert.equal(r.productManifest.brand, null);
+  });
+
+  it('7b. SPARSE INPUT: only a business name and one sentence still gives a usable manifest; what is missing is listed to the models and nothing is "verified"', async () => {
+    // JigJoy: no website, repository, logo, competitors, audience, market, goal or any upload
+    const input = buildDiscoveryInput({
+      project: { name: 'JigJoy', description: null },
+      intake: { productName: 'JigJoy', shortDescription: 'AI automation platform that helps users create agents for everyday tasks.', preferredLanguage: 'en' },
+    });
+    assert.deepEqual(input.notSupplied, ['website', 'GitHub repository', 'social media profiles', 'target audience', 'geographic market', 'marketing goal', 'uploaded files (logo, photographs, documents, references)', 'notes']);
+    const o = await run(input);
+    completed(o);
+    // the models are TOLD what is missing (a computed list, not a guess) and that missing optional input is not an error
+    const calls = openai.calls();
+    assert.match(calls.find((r) => r.agent === 'input' && r.kind === 'analysis')!.userText, /"notSupplied"[\s\S]*"target audience"/, 'the Input Analyzer sees the computed list');
+    const synth = calls.find((r) => r.kind === 'synthesis')!;
+    assert.match(synth.userText, /notSuppliedByTheUser/);
+    assert.match(synth.userText, /target audience/);
+    assert.match(JSON.stringify(calls[0].body), /SPARSE INPUT IS NORMAL/);
+    // nothing can be "verified" without a live source: user statements are at most "claimed", the AI's own conclusions "inferred"
+    const r = o.reports[0].report;
+    const statements = [r.problemAndSolution.problem, r.problemAndSolution.solution, r.valueProposition, ...r.offerings, ...r.targetCustomers, ...r.differentiation, ...r.strengths, ...r.weaknessesRisksUnknowns];
+    assert.ok(statements.length > 0);
+    assert.ok(statements.every((x) => x.status !== 'verified'), `a report built from one sentence has no verified statement (saw: ${statements.map((x) => x.status).join(',')})`);
+    assert.equal(meta(o).partial, false, 'missing optional input never makes a report partial');
+    assert.equal(meta(o).participants.filter((p) => p.state === 'failed' || p.state === 'timed_out').length, 0);
+    assert.ok(ProductDiscoveryReportV2.safeParse(r).success);
+    assert.ok(r.productManifest.name.length > 0 && r.productManifest.offering.summary.length > 0, 'a usable Product Manifest');
+  });
+
+  it('7c. the list of missing input is computed from the data: what the user did supply is never listed', async () => {
+    const full = buildDiscoveryInput({
+      project: { name: 'Deep Diving School' },
+      intake: { productName: 'Deep Diving School', shortDescription: 'Scuba courses', websiteUrl: 'https://example.com', githubUrl: 'https://github.com/a/b', targetAudience: 'Beginners', targetMarket: 'Serbia', marketingGoal: 'sign_ups' },
+      socialProfiles: [{ platform: 'instagram', url: 'https://instagram.com/x' }],
+      notes: [{ title: 'n', content: 'c' }],
+      assets: [{ originalName: 'logo.png', type: 'logo', mimeType: 'image/png' }],
+    });
+    assert.deepEqual(full.notSupplied, []);
+    const none = buildDiscoveryInput({ project: { name: '' }, intake: null });
+    assert.ok((none.notSupplied ?? []).includes('website') && (none.notSupplied ?? []).includes('target audience'));
   });
 
   it('8. unreachable website: recorded as a failed source, no model call for A3, partial report, run continues', async () => {
@@ -421,7 +462,8 @@ describe('F1 Product Discovery (real Mozaik agents; fixtures for everything exte
 
   it('16c. a hung website times out only A3 (aborting its fetch); the rest completes', async () => {
     site.page('/', '', { hang: true });
-    const o = await run(makeInput({ websiteUrl: site.origin }), { agentTimeoutMs: 600, tools: { web: webTool(site, { timeoutMs: 5000 }) } });
+    // the agent deadline (3 s) ends the Web Analyzer, whose fetch hangs for up to 5 s; it must also leave every OTHER analyst room to answer on a loaded machine
+    const o = await run(makeInput({ websiteUrl: site.origin }), { agentTimeoutMs: 3000, tools: { web: webTool(site, { timeoutMs: 5000 }) } });
     completed(o);
     assert.equal(state(o, 'Web Analyzer'), 'timed_out');
     assert.equal(meta(o).partial, true);
@@ -471,6 +513,27 @@ describe('F1 Product Discovery (real Mozaik agents; fixtures for everything exte
     assert.equal(failing.result.status, 'failed');
     assert.match(failing.result.errorMessage ?? '', /database unavailable/);
     assert.ok(!types(failing).includes('factory.completed'));
+  });
+
+  it('maxReviews is a CEILING: without depth a higher value adds no review; with depth, unchecked claims go to ANOTHER reviewer, never twice the same claim', async () => {
+    const plain4 = await run(makeInput(), { maxReviews: 4 });
+    const srv = await startOpenAI();
+    const plain8 = await run(makeInput(), { maxReviews: 8 }, { server: srv });
+    completed(plain4);
+    completed(plain8);
+    assert.equal(names(plain8, 'crosscheck.requested').length, names(plain4, 'crosscheck.requested').length, 'the number of reviews is bounded by the number of producers, whatever maxReviews says');
+    const srv2 = await startOpenAI();
+    const deep = await run(makeInput(), { maxReviews: 8, depth: true }, { server: srv2 });
+    completed(deep);
+    const reqs = names(deep, 'crosscheck.requested');
+    assert.ok(reqs.length >= names(plain8, 'crosscheck.requested').length, 'depth never does less');
+    const claimIds = reqs.flatMap((r) => (r.claims as { claimId: string }[]).map((c) => c.claimId));
+    assert.equal(new Set(claimIds).size, claimIds.length, 'a claim is reviewed once');
+    for (const producer of new Set(reqs.map((r) => r.producer))) {
+      const reviewers = reqs.filter((r) => r.producer === producer).map((r) => r.reviewer);
+      if (reviewers.length > 1) assert.ok(new Set(reviewers).size > 1 || reviewers.length === 1, 'a deeper pass uses another reviewer when one exists');
+    }
+    assert.ok(ProductDiscoveryReportV2.safeParse(deep.reports[0].report).success);
   });
 
   it('cost control: the model-call budget limits cross-checks first and is never exceeded', async () => {

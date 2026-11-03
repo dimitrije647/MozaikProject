@@ -4,6 +4,7 @@ import { MozaikCampaignRuntime, RuntimeInitError, type CampaignRunResult } from 
 import type { StrategyReportMeta, StrategyRunConfig } from '../runtime/programs/f3-program';
 import type { RecordedEvent } from '../factory/state';
 import { SourceStore } from '../discovery/f1/board';
+import { SpendBudget } from '../ai/budget';
 import { defaultAuditReport } from '../testing/fake-audit';
 import { FakeOpenAI, defaultReportV2, defaultReview, type FakeOpenAIOptions, type FakeRequest } from '../testing/fake-openai';
 import { FakeNager, FakeTavily, FakeWebsite, htmlPage } from '../testing/fake-services';
@@ -279,7 +280,7 @@ describe('F3 Market Research & Strategy (real Mozaik agents, dynamic Channel Sco
     assert.deepEqual(meta(o).plan.activated.filter((a) => !a.dynamic).map((a) => a.agent), ['Audience Researcher', 'Competitor Researcher', 'Seasonal Intelligence', 'Campaign Strategist']);
     assert.ok(meta(o).plan.activated.some((a) => a.dynamic), 'scouts joined the plan dynamically');
     assert.equal(state(o, 'Campaign Strategist'), 'done');
-    assert.equal(meta(o).partial, false);
+    assert.equal(meta(o).partial, false, `participants that failed or timed out: ${JSON.stringify((meta(o).participants ?? []).filter((p) => p.state === 'failed' || p.state === 'timed_out').map((p) => [p.agent, p.state, p.error]))}`);
     assert.equal(unhandled, 0);
   });
 
@@ -337,6 +338,8 @@ describe('F3 Market Research & Strategy (real Mozaik agents, dynamic Channel Sco
     assert.equal(state(o, 'Competitor Researcher'), 'done');
     const cf = meta(o).findings.filter((f) => f.agent === 'Competitor Researcher');
     assert.ok(cf.length === 1 && cf[0].kind === 'gap' && cf[0].classification === 'unknown' && !cf[0].competitor);
+    assert.match(cf[0].statement, /no competitor figure is invented/, 'missing competitor information is stated, not papered over');
+    assert.match(cf[0].statement, /labelled hypothesis/, 'category-level talk is a labelled hypothesis, never a finding');
     assert.equal(report(o).competitorLandscape.profiles.length, 0);
     assert.ok(report(o).competitorLandscape.gaps.some((g) => /No search provider/.test(g)));
     assert.equal(tav.hits.length, 0);
@@ -689,6 +692,32 @@ describe('F3 Market Research & Strategy (real Mozaik agents, dynamic Channel Sco
     assert.equal(meta(o).crosschecks.filter((c) => c.status === 'pending').length, 0);
     // exactly one model call per job: no job was started twice
     assert.equal(openai.calls('scout', 'review').length, reqs.filter((r) => r.reviewer === 'Instagram Scout').length);
+  });
+
+  it('INCIDENT 2026-11-02: a strategist that needs longer than the request clock failed the WHOLE phase after every researcher had succeeded; with the clock scaled to its answer size it completes', async () => {
+    // the real run: 17 paid calls, six scouts and eight cross-checks done, then the Campaign Strategist (cap 7,500 here, 8,000 there) did not answer in time
+    const slow = await startOpenAI({ reply: (r: FakeRequest) => (r.agent === 'strategist' ? { delayMs: 1500 } : undefined) });
+    const ledger = new SpendBudget(5);
+    const bad = await run({ callTimeoutMs: 700, model: 'gpt-4.1-mini', ledger }, { server: slow });
+    assert.equal(bad.result.status, 'failed');
+    const failed = names(bad, 'phase.failed')[0];
+    assert.equal(failed.reason, 'synthesis_failed');
+    assert.equal(failed.errors[0].agent, 'Campaign Strategist', 'the FIRST failure is the strategist, not a researcher or the budget');
+    assert.equal(failed.errors[0].error.code, 'timeout');
+    assert.match(failed.errors[0].error.detail, /No answer arrived within 0\.7 s .* may still have been billed; it was not repeated automatically\./);
+    assert.equal(slow.calls('strategist').length, 1, 'the timed-out request was not sent again');
+    assert.ok(names(bad, 'phase.ready').length === 1 && names(bad, 'task.completed').filter((t) => t.outcome === 'failed').length === 1, 'every other participant had succeeded');
+    const s = ledger.snapshot();
+    assert.ok(s.uncertainUsd > 0, 'what may have been billed is kept as uncertain spend');
+    assert.equal(s.reservedUsd, 0);
+    assert.equal(s.blocked + s.deferred, 0, 'the budget refused nothing: it did not cause this');
+
+    // repaired: the same slow strategist, with a clock that follows the size of its answer
+    const ok = await startOpenAI({ reply: (r: FakeRequest) => (r.agent === 'strategist' ? { delayMs: 1500 } : undefined) });
+    const good = await run({ callTimeoutMs: 700, generation: { tokensPerSecond: 7500, overheadMs: 1500 }, model: 'gpt-4.1-mini', ledger: new SpendBudget(5) }, { server: ok });
+    completed(good);
+    assert.equal(ok.calls('strategist').length, 1);
+    assert.ok(CampaignStrategyReport.safeParse(report(good)).success);
   });
 
   it('REGRESSION: researchers that only produced a deterministic "insufficient research" gap do not justify creating scouts', async () => {

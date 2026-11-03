@@ -110,6 +110,8 @@ export class OpenAiService {
           }))
           .sort((a, b) => a.id.localeCompare(b.id)),
         suggestedImageModel: pickImageModel(models.map((m) => m.id)),
+        // one suggestion per strategy: the cheapest try-out, a balanced choice and the most capable model (documented positioning, not a benchmark)
+        suggestedImageModels: { economy: pickImageModel(models.map((m) => m.id), new Date(), 'economy'), balanced: pickImageModel(models.map((m) => m.id), new Date(), 'balanced'), quality: pickImageModel(models.map((m) => m.id), new Date(), 'quality') },
       };
     } catch (err) {
       throw providerHttpError(err);

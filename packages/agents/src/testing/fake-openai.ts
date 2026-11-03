@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { defaultAuditAnalysis, defaultAuditReport } from './fake-audit';
 import { defaultStrategyAnalysis, defaultStrategyDraft } from './fake-strategy';
-import { defaultCopy, defaultCopyRevision, defaultCreativeReview, defaultLanding, defaultLandingRevision, defaultVisual, fakeImageBase64 } from './fake-creative';
+import { defaultDirectionRefinement, defaultTemplatePicks, defaultConceptCritique, defaultCopy, defaultCopyRevision, defaultCreativeReview, defaultLanding, defaultLandingRevision, defaultVisual, fakeImageBase64 } from './fake-creative';
 import { parseSources } from './prompt-parse';
 
 export { parseSources, type PromptSource } from './prompt-parse';
@@ -15,7 +15,7 @@ import type { AgentOutput, CrosscheckAnswer, LlmFinding, ProductDiscoveryReportV
  * nothing is billed. Default answers are valid for the F1 schemas and are built from the prompt the
  * request actually carried, so they cite real source ids and excerpts.
  */
-export type FakeAgent = 'input' | 'text' | 'web' | 'repo' | 'files' | 'visual' | 'synthesizer' | 'seo' | 'social' | 'brand' | 'messaging' | 'presence' | 'auditor' | 'audience' | 'competitor' | 'seasonal' | 'scout' | 'strategist' | 'copywriter' | 'landing' | 'vcreator' | 'creviewer' | 'image' | 'other';
+export type FakeAgent = 'input' | 'text' | 'web' | 'repo' | 'files' | 'visual' | 'synthesizer' | 'seo' | 'social' | 'brand' | 'messaging' | 'presence' | 'auditor' | 'audience' | 'competitor' | 'seasonal' | 'scout' | 'strategist' | 'copywriter' | 'landing' | 'vcreator' | 'creviewer' | 'vresearcher' | 'tselector' | 'image' | 'other';
 export type FakeKind = 'analysis' | 'review' | 'synthesis' | 'test' | 'image';
 
 export interface FakeRequest {
@@ -82,6 +82,8 @@ const ROLE_MARKERS: [string, FakeAgent][] = [
   ['You are the Landing Content Builder (A22)', 'landing'],
   ['You are the Visual Creator (A20)', 'vcreator'],
   ['You are the Content & Brand Reviewer (A23)', 'creviewer'],
+  ['You are the Visual Researcher of a marketing team', 'vresearcher'],
+  ['You are the Template Selector of a marketing team', 'tselector'],
 ];
 
 const items = (body: Record<string, any> | null): any[] => (Array.isArray(body?.input) ? body!.input : []);
@@ -257,7 +259,9 @@ function defaultAnswer(kind: FakeKind, agent: FakeAgent, userText: string, chann
   if (agent === 'copywriter') return JSON.stringify(userText.includes('Revise ONLY the listed variants') ? defaultCopyRevision(userText) : defaultCopy(userText));
   if (agent === 'landing') return JSON.stringify(userText.includes('Fix the landing page content findings') ? defaultLandingRevision(userText) : defaultLanding(userText));
   if (agent === 'vcreator') return JSON.stringify(defaultVisual(userText));
-  if (agent === 'creviewer') return JSON.stringify(defaultCreativeReview());
+  if (agent === 'vresearcher') return JSON.stringify(defaultDirectionRefinement(userText));
+  if (agent === 'tselector') return JSON.stringify(defaultTemplatePicks(userText));
+  if (agent === 'creviewer') return JSON.stringify(userText.includes('<concepts_to_critique>') ? defaultConceptCritique(userText) : defaultCreativeReview());
   if (kind === 'synthesis') return JSON.stringify(agent === 'strategist' ? defaultStrategyDraft(userText) : agent === 'auditor' ? defaultAuditReport(userText) : defaultReportV2(userText));
   if (kind === 'analysis') return JSON.stringify(['audience', 'competitor', 'seasonal', 'scout'].includes(agent) ? defaultStrategyAnalysis(agent as never, userText, channel) : ['seo', 'social', 'brand', 'messaging', 'presence'].includes(agent) ? defaultAuditAnalysis(agent as never, userText) : defaultAnalysis(agent, userText));
   return 'OK';
@@ -321,7 +325,7 @@ export class FakeOpenAI {
     const users = userMessages(body);
     const userText = users.join('\n');
     const lastUserText = users[users.length - 1] ?? '';
-    const creative = ['copywriter', 'landing', 'vcreator', 'creviewer'].includes(agent);
+    const creative = ['copywriter', 'landing', 'vcreator', 'creviewer', 'vresearcher', 'tselector'].includes(agent);
     const kind: FakeKind = isImage ? 'image' : !isResponses || agent === 'other' ? 'test' : creative ? (lastUserText.includes('<crosscheck_request>') ? 'review' : 'analysis') : userText.includes('<crosscheck_request>') ? 'review' : agent === 'synthesizer' || agent === 'auditor' || agent === 'strategist' ? 'synthesis' : 'analysis';
     const countKey = `${agent}:${kind}`;
     if (isResponses || isImage) this.counts.set(countKey, (this.counts.get(countKey) ?? 0) + 1);
@@ -367,7 +371,7 @@ export class FakeOpenAI {
     const status = reply.status ?? 200;
     if (status !== 200) return send(res, status, reply.json ?? { error: { message: 'fake error', code: 'fake' } }, reply.headers);
     if (isImage) {
-      const b64 = await fakeImageBase64(String(body?.size ?? '1024x1024'));
+      const b64 = await fakeImageBase64(String(body?.size ?? '1024x1024'), String(body?.prompt ?? ''));
       return send(res, 200, reply.json ?? { created: 1, data: [{ b64_json: b64 }], usage: { input_tokens: 40, output_tokens: 1056, total_tokens: 1096 } }, reply.headers);
     }
     const text = reply.text ?? defaultAnswer(kind, agent, creative ? lastUserText : userText, record.channel);

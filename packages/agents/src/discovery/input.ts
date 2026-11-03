@@ -26,6 +26,11 @@ export interface DiscoveryInput {
   language: string;
   /** True when some text was shortened to bound token usage. */
   truncated: boolean;
+  /**
+   * What the user did NOT supply (computed, never typed by a model). Missing optional information is normal, not an error: the agents work
+   * with what exists, never invent a value for these items, and label anything they propose in their place as an assumption.
+   */
+  notSupplied?: string[];
 }
 
 export const LANGUAGE_NAMES: Record<string, string> = {
@@ -73,6 +78,7 @@ export function buildDiscoveryInput(raw: RawDiscoveryData): DiscoveryInput {
     return value;
   };
   const i = raw.intake ?? null;
+  const notSupplied = notSuppliedOf(raw);
   return {
     project: { name: cap(raw.project.name, 200) ?? '', description: cap(raw.project.description, LIMITS.description) },
     intake: i && {
@@ -93,7 +99,24 @@ export function buildDiscoveryInput(raw: RawDiscoveryData): DiscoveryInput {
     },
     language: i?.preferredLanguage || 'en',
     truncated,
+    notSupplied,
   };
+}
+
+/** The optional inputs a project does not have, as short labels ("website", "target audience"...). */
+export function notSuppliedOf(raw: RawDiscoveryData): string[] {
+  const i = raw.intake ?? null;
+  const has = (v: string | null | undefined) => (v ?? '').trim().length > 0;
+  const out: string[] = [];
+  if (!has(i?.websiteUrl)) out.push('website');
+  if (!has(i?.githubUrl)) out.push('GitHub repository');
+  if (!(raw.socialProfiles ?? []).length) out.push('social media profiles');
+  if (!has(i?.targetAudience)) out.push('target audience');
+  if (!has(i?.targetMarket)) out.push('geographic market');
+  if (!has(i?.marketingGoal)) out.push('marketing goal');
+  if (!(raw.assets ?? []).length) out.push('uploaded files (logo, photographs, documents, references)');
+  if (!(raw.notes ?? []).length) out.push('notes');
+  return out;
 }
 
 /** Field paths agents may cite as the source of a claimed fact. */
