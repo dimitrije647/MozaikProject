@@ -22,6 +22,12 @@ export const CREATIVE_FORMATS: Record<string, CreativeFormat> = {
   facebook_feed: { id: 'facebook_feed', label: 'Facebook feed (landscape)', width: 1200, height: 628, safe: { top: 0.1, bottom: 0.1, left: 0.06, right: 0.06 }, channels: ['facebook'] },
   linkedin_feed: { id: 'linkedin_feed', label: 'LinkedIn feed (landscape)', width: 1200, height: 627, safe: { top: 0.1, bottom: 0.1, left: 0.06, right: 0.06 }, channels: ['linkedin'] },
   promo_16x9: { id: 'promo_16x9', label: 'General promotional graphic (16:9)', width: 1920, height: 1080, safe: { top: 0.08, bottom: 0.08, left: 0.06, right: 0.06 }, channels: ['youtube', 'linkedin', 'organic_content', 'google_search'] },
+  // Hybrid Production only: wide formats the template engine designs for (not part of the per-original layout preference below).
+  web_banner: { id: 'web_banner', label: 'Web banner (4:1)', width: 1200, height: 300, safe: { top: 0.12, bottom: 0.12, left: 0.04, right: 0.04 }, channels: ['google_search', 'email', 'organic_content'] },
+  landing_hero: { id: 'landing_hero', label: 'Landing hero (12:5)', width: 1920, height: 800, safe: { top: 0.1, bottom: 0.1, left: 0.06, right: 0.06 }, channels: ['google_search', 'email', 'organic_content', 'linkedin'] },
+  // Print-shaped formats of the campaign design (Hybrid Production, template creatives only): a portrait flyer (A-series ratio) and a 3:1 billboard.
+  flyer: { id: 'flyer', label: 'Flyer (A5 portrait)', width: 1240, height: 1748, safe: { top: 0.07, bottom: 0.07, left: 0.08, right: 0.08 }, channels: ['organic_content'] },
+  billboard: { id: 'billboard', label: 'Billboard (3:1)', width: 2400, height: 800, safe: { top: 0.12, bottom: 0.12, left: 0.05, right: 0.05 }, channels: ['organic_content'] },
 };
 
 /** Preferred order per channel: the first formats are the most useful for that channel. */

@@ -235,21 +235,38 @@ export class StrategyCoordinator {
     // Every remaining scout is checked by the Audience Researcher against its own segments
     for (const s of scouts) add(s, audience);
 
+    const asked = new Set<string>();
     for (const w of wanted) {
       if (budget <= 0) break;
-      const claims = this.selectClaims(w.producer);
+      const claims = this.selectClaims(w.producer, asked);
       if (!claims.length) continue;
+      for (const c of claims) asked.add(c.id);
       this.request(w.producer, w.reviewer, claims);
       budget--;
+    }
+    // Deeper pass (depth only): what the first round left unchecked is reviewed by a DIFFERENT agent than the first time, up to maxReviews.
+    if (settings.depth) {
+      const producers = [audience, competitor, seasonal, ...scouts].filter((p, i, a) => a.indexOf(p) === i && this.usable(p));
+      const reviewers = [audience, ...goodScouts, competitor, seasonal].filter((r, i, a) => a.indexOf(r) === i && this.canReview(r));
+      for (const p of producers) {
+        if (budget <= 0) break;
+        const claims = this.selectClaims(p, asked);
+        if (claims.length < 2) continue;
+        const reviewer = reviewers.find((r) => r !== p && !wanted.some((w) => w.producer === p && w.reviewer === r));
+        if (!reviewer) continue;
+        for (const c of claims) asked.add(c.id);
+        this.request(p, reviewer, claims);
+        budget--;
+      }
     }
     if (this.pending.size === 0) return this.conclude2();
     this.barrier2 = ctx.setTimer(settings.reviewTimeoutMs + 5_000, () => this.expirePending());
   }
 
-  private selectClaims(agent: string): StrategyFinding[] {
+  private selectClaims(agent: string, exclude: Set<string> = new Set()): StrategyFinding[] {
     return this.env.board
       .findingsBy(agent)
-      .filter((f) => REVIEWABLE.has(f.kind) && f.classification !== 'unknown')
+      .filter((f) => REVIEWABLE.has(f.kind) && f.classification !== 'unknown' && !exclude.has(f.id))
       .sort((a, b) => IMPORTANCE[b.importance] * (CLASS_WEIGHT[b.classification] ?? 0) - IMPORTANCE[a.importance] * (CLASS_WEIGHT[a.classification] ?? 0))
       .slice(0, MAX_CLAIMS_PER_REQUEST);
   }

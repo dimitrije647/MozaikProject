@@ -31,6 +31,8 @@ import type {
   CampaignFull,
   CampaignReviews,
   CampaignSummary,
+  ContinueImagesInput,
+  ContinueImagesPlan,
   CreativeAnalysis,
   CreativePreflight,
   StartCreativeInput,
@@ -303,7 +305,12 @@ export const useCreativePreflight = (projectId: string) =>
   useMutation<CreativePreflight, ApiError, StartCreativeInput>({ mutationFn: (body) => post<CreativePreflight>(`/projects/${projectId}/runs/creative-production/preflight`, body) });
 
 export const useCampaigns = (projectId: string) =>
-  useQuery({ queryKey: keys.campaigns(projectId), queryFn: async () => (await get<{ items: CampaignSummary[]; nextCursor: string | null }>(`/projects/${projectId}/campaigns?limit=30`)).items });
+  useQuery({
+    queryKey: keys.campaigns(projectId),
+    queryFn: async () => (await get<{ items: CampaignSummary[]; nextCursor: string | null }>(`/projects/${projectId}/campaigns?limit=30`)).items,
+    // an image-only continuation that is still generating shows up here: keep the list fresh until it is saved (a row left 'running' by a crash is ignored after an hour)
+    refetchInterval: (q) => (q.state.data?.some((c) => c.status === 'running' && Date.now() - Date.parse(c.createdAt) < 3_600_000) ? 3 * POLL_MS : false),
+  });
 
 export const useCampaign = (campaignId: string | null | undefined, status?: string) =>
   useQuery({
@@ -311,6 +318,23 @@ export const useCampaign = (campaignId: string | null | undefined, status?: stri
     queryFn: () => get<CampaignFull>(`/campaigns/${campaignId}`),
     enabled: !!campaignId,
     refetchInterval: status === 'RUNNING' ? 2 * POLL_MS : false,
+  });
+
+/** The free preflight of "Generate the missing images": the missing images, what is reused and the estimate. Spends nothing. */
+export const useContinueImagesPreflight = (campaignId: string) =>
+  useMutation<ContinueImagesPlan, ApiError, ContinueImagesInput>({ mutationFn: (body) => post<ContinueImagesPlan>(`/campaigns/${campaignId}/continue-images/preflight`, body) });
+
+/** Starts a NEW campaign (a revision) that requests ONLY the missing images. Billed by OpenAI: only ever triggered by an explicit, confirmed button press. */
+export const useContinueImages = (projectId: string, campaignId: string) =>
+  useApiMutation((body: ContinueImagesInput) => post<RunView>(`/campaigns/${campaignId}/continue-images`, body), [keys.campaigns(projectId), keys.runs(projectId)]);
+
+/** One Mozaik run (GET /runs/:id), polled while it is RUNNING: the progress of an image-only continuation. */
+export const useRun = (runId: string | null | undefined) =>
+  useQuery({
+    queryKey: ['run', runId ?? 'none'] as const,
+    queryFn: () => get<RunView>(`/runs/${runId}`),
+    enabled: !!runId,
+    refetchInterval: (q) => (!q.state.data || q.state.data.status === 'RUNNING' ? 2 * POLL_MS : false),
   });
 
 export const useCampaignReviews = (campaignId: string | null | undefined, status?: string) =>

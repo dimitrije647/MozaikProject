@@ -1,0 +1,1156 @@
+{
+ "id": "fx-f1-report",
+ "projectId": "fx-project",
+ "runId": "fx-f1-run",
+ "schemaVersion": 2,
+ "language": "en",
+ "model": "gpt-6.1-sol",
+ "createdAt": "2026-11-02T11:42:11.99Z",
+ "reportJson": {
+  "partial": false,
+  "identity": {
+   "name": "Fixture 00",
+   "summary": "Fixture 0002 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry d",
+   "category": "Fixture 0003 content example record entry ",
+   "industry": "Fixture 0004 example record entry detail",
+   "businessType": "service"
+  },
+  "language": "en",
+  "offerings": [
+   {
+    "text": "Fixture 0005 record entry detail value text sample fixture neutral content example record entry detail valu",
+    "basis": "Fixture 0006 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record ",
+    "status": "verified",
+    "findingIds": [
+     "A3-5"
+    ]
+   },
+   {
+    "text": "Fixture 0007 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example reco",
+    "basis": "Fixture 0008 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example recor",
+    "status": "verified",
+    "findingIds": [
+     "A3-6"
+    ]
+   }
+  ],
+  "strengths": [
+   {
+    "text": "Fixture 0009 text sample fixture neutral content example record entry detail value text sample fixture neutral content exam",
+    "basis": "Fixture 0010 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample f",
+    "status": "inferred",
+    "findingIds": [
+     "A2-8",
+     "A3-5",
+     "A3-6"
+    ]
+   }
+  ],
+  "schemaVersion": 2,
+  "visualFindings": [],
+  "differentiation": [
+   {
+    "text": "Fixture 0011 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detai",
+    "basis": "Fixture 0012 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail v",
+    "status": "inferred",
+    "findingIds": [
+     "A2-7",
+     "A3-1",
+     "A3-8"
+    ]
+   }
+  ],
+  "evidenceSummary": {
+   "narrative": "Fixture 0013 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value",
+   "contradictions": [
+    {
+     "topic": "Fixture 0014 example rec",
+     "detail": "Fixture 0015 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example r",
+     "status": "resolved",
+     "findingIds": [
+      "A1-1",
+      "A1-2",
+      "A1-6"
+     ]
+    },
+    {
+     "topic": "Fixture 0016 entry detail value text",
+     "detail": "Fixture 0017 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record",
+     "status": "resolved",
+     "findingIds": [
+      "A1-3",
+      "A1-12",
+      "A2-8",
+      "A3-1",
+      "A3-6"
+     ]
+    },
+    {
+     "topic": "Fixture 0018 value text sa",
+     "detail": "Fixture 0019 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example r",
+     "status": "resolved",
+     "findingIds": [
+      "A1-4",
+      "A2-5",
+      "A3-4"
+     ]
+    },
+    {
+     "topic": "Fixture 0020 sample fixture neutral",
+     "detail": "Fixture 0021 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixtu",
+     "status": "resolved",
+     "findingIds": [
+      "A2-10",
+      "A3-1",
+      "A3-7"
+     ]
+    },
+    {
+     "topic": "Fixture 0022 neutral content example",
+     "detail": "Fixture 0023 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail",
+     "status": "resolved",
+     "findingIds": [
+      "A3-7"
+     ]
+    },
+    {
+     "topic": "Fixture 0024 example record entry detail va",
+     "detail": "Fixture 0025 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample f",
+     "status": "resolved",
+     "findingIds": [
+      "A3-8",
+      "A2-7"
+     ]
+    },
+    {
+     "topic": "Fixture 0026 entry deta",
+     "detail": "Fixture 0027 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample",
+     "status": "open",
+     "findingIds": [
+      "A1-7",
+      "A3-2",
+      "A3-10",
+      "A3-11"
+     ]
+    },
+    {
+     "topic": "Fixture 0028 value ",
+     "detail": "Fixture 0029 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detai",
+     "status": "open",
+     "findingIds": [
+      "A1-8",
+      "A3-12"
+     ]
+    }
+   ]
+  },
+  "productManifest": {
+   "name": "Fixture 00",
+   "brand": null,
+   "goals": [],
+   "problem": "Fixture 0031 fixture neutral content example record entry detail value text sample fixture neutral content example ",
+   "tagline": "Fixture 0032 neutral con",
+   "category": "Fixture 0033 content example record entry ",
+   "industry": "Fixture 0034 example record entry detail",
+   "offering": {
+    "items": [
+     "Fixture 0035 record entry detail value text sample fixture neut",
+     "Fixture 0036 entry detail value text ",
+     "Fixture 0037 detail value tex",
+     "Fixture 0038 value text sampl",
+     "Fixture 0039 text sample fixture n",
+     "Fixture 0040 sample fixture neutral content exa"
+    ],
+    "summary": "Fixture 0041 fixture neutral content example record entry detail value text sample fixture neutral content example record e"
+   },
+   "geography": [
+    "Fixture",
+    "Fixture 004"
+   ],
+   "languages": [
+    "Fixture 0044 example record entry detail value text sample f"
+   ],
+   "businessType": "service",
+   "openQuestions": [
+    "Fixture 0045 record entry detail value text sample fixture neutral",
+    "Fixture 0046 entry detail value text sample fixture neutral conte",
+    "Fixture 0047 detail value text sample fixture neutral content example rec",
+    "Fixture 0048 value text sample fixture neutral conte",
+    "Fixture 0049 text sample fixture neutral content examp",
+    "Fixture 0050 sample fixture neutral content example",
+    "Fixture 0051 fixture neutral content exa"
+   ],
+   "onlinePresence": {
+    "website": "https://fixture.invalid/",
+    "repository": null,
+    "socialProfiles": []
+   },
+   "confidenceNotes": "Fixture 0053 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral c",
+   "differentiators": [
+    "Fixture 0054 example record entry detail value text sample fixture neutral content exa",
+    "Fixture 0055 record entry detail value text sample fixture neutral content exam"
+   ],
+   "targetCustomers": [
+    "Fixture 0056 entry detail v",
+    "Fixture 0057 detail valu",
+    "Fixture 0058 valu",
+    "Fixture 0059 text sample fixture neutral content exam"
+   ],
+   "valueProposition": "Fixture 0060 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample f",
+   "overallConfidence": 0.72,
+   "evidenceFindingIds": [
+    "A1-1",
+    "A1-6",
+    "A1-7",
+    "A1-8",
+    "A1-11",
+    "A2-7",
+    "A3-1",
+    "A3-2",
+    "A3-3",
+    "A3-4",
+    "A3-5",
+    "A3-6",
+    "A3-7",
+    "A3-8",
+    "A3-10",
+    "A3-11",
+    "A3-12",
+    "A3-13"
+   ]
+  },
+  "targetCustomers": [
+   {
+    "text": "Fixture 0061 fixture neutral content example record entry detail value text sample fixtur",
+    "basis": "Fixture 0062 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content",
+    "status": "verified",
+    "findingIds": [
+     "A3-2",
+     "A1-5"
+    ]
+   },
+   {
+    "text": "Fixture 0063 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral conte",
+    "basis": "Fixture 0064 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry ",
+    "status": "claimed",
+    "findingIds": [
+     "A1-6",
+     "A1-7",
+     "A1-11"
+    ]
+   }
+  ],
+  "websiteFindings": [
+   {
+    "text": "Fixture 0065 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example ",
+    "basis": "Fixture 0066 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value tex",
+    "status": "verified",
+    "findingIds": [
+     "A3-1"
+    ]
+   },
+   {
+    "text": "Fixture 0067 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sampl",
+    "basis": "Fixture 0068 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example recor",
+    "status": "inferred",
+    "findingIds": [
+     "A3-12",
+     "A3-13"
+    ]
+   }
+  ],
+  "documentFindings": [],
+  "executiveSummary": "Fixture 0069 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail v",
+  "valueProposition": {
+   "text": "Fixture 0070 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail",
+   "basis": "Fixture 0071 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neu",
+   "status": "claimed",
+   "findingIds": [
+    "A3-7"
+   ]
+  },
+  "missingInformation": [
+   "Fixture 0072 neutral content example record entry detail value text sample",
+   "Fixture 0073 content example record entry detail value text sample fixture neutral content example reco",
+   "Fixture 0074 example record entry detail value text sample fixture neutral content example record",
+   "Fixture 0075 record entry detail value text sample fixture neutral content example record entry detail val",
+   "Fixture 0076 entry detail value text sample fixture neutral content example record entry",
+   "Fixture 0077 detail value text sample fixture neutral content example record entry detail value text sample ",
+   "Fixture 0078 value text sample fixture neutral content example record entry detail value text sample fixture neutra",
+   "Fixture 0079 text sample fixture neutral content example record entry detail value text s",
+   "Fixture 0080 sample fixture neutral content example record entry detail val"
+  ],
+  "problemAndSolution": {
+   "problem": {
+    "text": "Fixture 0081 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fix",
+    "basis": "Fixture 0082 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail",
+    "status": "verified",
+    "findingIds": [
+     "A3-4"
+    ]
+   },
+   "solution": {
+    "text": "Fixture 0083 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example rec",
+    "basis": "Fixture 0084 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail valu",
+    "status": "verified",
+    "findingIds": [
+     "A3-1",
+     "A3-8"
+    ]
+   }
+  },
+  "repositoryFindings": [],
+  "weaknessesRisksUnknowns": [
+   {
+    "text": "Fixture 0085 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content exam",
+    "basis": "Fixture 0086 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample f",
+    "status": "inferred",
+    "findingIds": [
+     "A1-6",
+     "A1-7",
+     "A3-10",
+     "A3-11"
+    ]
+   },
+   {
+    "text": "Fixture 0087 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example recor",
+    "basis": "Fixture 0088 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text samp",
+    "status": "unknown",
+    "findingIds": [
+     "A1-8",
+     "A3-12"
+    ]
+   },
+   {
+    "text": "Fixture 0089 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neu",
+    "basis": "Fixture 0090 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral c",
+    "status": "unknown",
+    "findingIds": [
+     "A3-7",
+     "A3-6",
+     "A3-13"
+    ]
+   }
+  ],
+  "recommendedInvestigations": [
+   {
+    "action": "Fixture 0091 fixture neutral content example record entry detail value text sample fixture neutral content example",
+    "priority": "high",
+    "rationale": "Fixture 0092 neutral content example record entry detail value text sample fixture neutral content example record entry detail value t"
+   },
+   {
+    "action": "Fixture 0093 content example record entry detail value text sample fixture neutral content example record entry detail value t",
+    "priority": "high",
+    "rationale": "Fixture 0094 example record entry detail value text sample fixture neutral content example record entry detail value text sample f"
+   },
+   {
+    "action": "Fixture 0095 record entry detail value text sample fixture neutral content example record entry detail value text sample fi",
+    "priority": "high",
+    "rationale": "Fixture 0096 entry detail value text sample fixture neutral content exam"
+   },
+   {
+    "action": "Fixture 0097 detail value text sample fixture neutral content example record entr",
+    "priority": "high",
+    "rationale": "Fixture 0098 value text sample fixture neutral content example record entry detail"
+   },
+   {
+    "action": "Fixture 0099 text sample fixture neutral content example record entry detail value text sample fixture neutral cont",
+    "priority": "medium",
+    "rationale": "Fixture 0100 sample fixture neutral content example record entry detail value text sample fixture neutral content e"
+   }
+  ]
+ },
+ "metadataJson": {
+  "generatedAt": "2026-11-02T11:42:11.974Z",
+  "model": "gpt-6.1-sol",
+  "findings": [
+   {
+    "at": "2026-11-02T11:40:40.693Z",
+    "id": "A2-1",
+    "agent": "Text Analyzer",
+    "excerpt": "Fixture 0101 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sam",
+    "locator": "Fixture 0102 neutra",
+    "category": "Fixture ",
+    "sourceId": null,
+    "statement": "Fixture 0104 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content examp",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0105 r"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "user_input",
+    "classification": "claimed"
+   },
+   {
+    "at": "2026-11-02T11:40:40.693Z",
+    "id": "A2-2",
+    "agent": "Text Analyzer",
+    "excerpt": "Fixture 0106 entry detail",
+    "locator": "Fixture 0107 detail v",
+    "category": "Fixture 0108 val",
+    "sourceId": null,
+    "statement": "Fixture 0109 text sample fixture neutral content example",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0110 s"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "intake_field",
+    "classification": "claimed"
+   },
+   {
+    "at": "2026-11-02T11:40:40.693Z",
+    "id": "A2-3",
+    "agent": "Text Analyzer",
+    "excerpt": "Fixture 0111 fixture",
+    "locator": "Fixture 0112 neutra",
+    "category": "Fixture 0",
+    "sourceId": null,
+    "statement": "Fixture 0114 example record entry detail value text sa",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0115 r"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "intake_field",
+    "classification": "claimed"
+   },
+   {
+    "at": "2026-11-02T11:40:40.693Z",
+    "id": "A2-4",
+    "agent": "Text Analyzer",
+    "excerpt": null,
+    "locator": "Fixture 0116 entry ",
+    "category": "Fixture 0117 deta",
+    "sourceId": null,
+    "statement": "Fixture 0118 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record e",
+    "adjustment": null,
+    "confidence": 0.87,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0119 t"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "ai_inference",
+    "classification": "inferred"
+   },
+   {
+    "at": "2026-11-02T11:40:40.693Z",
+    "id": "A2-5",
+    "agent": "Text Analyzer",
+    "excerpt": null,
+    "locator": "Fixture 0120 sample",
+    "category": "Fixture",
+    "sourceId": null,
+    "statement": "Fixture 0122 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry de",
+    "adjustment": null,
+    "confidence": 0.8,
+    "crosscheck": {
+     "status": "corrected",
+     "reviewers": [
+      "Fixture 0123"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "ai_inference",
+    "classification": "inferred"
+   },
+   {
+    "at": "2026-11-02T11:40:40.693Z",
+    "id": "A2-6",
+    "agent": "Text Analyzer",
+    "excerpt": null,
+    "locator": "Fixture 0124 exampl",
+    "category": "Fixture 01",
+    "sourceId": null,
+    "statement": "Fixture 0126 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral conte",
+    "adjustment": null,
+    "confidence": 0.73,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "importance": "medium",
+    "sourceType": "ai_inference",
+    "classification": "inferred"
+   },
+   {
+    "at": "2026-11-02T11:40:40.693Z",
+    "id": "A2-7",
+    "agent": "Text Analyzer",
+    "excerpt": null,
+    "locator": "Fixture 0127 detail",
+    "category": "Fixture 0128 v",
+    "sourceId": null,
+    "statement": "Fixture 0129 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example re",
+    "adjustment": null,
+    "confidence": 0.82,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0130"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "ai_inference",
+    "classification": "inferred"
+   },
+   {
+    "at": "2026-11-02T11:40:40.694Z",
+    "id": "A2-8",
+    "agent": "Text Analyzer",
+    "excerpt": null,
+    "locator": "Fixture 0131 fixtur",
+    "category": "Fixture 0132 ",
+    "sourceId": null,
+    "statement": "Fixture 0133 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail valu",
+    "adjustment": null,
+    "confidence": 0.97,
+    "crosscheck": {
+     "status": "corrected",
+     "reviewers": [
+      "Fixture 0134"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "ai_inference",
+    "classification": "inferred"
+   },
+   {
+    "at": "2026-11-02T11:40:40.694Z",
+    "id": "A2-9",
+    "agent": "Text Analyzer",
+    "excerpt": "Fixture 0135 record entry detail value text sample fixture neutral content ",
+    "locator": "Fixture 0136 entry ",
+    "category": "Fixture ",
+    "sourceId": null,
+    "statement": "Fixture 0138 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixtur",
+    "adjustment": null,
+    "confidence": 0.92,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "importance": "medium",
+    "sourceType": "ai_inference",
+    "classification": "inferred"
+   },
+   {
+    "at": "2026-11-02T11:40:40.694Z",
+    "id": "A2-10",
+    "agent": "Text Analyzer",
+    "excerpt": null,
+    "locator": "Fixture 0139 text s",
+    "category": "Fixture 0140 ",
+    "sourceId": null,
+    "statement": "Fixture 0141 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value te",
+    "adjustment": null,
+    "confidence": 0.94,
+    "crosscheck": {
+     "status": "corrected",
+     "reviewers": [
+      "Fixture 0142"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "ai_inference",
+    "classification": "inferred"
+   },
+   {
+    "at": "2026-11-02T11:40:42.798Z",
+    "id": "A1-1",
+    "agent": "Input Analyzer",
+    "excerpt": "Fixture 01",
+    "locator": "Fixture 0144 examp",
+    "category": "Fixture ",
+    "sourceId": null,
+    "statement": "Fixture 0146 entry detail value text sampl",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0147 "
+     ]
+    },
+    "importance": "high",
+    "sourceType": "intake_field",
+    "classification": "claimed"
+   },
+   {
+    "at": "2026-11-02T11:40:42.798Z",
+    "id": "A1-2",
+    "agent": "Input Analyzer",
+    "excerpt": "Fixture 0148 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry det",
+    "locator": "Fixture 0149 text sampl",
+    "category": "Fixture ",
+    "sourceId": null,
+    "statement": "Fixture 0151 fixture neutral content example record entry detail value text sample fixture neutr",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0152 "
+     ]
+    },
+    "importance": "high",
+    "sourceType": "intake_field",
+    "classification": "claimed"
+   },
+   {
+    "at": "2026-11-02T11:40:42.798Z",
+    "id": "A1-3",
+    "agent": "Input Analyzer",
+    "excerpt": null,
+    "locator": "Fixture 0153 conten",
+    "category": "Fixture ",
+    "sourceId": null,
+    "statement": "Fixture 0155 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example re",
+    "adjustment": null,
+    "confidence": 0.8,
+    "crosscheck": {
+     "status": "corrected",
+     "reviewers": [
+      "Fixture 0156"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "ai_inference",
+    "classification": "inferred"
+   },
+   {
+    "at": "2026-11-02T11:40:42.798Z",
+    "id": "A1-4",
+    "agent": "Input Analyzer",
+    "excerpt": null,
+    "locator": "Fixture 0157 detail",
+    "category": "Fixture",
+    "sourceId": null,
+    "statement": "Fixture 0159 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixt",
+    "adjustment": null,
+    "confidence": 0.85,
+    "crosscheck": {
+     "status": "corrected",
+     "reviewers": [
+      "Fixture 0160"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "ai_inference",
+    "classification": "inferred"
+   },
+   {
+    "at": "2026-11-02T11:40:42.799Z",
+    "id": "A1-5",
+    "agent": "Input Analyzer",
+    "excerpt": "Fixture 0161 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sam",
+    "locator": "Fixture 0162 neutra",
+    "category": "Fixture 0163 con",
+    "sourceId": null,
+    "statement": "Fixture 0164 example record entry detail value text sample fixture neutral content example record entry detail value text sam",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0165 "
+     ]
+    },
+    "importance": "high",
+    "sourceType": "intake_field",
+    "classification": "claimed"
+   },
+   {
+    "at": "2026-11-02T11:40:42.799Z",
+    "id": "A1-6",
+    "agent": "Input Analyzer",
+    "excerpt": "Fixture 0166 entry detail",
+    "locator": "Fixture 0167 detail v",
+    "category": "Fixture 0168 val",
+    "sourceId": null,
+    "statement": "Fixture 0169 text sample fixture neutral content example record entry ",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0170 "
+     ]
+    },
+    "importance": "high",
+    "sourceType": "intake_field",
+    "classification": "claimed"
+   },
+   {
+    "at": "2026-11-02T11:40:42.799Z",
+    "id": "A1-7",
+    "agent": "Input Analyzer",
+    "excerpt": "Fixture 0171 fixture",
+    "locator": "Fixture 0172 neutra",
+    "category": "Fixture 0",
+    "sourceId": null,
+    "statement": "Fixture 0174 example record entry detail value text sa",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0175"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "intake_field",
+    "classification": "claimed"
+   },
+   {
+    "at": "2026-11-02T11:40:42.799Z",
+    "id": "A1-8",
+    "agent": "Input Analyzer",
+    "excerpt": "Fixtu",
+    "locator": "Fixture 0177 detail ",
+    "category": "Fixt",
+    "sourceId": null,
+    "statement": "Fixture 0179 text sample fixture neutral content e",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "insufficient",
+     "reviewers": [
+      "Fixture 0180"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "intake_field",
+    "classification": "claimed"
+   },
+   {
+    "at": "2026-11-02T11:40:42.799Z",
+    "id": "A1-9",
+    "agent": "Input Analyzer",
+    "excerpt": "Fixture ",
+    "locator": "Fixture 0182 neutral co",
+    "category": "Fixt",
+    "sourceId": null,
+    "statement": "Fixture 0184 example record entry detail valu",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "importance": "medium",
+    "sourceType": "intake_field",
+    "classification": "claimed"
+   },
+   {
+    "at": "2026-11-02T11:40:42.799Z",
+    "id": "A1-10",
+    "agent": "Input Analyzer",
+    "excerpt": "Fixture",
+    "locator": "Fixture 0186 entry det",
+    "category": "Fixture 0187 ",
+    "sourceId": null,
+    "statement": "Fixture 0188 value text sample fixture ",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "importance": "medium",
+    "sourceType": "intake_field",
+    "classification": "claimed"
+   },
+   {
+    "at": "2026-11-02T11:40:42.799Z",
+    "id": "A1-11",
+    "agent": "Input Analyzer",
+    "excerpt": null,
+    "locator": "Fixture 0189 text sam",
+    "category": "Fixture 01",
+    "sourceId": null,
+    "statement": "Fixture 0191 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixtu",
+    "adjustment": null,
+    "confidence": 0.65,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "importance": "high",
+    "sourceType": "ai_inference",
+    "classification": "inferred"
+   },
+   {
+    "at": "2026-11-02T11:40:42.799Z",
+    "id": "A1-12",
+    "agent": "Input Analyzer",
+    "excerpt": null,
+    "locator": "Fixture 0192 neutral co",
+    "category": "Fixture",
+    "sourceId": null,
+    "statement": "Fixture 0194 example record entry detail value text sample fixture neutral content example record entry ",
+    "adjustment": null,
+    "confidence": null,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "importance": "high",
+    "sourceType": "intake_field",
+    "classification": "unknown"
+   },
+   {
+    "at": "2026-11-02T11:40:43.694Z",
+    "id": "A3-1",
+    "agent": "Web Analyzer",
+    "excerpt": "Fixture 0195 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral",
+    "locator": "Fixture 0196 entry detail",
+    "category": "Fixture ",
+    "sourceId": "S2",
+    "statement": "Fixture 0198 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content exampl",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0199 t"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "website",
+    "classification": "verified"
+   },
+   {
+    "at": "2026-11-02T11:40:43.694Z",
+    "id": "A3-2",
+    "agent": "Web Analyzer",
+    "excerpt": "Fixture 0200 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value t",
+    "locator": "Fixture 0201 fixture neut",
+    "category": "Fixture 0202 neu",
+    "sourceId": "S2",
+    "statement": "Fixture 0203 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixt",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0204 e"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "website",
+    "classification": "verified"
+   },
+   {
+    "at": "2026-11-02T11:40:43.694Z",
+    "id": "A3-3",
+    "agent": "Web Analyzer",
+    "excerpt": "Fixture 0205 record entry detail value text sample fixture neutral content example record",
+    "locator": "Fixture 0206 entry",
+    "category": "Fixture 0207 ",
+    "sourceId": "S2",
+    "statement": "Fixture 0208 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content e",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "importance": "medium",
+    "sourceType": "website",
+    "classification": "verified"
+   },
+   {
+    "at": "2026-11-02T11:40:43.694Z",
+    "id": "A3-4",
+    "agent": "Web Analyzer",
+    "excerpt": "Fixture 0209 text sample fixture neutral content example record entry detail value text sample fixture neutral c",
+    "locator": "Fixture 0210 sample fixture",
+    "category": "Fixture",
+    "sourceId": "S2",
+    "statement": "Fixture 0212 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sa",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0213 c"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "website",
+    "classification": "verified"
+   },
+   {
+    "at": "2026-11-02T11:40:43.695Z",
+    "id": "A3-5",
+    "agent": "Web Analyzer",
+    "excerpt": "Fixture 0214 example record entry detail value text sample fixture neutral content example record en",
+    "locator": "Fixture 0215 record entry detail ",
+    "category": "Fixture ",
+    "sourceId": "S2",
+    "statement": "Fixture 0217 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content ",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0218 "
+     ]
+    },
+    "importance": "high",
+    "sourceType": "website",
+    "classification": "verified"
+   },
+   {
+    "at": "2026-11-02T11:40:43.695Z",
+    "id": "A3-6",
+    "agent": "Web Analyzer",
+    "excerpt": "Fixture 0219 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example recor",
+    "locator": "Fixture 0220 sample fixtur",
+    "category": "Fixture ",
+    "sourceId": "S2",
+    "statement": "Fixture 0222 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixtur",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0223 "
+     ]
+    },
+    "importance": "high",
+    "sourceType": "website",
+    "classification": "verified"
+   },
+   {
+    "at": "2026-11-02T11:40:43.720Z",
+    "id": "A3-7",
+    "agent": "Web Analyzer",
+    "excerpt": "Fixture 0224 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text s",
+    "locator": "Fixture 0225 record entry det",
+    "category": "Fixture 0226 entr",
+    "sourceId": "S2",
+    "statement": "Fixture 0227 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text samp",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "corrected",
+     "reviewers": [
+      "Fixture 0228 "
+     ]
+    },
+    "importance": "high",
+    "sourceType": "website",
+    "classification": "verified"
+   },
+   {
+    "at": "2026-11-02T11:40:43.721Z",
+    "id": "A3-8",
+    "agent": "Web Analyzer",
+    "excerpt": "Fixture 0229 text sample fixture neutral content example record entry detail value text sample fixture neutral content ",
+    "locator": "Fixture 0230 sample fixture n",
+    "category": "Fixture 0231 f",
+    "sourceId": "S2",
+    "statement": "Fixture 0232 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample f",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "corrected",
+     "reviewers": [
+      "Fixture 0233 "
+     ]
+    },
+    "importance": "high",
+    "sourceType": "website",
+    "classification": "verified"
+   },
+   {
+    "at": "2026-11-02T11:40:43.724Z",
+    "id": "A3-9",
+    "agent": "Web Analyzer",
+    "excerpt": "Fixture 0234 example record entry detail value text",
+    "locator": "Fixture 0235 record entry det",
+    "category": "Fixture ",
+    "sourceId": "S3",
+    "statement": "Fixture 0237 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example rec",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "importance": "medium",
+    "sourceType": "website",
+    "classification": "verified"
+   },
+   {
+    "at": "2026-11-02T11:40:43.724Z",
+    "id": "A3-10",
+    "agent": "Web Analyzer",
+    "excerpt": "Fixture 0238 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text",
+    "locator": "Fixture 0239 text sample fix",
+    "category": "Fixture 0240 sam",
+    "sourceId": "S3",
+    "statement": "Fixture 0241 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content e",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "importance": "medium",
+    "sourceType": "website",
+    "classification": "verified"
+   },
+   {
+    "at": "2026-11-02T11:40:43.724Z",
+    "id": "A3-11",
+    "agent": "Web Analyzer",
+    "excerpt": "Fixture 0242 neutral content example record entry detail value text sample fixture n",
+    "locator": "Fixture 0243 content example record entry detail value text sample fix",
+    "category": "Fixture 024",
+    "sourceId": "S3",
+    "statement": "Fixture 0245 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fix",
+    "adjustment": null,
+    "confidence": 0.88,
+    "crosscheck": {
+     "status": "corrected",
+     "reviewers": [
+      "Fixture 0246 e"
+     ]
+    },
+    "importance": "high",
+    "sourceType": "website",
+    "classification": "inferred"
+   },
+   {
+    "at": "2026-11-02T11:40:43.724Z",
+    "id": "A3-12",
+    "agent": "Web Analyzer",
+    "excerpt": "Fixture 0247 detail value text sample fixture neutral content example record en",
+    "locator": "Fixture 0248 value text s",
+    "category": "Fixture ",
+    "sourceId": "S2",
+    "statement": "Fixture 0250 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content exampl",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "importance": "medium",
+    "sourceType": "website",
+    "classification": "verified"
+   },
+   {
+    "at": "2026-11-02T11:40:43.725Z",
+    "id": "A3-13",
+    "agent": "Web Analyzer",
+    "excerpt": "Fixture 0251 fixture neutral content example record entry detail value text sample fixt",
+    "locator": "Fixture 0252 neutral conte",
+    "category": "Fixture 0253",
+    "sourceId": "S3",
+    "statement": "Fixture 0254 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry",
+    "adjustment": null,
+    "confidence": 0.99,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "importance": "medium",
+    "sourceType": "website",
+    "classification": "inferred"
+   }
+  ],
+  "sources": [
+   {
+    "id": "S1",
+    "url": null,
+    "kind": "user_input",
+    "live": false,
+    "bytes": null,
+    "chars": 374,
+    "error": null,
+    "label": "Fixture 0255 record entr",
+    "notes": [],
+    "status": "retrieved",
+    "excerpt": "Fixture 0256 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detai",
+    "fixture": false,
+    "producer": "Phase Coordinator",
+    "httpStatus": null,
+    "retrievedAt": "2026-11-02T11:40:14.760Z",
+    "injectionSuspected": false
+   },
+   {
+    "id": "S2",
+    "url": "https://fixture.invalid/",
+    "kind": "website",
+    "live": true,
+    "bytes": 61884,
+    "chars": 4451,
+    "error": null,
+    "label": "Fixture 0258 value text sample fixture neut",
+    "notes": [],
+    "status": "retrieved",
+    "excerpt": "Fixture 0259 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content e",
+    "fixture": false,
+    "producer": "Web Analyzer",
+    "httpStatus": 200,
+    "retrievedAt": "2026-11-02T11:40:19.125Z",
+    "injectionSuspected": false
+   },
+   {
+    "id": "S3",
+    "url": "https://fixture.invalid/p260",
+    "kind": "website",
+    "live": true,
+    "bytes": 68890,
+    "chars": 8608,
+    "error": null,
+    "label": "Fixture 0261 fixture neutral conte",
+    "notes": [],
+    "status": "retrieved",
+    "excerpt": "Fixture 0262 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry ",
+    "fixture": false,
+    "producer": "Web Analyzer",
+    "httpStatus": 200,
+    "retrievedAt": "2026-11-02T11:40:21.055Z",
+    "injectionSuspected": false
+   },
+   {
+    "id": "S4",
+    "url": null,
+    "kind": "search_result",
+    "live": false,
+    "bytes": null,
+    "chars": null,
+    "error": "Fixture 0263 content example record entry detail value text sample fixture neutral content ",
+    "label": "Fixture 02",
+    "notes": [],
+    "status": "skipped",
+    "excerpt": null,
+    "fixture": false,
+    "producer": "Web Analyzer",
+    "httpStatus": null,
+    "retrievedAt": "2026-11-02T11:40:21.055Z",
+    "injectionSuspected": false
+   }
+  ]
+ }
+}

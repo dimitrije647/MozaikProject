@@ -389,7 +389,7 @@ export function CreativeProductionPanel({ projectId }: { projectId: string }) {
               {tab === 'Overview' && <CreativeOverviewTab analysis={analysis.data} campaign={campaign.data} running={shown.status === 'RUNNING'} />}
               {tab === 'Agents' && <CreativeAgentsTab analysis={analysis.data} events={events.data ?? []} />}
               {tab === 'Creative Concepts' && <ConceptsTab pkg={campaign.data?.package} />}
-              {tab === 'Generated Images' && <ImagesTab pkg={campaign.data?.package} assets={campaign.data?.assets ?? []} />}
+              {tab === 'Generated Images' && <ImagesTab pkg={campaign.data?.package} assets={campaign.data?.assets ?? []} campaignId={campaign.data?.id} />}
               {tab === 'Channel Formats' && <FormatsTab pkg={campaign.data?.package} assets={campaign.data?.assets ?? []} />}
               {tab === 'Landing Page' && <LandingTab pkg={campaign.data?.package} campaignId={campaign.data?.package ? campaignId : null} />}
               {tab === 'Quality Review' && <ReviewTab pkg={campaign.data?.package} />}

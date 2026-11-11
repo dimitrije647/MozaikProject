@@ -6,8 +6,11 @@ import {
   type InferenceRunner,
   type SemanticEvent,
 } from '@mozaik-ai/core';
+import type { Reservation, SpendController, SpendPriority, SpendSnapshot } from './budget';
 import { ProviderError, toProviderError, type ProviderErrorCode } from './errors';
 import type { OpenAIClient } from './openai-http';
+import { textCostUsd, textReserveUsd } from './pricing';
+import { generationTimeoutMs, type GenerationTimeout } from './timeouts';
 
 /**
  * Marker used to carry a provider failure through Mozaik's agent loop.
@@ -31,10 +34,23 @@ export interface InferenceBudget {
   maxOutputTokens: number;
   /** Per-request timeout. */
   callTimeoutMs: number;
+  /**
+   * When set, a request marked as a LONG ANSWER (see `setLongAnswer`: the final document of a phase) gets a clock that grows with the tokens it may
+   * produce (never shorter than `callTimeoutMs`). Absent = every request keeps `callTimeoutMs`.
+   */
+  generation?: GenerationTimeout;
   /** Extra attempts after a retryable failure (429 rate limit, 5xx, network). Quota errors are never retried. */
   maxRetries: number;
   /** Base delay for exponential backoff. */
   retryBaseDelayMs: number;
+  /** The campaign's shared spend ledger (US dollars). Every request reserves its worst case first; absent = usage is measured but never capped. */
+  spend?: SpendController;
+  /**
+   * When an answer is CUT OFF by `max_output_tokens` (status "incomplete"), the same request is sent again with a larger cap, up to this
+   * ceiling and at most twice: a cut-off JSON answer is unusable, and asking for the same size again only truncates it again. The cut-off
+   * attempt was billed and stays in the accounting; the retry counts as a model call. Absent = no escalation.
+   */
+  escalateTo?: number;
 }
 
 export const DEFAULT_BUDGET: InferenceBudget = {
@@ -68,6 +84,10 @@ export interface UsageSnapshot {
   perAgent: Record<string, UsageTotals>;
   /** Provider calls started (including retries), against `budget.maxModelCalls`. */
   callsStarted: number;
+  /** Dollars: known spend, reservations, uncertain spend and refused requests (null when the run has no spend controller). */
+  spend: SpendSnapshot | null;
+  /** Requests re-sent with a larger output cap because the answer was cut off (each one is also counted in `callsStarted`). */
+  escalations: number;
 }
 
 // Mozaik's default OpenAI Responses mapper: converts a ModelContext to a Responses request and a
@@ -85,12 +105,20 @@ const mapper = new OpenAIResponses().endpointMapper;
  */
 export class InferenceGateway implements InferenceRunner {
   private callsStarted = 0;
+  private escalations = 0;
   private readonly total = emptyUsage();
   private readonly perAgent = new Map<string, UsageTotals>();
   private readonly agentNames = new Map<string, string>(); // ModelContext id -> agent name
   private readonly contextAborts = new Map<string, AbortController>();
   private readonly runAbort = new AbortController();
   private readonly pendingImages = new Map<string, { mediaType: string; base64: string }[]>();
+  /** What the NEXT request of an agent is for (see SpendPriority): decides what the shared budget may refuse first when money is tight. */
+  private readonly priorities = new Map<string, SpendPriority>();
+  /** Agents whose next requests write a long structured answer (the synthesizers). */
+  private readonly longAnswers = new Set<string>();
+  /** What the last request of an agent was given, and why it failed, for a specific and safe error message. */
+  private readonly attempts = new Map<string, { limitMs: number; cap: number }>();
+  private readonly failureNotes = new Map<string, string>();
 
   constructor(
     private readonly client: OpenAIClient,
@@ -100,6 +128,27 @@ export class InferenceGateway implements InferenceRunner {
 
   registerAgent(contextId: string, agentName: string) {
     this.agentNames.set(contextId, agentName);
+  }
+
+  /** Marks the agent's next requests as long structured answers (a synthesis): their clock scales with the answer's output cap. */
+  setLongAnswer(contextId: string, on: boolean) {
+    if (on) this.longAnswers.add(contextId);
+    else this.longAnswers.delete(contextId);
+  }
+
+  /** A safe sentence about why the last request of this agent failed with `code` (null = nothing specific to add). Never contains provider text. */
+  failureDetail(contextId: string, code: ProviderErrorCode): string | undefined {
+    return code === 'timeout' ? this.failureNotes.get(contextId) : undefined;
+  }
+
+  private timeoutFor(contextId: string, cap: number): number {
+    const g = this.budget.generation;
+    return g && this.longAnswers.has(contextId) ? Math.max(this.budget.callTimeoutMs, generationTimeoutMs(cap, g)) : this.budget.callTimeoutMs;
+  }
+
+  /** Sets the spend priority of the agent's next requests (1 essential analysis ... 5 optional refinements). Default 1. */
+  setCallPriority(contextId: string, priority: SpendPriority) {
+    this.priorities.set(contextId, priority);
   }
 
   /**
@@ -117,6 +166,8 @@ export class InferenceGateway implements InferenceRunner {
       total: { ...this.total },
       perAgent: Object.fromEntries([...this.perAgent].map(([k, v]) => [k, { ...v }])),
       callsStarted: this.callsStarted,
+      spend: this.budget.spend?.snapshot() ?? null,
+      escalations: this.escalations,
     };
   }
 
@@ -140,13 +191,16 @@ export class InferenceGateway implements InferenceRunner {
     }
 
     let lastCode: ProviderErrorCode = 'provider_unavailable';
+    let cap = Math.min(input.maxOutputTokens ?? this.budget.maxOutputTokens, this.budget.maxOutputTokens);
+    let escalated = 0;
     for (let attempt = 0; attempt <= this.budget.maxRetries; attempt++) {
       const abortReason = this.abortReason(agentAbort.signal);
       if (abortReason) return failure(abortReason);
       if (this.callsStarted >= this.budget.maxModelCalls) return failure('budget_exceeded');
       this.callsStarted++;
 
-      const signal = AbortSignal.any([this.runAbort.signal, agentAbort.signal, AbortSignal.timeout(this.budget.callTimeoutMs)]);
+      const stop = AbortSignal.any([this.runAbort.signal, agentAbort.signal]);
+      let held: Reservation | null = null;
       try {
         const request = mapper.toRequest(input) as { input: { role?: string; content?: unknown[] }[] };
         const images = this.pendingImages.get(contextId);
@@ -156,21 +210,63 @@ export class InferenceGateway implements InferenceRunner {
         }
         const body = {
           ...request,
-          max_output_tokens: Math.min(input.maxOutputTokens ?? this.budget.maxOutputTokens, this.budget.maxOutputTokens),
+          max_output_tokens: cap,
           store: false, // do not let OpenAI retain the user's product text
         };
+        // Spend control: the worst case of this request (estimated input + the FULL output cap) is held BEFORE it is sent.
+        const model = (request as { model?: string }).model ?? input.model;
+        if (this.budget.spend) {
+          const worst = textReserveUsd(model, JSON.stringify(body).length, body.max_output_tokens);
+          const priority = this.priorities.get(contextId) ?? 1;
+          // a request that does not fit only because other requests hold their worst case waits for them to settle (they release the difference)
+          await this.budget.spend.awaitRoom?.('text', worst, { priority }, stop);
+          held = this.budget.spend.tryReserve('text', worst, { priority });
+          if (!held) {
+            this.callsStarted--; // refused before it was sent: not a provider call
+            return failure('spend_limit');
+          }
+        }
+        // the clock of THIS request starts when it is sent, not while it waited for room in the campaign budget
+        const limitMs = this.timeoutFor(contextId, cap);
+        this.attempts.set(contextId, { limitMs, cap });
+        const signal = AbortSignal.any([stop, AbortSignal.timeout(limitMs)]);
         const response = await this.client.createResponse(body, signal);
+        this.failureNotes.delete(contextId);
         const output = mapper.toResponse(response);
-        this.pendingImages.delete(contextId);
         this.record(contextId, output);
+        if (held) {
+          const u = output.tokenUsage;
+          this.budget.spend!.settle(held, u ? textCostUsd(model, { inputTokens: u.inputTokens, outputTokens: u.outputTokens, cachedInputTokens: u.inputTokenDetails.cached_tokens }) : null);
+          held = null;
+        }
+        // An answer cut off by the output cap is useless as JSON, and the same cap would cut it off again: ask once more, bigger.
+        const cutOff = response.status === 'incomplete' && (response.incomplete_details as { reason?: string } | null | undefined)?.reason === 'max_output_tokens';
+        if (cutOff && this.budget.escalateTo && cap < this.budget.escalateTo && escalated < 2) {
+          escalated++;
+          this.escalations++;
+          cap = Math.min(this.budget.escalateTo, cap * 2);
+          attempt--; // not a network retry
+          continue;
+        }
+        this.pendingImages.delete(contextId);
         if (!output.items.some((i) => i.type === 'message')) return failure('invalid_response');
         // Drop the raw provider response: Mozaik publishes the whole output as an event payload.
         return { items: output.items, tokenUsage: output.tokenUsage, rowResponse: undefined };
       } catch (err) {
         const pe = toProviderError(err);
         lastCode = pe.code;
+        // A rejection by the provider (HTTP error, rate limit) bills nothing; a timeout or cancel after sending may have been billed.
+        if (held) {
+          if (pe.code === 'timeout' || pe.code === 'cancelled') this.budget.spend!.markUncertain(held);
+          else this.budget.spend!.release(held);
+          held = null;
+        }
         const stopped = this.abortReason(agentAbort.signal);
         if (stopped) return failure(stopped);
+        if (pe.code === 'timeout') {
+          const a = this.attempts.get(contextId);
+          if (a) this.failureNotes.set(contextId, `No answer arrived within ${a.limitMs < 10_000 ? (a.limitMs / 1000).toFixed(1) : Math.round(a.limitMs / 1000)} s (the answer could be up to ${a.cap} tokens long). The request had been sent, so it may still have been billed; it was not repeated automatically.`);
+        }
         if (!pe.retryable || attempt === this.budget.maxRetries) return failure(pe.code);
         const delay = pe.retryAfterMs ?? this.budget.retryBaseDelayMs * 2 ** attempt;
         try {

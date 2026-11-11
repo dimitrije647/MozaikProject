@@ -171,24 +171,31 @@ export class PhaseCoordinator {
     let budget = Math.min(settings.maxReviews, Math.max(0, settings.maxModelCalls - used - SLACK_CALLS));
     const usableKeys = new Set(usable.map((n) => keyByName(n)!));
 
-    for (const producer of PRODUCER_ORDER) {
-      if (budget <= 0) break;
-      if (!usableKeys.has(producer)) continue;
-      const reviewer = REVIEWERS[producer].find((r) => usableKeys.has(r) && r !== producer);
-      if (!reviewer) continue;
-      const claims = this.selectClaims(AGENT_INFO[producer].name);
-      if (!claims.length) continue;
-      this.request(AGENT_INFO[producer].name, AGENT_INFO[reviewer].name, claims);
-      budget--;
+    // Pass 1 (always): one review per producer. Deeper passes (depth only): claims nobody checked yet go to ANOTHER reviewer, up to
+    // maxReviews. Without depth the number of requests is bounded by the number of producers whatever maxReviews says.
+    const asked = new Set<string>();
+    for (let pass = 0; pass < (settings.depth ? 3 : 1) && budget > 0; pass++) {
+      for (const producer of PRODUCER_ORDER) {
+        if (budget <= 0) break;
+        if (!usableKeys.has(producer)) continue;
+        const options = REVIEWERS[producer].filter((r) => usableKeys.has(r) && r !== producer);
+        const reviewer = options[pass % Math.max(1, options.length)];
+        if (!reviewer) continue;
+        const claims = this.selectClaims(AGENT_INFO[producer].name, asked, pass > 0);
+        if (!claims.length || (pass > 0 && claims.length < 2)) continue;
+        for (const c of claims) asked.add(c.id);
+        this.request(AGENT_INFO[producer].name, AGENT_INFO[reviewer].name, claims);
+        budget--;
+      }
     }
     if (this.pending.size === 0) return this.conclude2();
     this.barrier2 = ctx.setTimer(settings.reviewTimeoutMs + 5_000, () => this.expirePending());
   }
 
-  private selectClaims(agent: string): Finding[] {
+  private selectClaims(agent: string, exclude: Set<string> = new Set(), deeper = false): Finding[] {
     return this.env.board
       .findingsBy(agent)
-      .filter((f) => f.category !== 'missing_info' && f.classification !== 'unknown')
+      .filter((f) => f.category !== 'missing_info' && f.classification !== 'unknown' && !exclude.has(f.id) && (!deeper || f.importance !== 'low'))
       .sort((a, b) => IMPORTANCE[b.importance] * (CLASS_WEIGHT[b.classification] ?? 0) - IMPORTANCE[a.importance] * (CLASS_WEIGHT[a.classification] ?? 0))
       .slice(0, MAX_CLAIMS_PER_REQUEST);
   }

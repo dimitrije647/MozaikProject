@@ -156,15 +156,21 @@ export class AuditCoordinator {
     let budget = Math.min(settings.maxReviews, Math.max(0, settings.maxModelCalls - used - SLACK_CALLS));
     const usableKeys = new Set(usable.map((n) => auditKeyByName(n)!));
     // Reviewers that only produced deterministic findings (no model memory of the topic) can still review from their own evidence.
-    for (const producer of PRODUCER_ORDER) {
-      if (budget <= 0) break;
-      if (!usableKeys.has(producer)) continue;
-      const reviewer = AUDIT_REVIEWERS[producer].find((r) => usableKeys.has(r) && r !== producer && this.canReview(r));
-      if (!reviewer) continue;
-      const claims = this.selectClaims(AUDIT_INFO[producer].name);
-      if (!claims.length) continue;
-      this.request(AUDIT_INFO[producer].name, AUDIT_INFO[reviewer].name, claims);
-      budget--;
+    // Pass 1 (always): one review per producer. Deeper passes (depth only): claims nobody checked yet go to ANOTHER auditor, up to maxReviews.
+    const asked = new Set<string>();
+    for (let pass = 0; pass < (settings.depth ? 3 : 1) && budget > 0; pass++) {
+      for (const producer of PRODUCER_ORDER) {
+        if (budget <= 0) break;
+        if (!usableKeys.has(producer)) continue;
+        const options = AUDIT_REVIEWERS[producer].filter((r) => usableKeys.has(r) && r !== producer && this.canReview(r));
+        const reviewer = options[pass % Math.max(1, options.length)];
+        if (!reviewer) continue;
+        const claims = this.selectClaims(AUDIT_INFO[producer].name, asked);
+        if (!claims.length || (pass > 0 && claims.length < 2)) continue;
+        for (const c of claims) asked.add(c.id);
+        this.request(AUDIT_INFO[producer].name, AUDIT_INFO[reviewer].name, claims);
+        budget--;
+      }
     }
     if (this.pending.size === 0) return this.conclude2();
     this.barrier2 = ctx.setTimer(settings.reviewTimeoutMs + 5_000, () => this.expirePending());
@@ -176,10 +182,10 @@ export class AuditCoordinator {
     return calls > 0;
   }
 
-  private selectClaims(agent: string): AuditFinding[] {
+  private selectClaims(agent: string, exclude: Set<string> = new Set()): AuditFinding[] {
     return this.env.board
       .findingsBy(agent)
-      .filter((f) => REVIEWABLE.has(f.kind) && f.classification !== 'unknown')
+      .filter((f) => REVIEWABLE.has(f.kind) && f.classification !== 'unknown' && !exclude.has(f.id))
       .sort((a, b) => SEV_WEIGHT[b.severity] * (CLASS_WEIGHT[b.classification] ?? 0) - SEV_WEIGHT[a.severity] * (CLASS_WEIGHT[a.classification] ?? 0))
       .slice(0, MAX_CLAIMS_PER_REQUEST);
   }

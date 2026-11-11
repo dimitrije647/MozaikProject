@@ -1,11 +1,15 @@
 import type { InferenceRunnerConfig, Participant, SituationHandler } from '@mozaik-ai/core';
 import { toSafeError } from '../../ai/errors';
+import { SpendBudget, scopeFor } from '../../ai/budget';
+import { resolveGeneration, synthesisTaskTimeoutMs, type GenerationTimeout } from '../../ai/timeouts';
 import { DEFAULT_BUDGET, InferenceGateway, type InferenceBudget, type UsageSnapshot } from '../../ai/gateway';
+import { capOutputTokens } from '../../ai/pricing';
 import { OpenAIClient } from '../../ai/openai-http';
 import type { F1Context } from '../../audit/context';
 import { SourceStore, type CrosscheckRecord, type ParticipantStatus, type SourceRecord } from '../../discovery/f1/board';
 import { reviewMessage } from '../../discovery/f1/prompts';
 import { CrosscheckAnswer } from '../../discovery/f1/schemas';
+import { conformanceIssues } from '../../contracts/report-contract';
 import type { AgentOutcome } from '../../factory/events';
 import { BASE_KEYS, STRATEGY_INFO, type BaseKey, type ScoutDecision, type StrategyBoardStore, type StrategyFinding, type StrategyPlan } from '../../strategy/board';
 import { CHANNELS, channelById, scoutName, type ChannelId } from '../../strategy/channels';
@@ -40,6 +44,12 @@ export interface StrategyRunConfig {
   maxModelCalls?: number;
   /** `max_output_tokens` for researchers and scouts. Reviews use less, the strategist up to three times as much. Default 2500. */
   maxOutputTokens?: number;
+  /** The approved spending limit in US dollars for THIS run; null/absent = none. Enforced before every paid request. */
+  spendCapUsd?: number | null;
+  /** The campaign-wide spend ledger shared by every phase (the factory passes it). Absent = this run gets a ledger of its own with `spendCapUsd`. */
+  ledger?: SpendBudget;
+  /** Deeper work where it adds something (more cross-check passes; F4: a concept critique before the images). */
+  depth?: boolean;
   /** Maximum cross-check requests (each costs one model call). Default 6. */
   maxReviews?: number;
   /** Maximum dynamically created Channel Scouts. Default 4. */
@@ -53,6 +63,8 @@ export interface StrategyRunConfig {
   agentTimeoutMs?: number;
   reviewTimeoutMs?: number;
   callTimeoutMs?: number;
+  /** Scales the clock of long structured answers with their output cap (default: on, unless callTimeoutMs is fixed). Tests may tune it. */
+  generation?: Partial<GenerationTimeout>;
   timeoutMs?: number;
   maxRetries?: number;
   retryBaseDelayMs?: number;
@@ -129,12 +141,17 @@ export class F3Program implements RunProgram {
     private readonly config: StrategyRunConfig,
     private readonly sink: StrategySink,
   ) {
-    const analystTokens = clamp(config.maxOutputTokens, 800, 6000, 2500);
+    const analystTokens = capOutputTokens(config.model, clamp(config.maxOutputTokens, 800, 16000, 2500)).tokens;
     const synthTokens = Math.min(8000, analystTokens * 3);
+    const generation = resolveGeneration(config.generation, config.callTimeoutMs !== undefined);
     const budget: InferenceBudget = {
+      spend: scopeFor(config.ledger, config.spendCapUsd, 'F3'),
+      // a cut-off answer is asked again with a larger cap (up to what the model supports) instead of failing the agent
+      escalateTo: capOutputTokens(config.model, 16000).tokens,
       maxModelCalls: clamp(config.maxModelCalls, 1, 60, 24),
       maxOutputTokens: synthTokens,
       callTimeoutMs: clamp(config.callTimeoutMs, 50, 300_000, DEFAULT_BUDGET.callTimeoutMs),
+      generation,
       maxRetries: clamp(config.maxRetries, 0, 3, DEFAULT_BUDGET.maxRetries),
       retryBaseDelayMs: clamp(config.retryBaseDelayMs, 1, 30_000, DEFAULT_BUDGET.retryBaseDelayMs),
     };
@@ -146,8 +163,10 @@ export class F3Program implements RunProgram {
       synthTokens,
       maxModelCalls: budget.maxModelCalls,
       maxReviews: clamp(config.maxReviews, 0, 10, 6),
+      depth: config.depth === true,
       maxScouts: clamp(config.maxScouts, 0, 6, 4),
       agentTimeoutMs: clamp(config.agentTimeoutMs, 50, 600_000, 150_000),
+      synthTimeoutMs: clamp(config.agentTimeoutMs, 50, 600_000, 150_000),
       reviewTimeoutMs: clamp(config.reviewTimeoutMs, 50, 600_000, 90_000),
       maxSearches: clamp(config.maxSearches, 0, 5, 3),
       maxCompetitorPages: clamp(config.maxCompetitorPages, 0, 6, 4),
@@ -155,6 +174,8 @@ export class F3Program implements RunProgram {
       fixtureSources: config.fixtureSources === true,
       now: config.now ?? new Date(),
     };
+    // the synthesis writes the longest answer of the phase: its task deadline follows the clock of its request (and the one larger re-ask)
+    if (generation) this.settings.synthTimeoutMs = Math.max(this.settings.agentTimeoutMs, synthesisTaskTimeoutMs(synthTokens, budget.escalateTo, generation));
     this.tools = {
       web: config.tools?.web ?? new WebFetchTool({ maxPages: this.settings.maxCompetitorPages * this.settings.maxPagesPerCompetitor + 2 }),
       search: config.tools?.search ?? createWebSearchFromEnv(),
@@ -365,7 +386,7 @@ export class F3Program implements RunProgram {
             partial,
             facts: env.facts,
           };
-          self.openTask(settings.agentTimeoutMs, () => {
+          self.openTask(settings.synthTimeoutMs, () => {
             ctx.emit('task.completed', { agent: name, outcome: 'failed', error: toSafeError('timeout') }, self.participant);
             ctx.emit('phase.failed', { phase: PHASE, reason: 'synthesis_failed', errors: [{ agent: name, error: toSafeError('timeout') }] }, self.participant);
           });
@@ -398,6 +419,10 @@ export class F3Program implements RunProgram {
                 { label: 'Channel Scouts created', value: String(final.scoutDecisions.filter((d) => d.selected).length) },
                 { label: 'Cross-check requests', value: String(new Set(final.crosschecks.map((c) => c.requestId)).size) },
               ];
+              // BOUNDARY CHECK: the finished report must satisfy the schema its reader (F4) uses. A report that does not is still saved (the
+              // analysis was paid for and is never thrown away) and the exact fields are recorded, so the problem is named before anything else is spent.
+              const contract = conformanceIssues(CampaignStrategyReport, report);
+              if (contract.length) issues.push({ type: 'report_contract', agent: name, detail: `The finished strategy does not match its own format: ${contract.slice(0, 5).map((i) => `${i.path} ${i.message}`).join('; ')}${contract.length > 5 ? ` (and ${contract.length - 5} more)` : ''}.` });
               const meta: StrategyReportMeta = {
                 schemaVersion: STRATEGY_REPORT_VERSION,
                 model: settings.model,

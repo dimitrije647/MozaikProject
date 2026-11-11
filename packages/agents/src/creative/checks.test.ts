@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { before, describe, it } from 'node:test';
 import { CreativeBoardStore } from './board';
-import { assetFindings, channelFindings, claimFindings, consistencyFindings, dedupe } from './checks';
+import { assetFindings, channelFindings, claimFindings, consistencyFindings, dedupe, unsupportedDates, unsupportedDestinations } from './checks';
 import { foldDiacritics, promiseMatches } from './lexicon';
 import type { AssetRecord, CopyVariantRecord, LandingContent } from './schemas';
 import { buildChain, type Chain } from '../testing/chain';
@@ -177,5 +177,48 @@ describe('deterministic creative checks', () => {
     const f = claims([variant({ body: 'We guarantee results. We guarantee results.' })]);
     const twice = dedupe([...f, ...f]);
     assert.equal(twice.length, f.length);
+  });
+});
+
+// A project may have NO website. The only source of a web address, an e-mail address or a calendar date is the user, so a model-written one is an invention.
+describe('invented destinations and dates (a project without a website)', () => {
+  it('no website supplied: any web address, www address or e-mail address is found; plain words and numbers are not', () => {
+    assert.deepEqual(unsupportedDestinations('Visit jigjoy.com today', []), ['jigjoy.com']);
+    assert.deepEqual(unsupportedDestinations('Start at https://app.jigjoy.io/start now.', []), ['https://app.jigjoy.io/start']);
+    assert.deepEqual(unsupportedDestinations('Go to www.example.rs!', []), ['www.example.rs']);
+    assert.deepEqual(unsupportedDestinations('Write to hello@jigjoy.com', []), ['hello@jigjoy.com']);
+    for (const ok of ['Learn more', 'Get started in 3.5 minutes', 'e.g. a daily report', 'Works with Node.js and 24/7 support', 'Link in bio']) assert.deepEqual(unsupportedDestinations(ok, []), [], ok);
+  });
+
+  it('a website the USER supplied (and its subdomains) is allowed; every other address is still an invention', () => {
+    const allowed = ['https://www.jigjoy.com/'];
+    assert.deepEqual(unsupportedDestinations('See jigjoy.com or app.jigjoy.com/start', allowed), []);
+    assert.deepEqual(unsupportedDestinations('See jigjoy.com or competitor.com', allowed), ['competitor.com']);
+    assert.deepEqual(unsupportedDestinations('Mail info@jigjoy.com', allowed), []);
+  });
+
+  it('dates: numeric, ISO and written dates in several languages are found unless they appear in the supplied material', () => {
+    for (const t of ['Offer ends 31 May', 'Valid until May 31', 'From 12.05.2026', 'Starts 2026-06-01', 'Do 15. maj', 'Akcija do 3. januara', '1st of June', 'Evento el 5 de marzo']) assert.ok(unsupportedDates(t, '').length > 0, t);
+    assert.deepEqual(unsupportedDates('Class starts 31 May', 'the course starts 31 may in novi sad'), [], 'a date the user gave is fine');
+    for (const ok of ['Learn in 5 minutes', 'Open 24/7', 'Version 3.5', 'Step 1.2 of 5', 'In May we celebrate nothing']) assert.deepEqual(unsupportedDates(ok, ''), [], ok);
+  });
+
+  it('claimFindings: with allowedUrls=[] an invented address is a BLOCKER on that variant, an invented date is MAJOR; without the option nothing changes', async () => {
+    const chain2 = await buildChain();
+    const b = new CreativeBoardStore();
+    b.concepts.push({ id: 'K1', name: 'n', angle: 'a', keyMessage: 'k', audience: 'x', ctaType: 'learn_more', ctaText: 'Learn more', visualIdea: 'v' });
+    b.variants.push(variant({ id: 'V1', body: 'Try it at jigjoy.com' }), variant({ id: 'V2', body: 'Early access until 31 May' }), variant({ id: 'V3', body: 'Create agents for everyday tasks.' }));
+    b.landing = null;
+    const strict = claimFindings({ board: b, f1: chain2.f1, f3: chain2.f3, language: 'en', allowedUrls: [] });
+    const v1 = strict.find((f) => f.assetRef === 'V1' && /web or e-mail address/.test(f.finding));
+    assert.ok(v1 && v1.severity === 'blocker' && v1.responsibleAgent === 'copywriter' && v1.source === 'deterministic');
+    const v2 = strict.find((f) => f.assetRef === 'V2' && /date/.test(f.finding));
+    assert.ok(v2 && v2.severity === 'major');
+    assert.ok(!strict.some((f) => f.assetRef === 'V3'), 'clean copy raises nothing');
+    const lenient = claimFindings({ board: b, f1: chain2.f1, f3: chain2.f3, language: 'en' });
+    assert.ok(!lenient.some((f) => /web or e-mail address/.test(f.finding)), 'the address check runs only when the caller says which websites the user supplied');
+    // a supplied website makes its own address legitimate
+    const withSite = claimFindings({ board: b, f1: chain2.f1, f3: chain2.f3, language: 'en', allowedUrls: ['https://jigjoy.com'] });
+    assert.ok(!withSite.some((f) => f.assetRef === 'V1' && /web or e-mail address/.test(f.finding)));
   });
 });

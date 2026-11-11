@@ -1,4 +1,5 @@
 import { CampaignStrategyReport } from '../strategy/schemas';
+import { readStoredReport, type ReadNotes, type ReportFailure } from '../contracts/report-contract';
 import type { F1Context } from '../audit/context';
 import type { F2Context } from '../strategy/context';
 import type { ChannelId } from '../strategy/channels';
@@ -24,12 +25,24 @@ interface StoredStrategyMeta {
   model?: string;
 }
 
-/** Returns null when the stored strategy is not a valid F3 report. */
-export function buildF3Context(row: { id: string; f1ReportId: string; f2AuditId: string; schemaVersion: number; reportJson: unknown; metadataJson: unknown; createdAt: Date }): F3Context | null {
-  const parsed = CampaignStrategyReport.safeParse(row.reportJson);
-  if (!parsed.success) return null;
+export type ReadF3 = { ok: true; context: F3Context; notes: ReadNotes } | { ok: false; failure: ReportFailure };
+
+/**
+ * Reads a stored F3 strategy through the shared contract. This is the one gate between F3 and F4: a report that F3 produced with this
+ * build always passes it (see the producer/consumer test), and a report that does not is explained field by field. The stored row is not changed.
+ */
+export function readF3Report(row: { id: string; f1ReportId: string; f2AuditId: string; schemaVersion: number; reportJson: unknown; metadataJson: unknown; createdAt: Date }): ReadF3 {
+  const read = readStoredReport('F3', row, CampaignStrategyReport);
+  if (!read.ok) return read;
   const meta = (row.metadataJson ?? {}) as StoredStrategyMeta;
-  return { strategyId: row.id, schemaVersion: row.schemaVersion, generatedAt: meta.generatedAt ?? row.createdAt.toISOString(), model: meta.model ?? null, partial: parsed.data.partial, f1ReportId: row.f1ReportId, f2AuditId: row.f2AuditId, report: parsed.data };
+  const context: F3Context = { strategyId: row.id, schemaVersion: row.schemaVersion, generatedAt: meta.generatedAt ?? row.createdAt.toISOString(), model: meta.model ?? null, partial: read.data.partial, f1ReportId: row.f1ReportId, f2AuditId: row.f2AuditId, report: read.data };
+  return { ok: true, context, notes: read.notes };
+}
+
+/** Returns null when the stored strategy cannot be read (readF3Report says exactly why). */
+export function buildF3Context(row: { id: string; f1ReportId: string; f2AuditId: string; schemaVersion: number; reportJson: unknown; metadataJson: unknown; createdAt: Date }): F3Context | null {
+  const r = readF3Report(row);
+  return r.ok ? r.context : null;
 }
 
 /** The project's own inputs for the creative run. */

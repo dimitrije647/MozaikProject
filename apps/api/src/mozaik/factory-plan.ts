@@ -3,6 +3,11 @@
  * results to reuse, the resulting phase plan and the honest outcome label. No I/O: everything here is unit-testable and the
  * service feeds it what is actually persisted.
  */
+import { HYBRID_PRESET, NO_AI_PRESET, mergeHybrid, type HybridSettings } from '@launchpilot/agents';
+
+/** NO AI HYBRID never generates images: a request that asks for one is refused with this error (an image model, an image budget, original AI images). */
+export class ImageGenerationForbidden extends Error {}
+
 export type PhaseKey = 'discovery' | 'audit' | 'strategy' | 'creative';
 export const PHASE_ORDER: PhaseKey[] = ['discovery', 'audit', 'strategy', 'creative'];
 export const PHASE_META: Record<PhaseKey, { code: 'F1' | 'F2' | 'F3' | 'F4'; title: string; mode: string }> = {
@@ -23,6 +28,17 @@ export interface ReusedInfo {
   partial: boolean;
 }
 
+/**
+ * WHY a phase failed, saved with the phase: which participant failed first, the machine-readable code, a safe sentence and the safe specifics.
+ * Read from the child run's own failure events; never contains a provider message, a prompt or a credential.
+ */
+export interface PhaseFailure {
+  agent: string | null;
+  code: string | null;
+  message: string;
+  detail: string | null;
+}
+
 /** One phase of the factory run as persisted in FactoryRun.phasesJson. */
 export interface FactoryPhaseState {
   phase: PhaseKey;
@@ -39,6 +55,8 @@ export interface FactoryPhaseState {
   completedAt: string | null;
   /** A safe, user-facing message (never a provider message or a credential). */
   error: string | null;
+  /** Absent on runs saved before it was recorded: the run view then derives it, read-only, from the child run's events. */
+  failure?: PhaseFailure | null;
   reused: ReusedInfo | null;
 }
 
@@ -70,10 +88,34 @@ export interface FactorySettings {
     visionReviews: number;
     maxModelCalls: number;
     maxOutputTokens: number | null;
+    /** Several ORIGINAL images per concept, placed by the deterministic allocation planner. false = one image per concept (First Test, Demo). */
+    variations: boolean;
+    /** Layout formats cut from each original (variations only). */
+    layoutsPerOriginal: number;
+    /** Images requested at the same time. Each one is its own provider request; OpenAI rate limits and Retry-After are respected. */
+    imageConcurrency: number;
+    /** Cap on copy variants over all concepts. */
+    maxVariants: number;
+    /** How "auto" picks the image model: economy (First Test, Demo), balanced, or quality (Full Production). An explicit model ignores it. */
+    imageModelStrategy: 'economy' | 'balanced' | 'quality';
   };
+  /**
+   * LEGACY and always null for new runs: earlier versions split the approved amount into a text pool and an image pool. There is now ONE campaign
+   * budget shared by everything that is paid for; the field only exists so older saved runs and older API clients keep their shape.
+   */
+  textBudgetUsd: number | null;
+  /** Deeper work where it adds something: more cross-check passes in F1-F3 and a concept critique before the images in F4. */
+  depth: boolean;
+  /** Hybrid Production only: a few original AI images plus template creatives rendered locally. null on every other preset. */
+  hybrid: HybridSettings | null;
 }
 
-export type PresetId = 'first_test' | 'demo';
+export type PresetId = 'first_test' | 'demo' | 'full_production' | 'hybrid_production' | 'no_ai_hybrid';
+
+/** The spending a preset aims at (US dollars, total over text and images). null = the preset has no target and asks for no budget. */
+export const PRESET_TARGET_USD: Record<PresetId, number | null> = { first_test: null, demo: null, full_production: 5, hybrid_production: null, no_ai_hybrid: null };
+/** Presets that must be started with an explicit, confirmed spending limit. */
+export const BUDGET_REQUIRED: Record<PresetId, boolean> = { first_test: false, demo: false, full_production: true, hybrid_production: true, no_ai_hybrid: true };
 
 /**
  * FIRST TEST: the lowest-cost real run (one concept, one channel, one low-quality image, regeneration and vision off).
@@ -85,14 +127,69 @@ export const PRESETS: Record<PresetId, FactorySettings> = {
     f1: { maxModelCalls: 12, maxReviews: 3, maxOutputTokens: null },
     f2: { maxModelCalls: 12, maxReviews: 3, maxOutputTokens: null },
     f3: { maxModelCalls: 14, maxScouts: 3, maxReviews: 3, maxOutputTokens: null, useHolidayCalendar: false, competitorUrls: [], goal: null, budgetNote: null },
-    f4: { imageModel: 'auto', imageQuality: 'low', imageSize: null, concepts: 1, channels: ['instagram'], landing: true, maxImages: 1, maxRegenerations: 0, maxLayoutsPerConcept: 4, maxRepairRounds: 2, visionReviews: 0, maxModelCalls: 12, maxOutputTokens: null },
+    f4: { imageModel: 'auto', imageQuality: 'low', imageSize: null, concepts: 1, channels: ['instagram'], landing: true, maxImages: 1, maxRegenerations: 0, maxLayoutsPerConcept: 4, maxRepairRounds: 2, visionReviews: 0, maxModelCalls: 12, maxOutputTokens: null, variations: false, layoutsPerOriginal: 3, imageConcurrency: 2, maxVariants: 12, imageModelStrategy: 'economy' },
+    textBudgetUsd: null,
+    depth: false,
+    hybrid: null,
   },
   demo: {
     model: null,
     f1: { maxModelCalls: 16, maxReviews: 4, maxOutputTokens: null },
     f2: { maxModelCalls: 14, maxReviews: 4, maxOutputTokens: null },
     f3: { maxModelCalls: 24, maxScouts: 4, maxReviews: 6, maxOutputTokens: null, useHolidayCalendar: false, competitorUrls: [], goal: null, budgetNote: null },
-    f4: { imageModel: 'auto', imageQuality: 'medium', imageSize: null, concepts: 3, channels: null, landing: true, maxImages: 3, maxRegenerations: 0, maxLayoutsPerConcept: 4, maxRepairRounds: 2, visionReviews: 2, maxModelCalls: 16, maxOutputTokens: null },
+    f4: { imageModel: 'auto', imageQuality: 'medium', imageSize: null, concepts: 3, channels: null, landing: true, maxImages: 3, maxRegenerations: 0, maxLayoutsPerConcept: 4, maxRepairRounds: 2, visionReviews: 2, maxModelCalls: 16, maxOutputTokens: null, variations: false, layoutsPerOriginal: 3, imageConcurrency: 2, maxVariants: 12, imageModelStrategy: 'economy' },
+    textBudgetUsd: null,
+    depth: false,
+    hybrid: null,
+  },
+  /**
+   * FULL PRODUCTION: a complete, visually rich campaign. Five concepts, 20 ORIGINAL AI images (several per concept, placed by the
+   * allocation planner), richer research and copy, up to three repair rounds and sampled vision reviews. The higher call and token
+   * limits are CEILINGS that make better work possible, not budgets to spend: every agent still stops when its task is done. The
+   * image model stays "auto" (a current model from the user's own key; never a silently dearer one), the text model stays the one
+   * saved in Settings. It targets about $5 in total, shown as an estimate before anything runs; the user must approve a spending limit.
+   */
+  full_production: {
+    model: null,
+    f1: { maxModelCalls: 25, maxReviews: 6, maxOutputTokens: 6000 },
+    f2: { maxModelCalls: 25, maxReviews: 6, maxOutputTokens: 6000 },
+    f3: { maxModelCalls: 30, maxScouts: 6, maxReviews: 8, maxOutputTokens: 6000, useHolidayCalendar: false, competitorUrls: [], goal: null, budgetNote: null },
+    f4: { imageModel: 'auto', imageQuality: 'high', imageSize: null, concepts: 5, channels: null, landing: true, maxImages: 20, maxRegenerations: 0, maxLayoutsPerConcept: 4, maxRepairRounds: 3, visionReviews: 4, maxModelCalls: 60, maxOutputTokens: 6000, variations: true, layoutsPerOriginal: 3, imageConcurrency: 3, maxVariants: 24, imageModelStrategy: 'quality' },
+    textBudgetUsd: null,
+    depth: true,
+    hybrid: null,
+  },
+  /**
+   * HYBRID PRODUCTION: a few ORIGINAL AI images plus many TEMPLATE creatives rendered locally from them (no image request per template
+   * creative). Default: 5 concepts x (1 original + 3 template creatives) = 5 AI images + 15 template creatives = 20 finished creatives.
+   * Quality First image model and medium quality (high is a setting); the saved text model is kept. The template library, the visual
+   * direction and the template choice are local and deterministic; the only paid requests are the text calls and the original images.
+   */
+  hybrid_production: {
+    model: null,
+    f1: { maxModelCalls: 25, maxReviews: 6, maxOutputTokens: 6000 },
+    f2: { maxModelCalls: 25, maxReviews: 6, maxOutputTokens: 6000 },
+    f3: { maxModelCalls: 30, maxScouts: 6, maxReviews: 8, maxOutputTokens: 6000, useHolidayCalendar: false, competitorUrls: [], goal: null, budgetNote: null },
+    f4: { imageModel: 'auto', imageQuality: 'medium', imageSize: null, concepts: 5, channels: null, landing: true, maxImages: 5, maxRegenerations: 0, maxLayoutsPerConcept: 4, maxRepairRounds: 3, visionReviews: 4, maxModelCalls: 60, maxOutputTokens: 6000, variations: true, layoutsPerOriginal: 3, imageConcurrency: 3, maxVariants: 24, imageModelStrategy: 'quality' },
+    textBudgetUsd: null,
+    depth: true,
+    hybrid: structuredClone(HYBRID_PRESET),
+  },
+  /**
+   * NO AI HYBRID: the campaign is planned, written, designed and checked by the Mozaik agents, but NO IMAGE IS EVER GENERATED. 5 concepts x 4 template
+   * creatives = 20 finished creatives, all rendered locally from the user's own pictures, approved website / repository pictures and licensed stock
+   * (or from typography when none exist), in the chosen template collection and palette. The only paid requests are text-model calls (and paid search
+   * only when the user approved it). The saved text model is kept; the image model is null and cannot be set.
+   */
+  no_ai_hybrid: {
+    model: null,
+    f1: { maxModelCalls: 25, maxReviews: 6, maxOutputTokens: 6000 },
+    f2: { maxModelCalls: 25, maxReviews: 6, maxOutputTokens: 6000 },
+    f3: { maxModelCalls: 30, maxScouts: 6, maxReviews: 8, maxOutputTokens: 6000, useHolidayCalendar: false, competitorUrls: [], goal: null, budgetNote: null },
+    f4: { imageModel: null, imageQuality: 'low', imageSize: null, concepts: 5, channels: null, landing: true, maxImages: 0, maxRegenerations: 0, maxLayoutsPerConcept: 4, maxRepairRounds: 3, visionReviews: 2, maxModelCalls: 60, maxOutputTokens: 6000, variations: false, layoutsPerOriginal: 3, imageConcurrency: 1, maxVariants: 24, imageModelStrategy: 'economy' },
+    textBudgetUsd: null,
+    depth: false,
+    hybrid: structuredClone(NO_AI_PRESET),
   },
 };
 
@@ -103,6 +200,11 @@ export interface SettingsPatch {
   f2?: Patch<FactorySettings['f2']>;
   f3?: Patch<FactorySettings['f3']>;
   f4?: Patch<FactorySettings['f4']>;
+  /** Ignored: kept so older clients still validate. */
+  textBudgetUsd?: number | null;
+  depth?: boolean;
+  /** Hybrid Production only (ignored by the other presets). */
+  hybrid?: Record<string, unknown> | null;
 }
 
 const pick = <T extends object>(base: T, patch: Patch<T> | undefined, nullable: (keyof T)[] = []): T => {
@@ -115,17 +217,56 @@ const pick = <T extends object>(base: T, patch: Patch<T> | undefined, nullable: 
   return out;
 };
 
+/** THE GUARANTEE at the planning layer: NO AI HYBRID refuses (never silently changes) anything that would make an image request. */
+function refuseImages(patch: SettingsPatch) {
+  const h = (patch.hybrid ?? {}) as { originals?: unknown; imagery?: { generation?: unknown } };
+  const problems: string[] = [];
+  if (typeof patch.f4?.imageModel === 'string' && patch.f4.imageModel.trim()) problems.push('an image model was selected');
+  if (Number(patch.f4?.maxImages ?? 0) > 0) problems.push(`${patch.f4?.maxImages} image request(s) were allowed`);
+  if (Number(patch.f4?.maxRegenerations ?? 0) > 0) problems.push('image regeneration was allowed');
+  if (Number(h.originals ?? 0) > 0) problems.push(`${h.originals} original AI image(s) were requested`);
+  if (h.imagery?.generation === 'allowed') problems.push('image generation was switched on');
+  if (patch.f4?.variations === true) problems.push('several original images per concept were requested');
+  if (problems.length) throw new ImageGenerationForbidden(`NO AI HYBRID never generates images, so this request was refused: ${problems.join('; ')}. Nothing was sent to OpenAI.`);
+}
+
 export function mergeSettings(preset: PresetId, patch: SettingsPatch = {}): FactorySettings {
   const base = structuredClone(PRESETS[preset]);
+  const noAi = preset === 'no_ai_hybrid';
+  if (noAi) refuseImages(patch);
   const f4 = pick(base.f4, patch.f4, ['imageModel', 'channels', 'imageSize', 'maxOutputTokens']);
-  // an explicit image cap can never exceed the number of concepts (one base image per concept)
-  f4.maxImages = Math.min(f4.maxImages, f4.concepts);
+  // Hybrid Production: the number of originals IS the image cap; the template creatives are not images and have no cap here
+  let hybrid: HybridSettings | null = null;
+  if (noAi) {
+    // originals 0 and the guarantee are forced; the user's imagery choices (automatic stock mode, pictures per concept) are merged field by field
+    // NO_AI_PRESET is the BASE (not HYBRID_PRESET): a field the client left out keeps NO AI HYBRID's own default (20 creatives), never Hybrid Production's 15
+    hybrid = mergeHybrid({ ...(patch.hybrid ?? {}), originals: 0, imagery: { ...NO_AI_PRESET.imagery, ...(((patch.hybrid ?? {}) as { imagery?: object }).imagery ?? {}), generation: 'forbidden' } }, NO_AI_PRESET);
+    // the design is the ONE place the automatic stock choice is made
+    if (hybrid.design) hybrid = { ...hybrid, imagery: { ...hybrid.imagery, autoStock: hybrid.design.autoStock === true } };
+    f4.imageModel = null;
+    f4.maxImages = 0;
+    f4.maxRegenerations = 0;
+    f4.variations = false;
+    f4.visionReviews = Math.min(f4.visionReviews, 4);
+  } else if (preset === 'hybrid_production') {
+    hybrid = mergeHybrid({ ...base.hybrid, ...(patch.hybrid ?? {}), ...(patch.hybrid?.originals === undefined && patch.f4?.maxImages != null ? { originals: patch.f4.maxImages } : {}) });
+  }
+  if (hybrid && !noAi) {
+    f4.variations = true;
+    f4.maxImages = hybrid.originals;
+  }
+  // with ONE image per concept an explicit image cap can never exceed the number of concepts; with several originals per concept
+  // (variations) it is the number of originals and the allocation planner shares them out
+  f4.maxImages = f4.variations ? Math.min(f4.maxImages, 40) : Math.min(f4.maxImages, f4.concepts);
   return {
     model: patch.model ?? base.model,
     f1: pick(base.f1, patch.f1, ['maxOutputTokens']),
     f2: pick(base.f2, patch.f2, ['maxOutputTokens']),
     f3: pick(base.f3, patch.f3, ['maxOutputTokens', 'goal', 'budgetNote']),
     f4: f4.imageModel ? f4 : { ...f4, maxImages: 0, maxRegenerations: 0, visionReviews: f4.visionReviews },
+    textBudgetUsd: null, // one shared campaign budget: a client-supplied text pool is ignored
+    depth: patch.depth ?? base.depth,
+    hybrid,
   };
 }
 

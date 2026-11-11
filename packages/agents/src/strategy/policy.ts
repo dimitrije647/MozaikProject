@@ -5,7 +5,7 @@ import type { F1Context } from '../audit/context';
 import { STRATEGY_INFO, strategyRoleByName, type StrategyAgentKind, type StrategyBoard, type StrategyFinding } from './board';
 import { CHANNELS, type ChannelId } from './channels';
 import { STALE_AFTER_DAYS, ageDays, type F2Context, type StrategyFacts, type StrategyInput } from './context';
-import { STRATEGY_REPORT_VERSION, type CampaignStrategyReport, type F4CreativeBrief, type LlmStrategyFinding, type StrategyDraft, type StrategyStatement } from './schemas';
+import { STORED_LIMITS, STRATEGY_REPORT_VERSION, type CampaignStrategyReport, type F4CreativeBrief, type LlmStrategyFinding, type StrategyDraft, type StrategyStatement } from './schemas';
 
 /**
  * The F3 evidence policy, enforced IN CODE on everything the strategy agents produce. Same classes as F1/F2:
@@ -35,7 +35,11 @@ export interface StrategyPolicyIssue {
     | 'caveat_added'
     | 'channel_not_evaluated'
     | 'channel_capped'
-    | 'contradiction_added';
+    | 'contradiction_added'
+    /** A list was cut to the length the stored report allows (the entries left out are named in the detail; nothing is cut silently). */
+    | 'list_capped'
+    /** The finished report did not conform to the schema its reader uses. It is still saved (paid work is never discarded) and the exact fields are named. */
+    | 'report_contract';
   agent: string;
   detail: string;
 }
@@ -367,6 +371,11 @@ export function finalizeStrategy(draftIn: StrategyDraft, board: StrategyBoard, c
     issues.push({ type: 'contradiction_added', agent: who, detail: `Disputed finding ${f.id} was missing from the disagreements and was added.` });
   }
 
+  if (disagreements.length > STORED_LIMITS.disagreements) {
+    issues.push({ type: 'list_capped', agent: who, detail: `${disagreements.length - STORED_LIMITS.disagreements} further disagreement(s) are not listed (the report lists at most ${STORED_LIMITS.disagreements}); every disputed finding stays in the evidence section.` });
+    disagreements.length = STORED_LIMITS.disagreements;
+  }
+
   const pm = f1.report.productManifest;
   const ageF2 = ageDays(args.now, f2.generatedAt);
   const ageF1 = ageDays(args.now, f1.generatedAt);
@@ -376,7 +385,9 @@ export function finalizeStrategy(draftIn: StrategyDraft, board: StrategyBoard, c
 
   const palette = pm.brand?.palette ?? [];
   const f2Claims = f2.findings.filter((f) => f.kind === 'claim_on_source').map((f) => ({ claim: f.statement.slice(0, 240), reason: `Flagged by the Marketing Audit (${f.id}): it needs evidence before it is used in advertising.` }));
-  const claimsToAvoid = [...draft.creativeBrief.claimsToAvoid, ...f2Claims].filter((c, i, a) => a.findIndex((x) => normalizeText(x.claim) === normalizeText(c.claim)) === i).slice(0, 12);
+  const allClaims = [...draft.creativeBrief.claimsToAvoid, ...f2Claims].filter((c, i, a) => a.findIndex((x) => normalizeText(x.claim) === normalizeText(c.claim)) === i);
+  const claimsToAvoid = allClaims.slice(0, STORED_LIMITS.claimsToAvoid);
+  if (allClaims.length > claimsToAvoid.length) issues.push({ type: 'list_capped', agent: who, detail: `${allClaims.length - claimsToAvoid.length} claim(s) to avoid are not listed in the creative brief (it lists at most ${STORED_LIMITS.claimsToAvoid}: the strategist's first, then the ones the Marketing Audit flagged). The audit findings that flagged them stay in the F2 audit.` });
   const brief: F4CreativeBrief = {
     ...draft.creativeBrief,
     claimsToAvoid,

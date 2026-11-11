@@ -18,7 +18,11 @@ export type ProviderErrorCode =
   | 'timeout'
   | 'cancelled'
   | 'budget_exceeded'
-  | 'source_unavailable';
+  /** The approved spending limit (US dollars) of this campaign would be exceeded by the next request. */
+  | 'spend_limit'
+  | 'source_unavailable'
+  /** NO AI HYBRID never generates an image: the request was refused before anything was sent. */
+  | 'image_generation_forbidden';
 
 export const SAFE_PROVIDER_MESSAGES: Record<ProviderErrorCode, string> = {
   invalid_api_key: 'OpenAI rejected the API key. Check or replace the key in Settings > AI providers.',
@@ -33,7 +37,9 @@ export const SAFE_PROVIDER_MESSAGES: Record<ProviderErrorCode, string> = {
   timeout: 'The model did not answer in time.',
   cancelled: 'The run was cancelled.',
   budget_exceeded: 'The per-run limit on model calls was reached, so no further calls were made.',
+  spend_limit: 'The approved spending limit for this campaign would be exceeded, so no further paid request was made.',
   source_unavailable: 'The source this agent needs could not be retrieved or read.',
+  image_generation_forbidden: 'NO AI HYBRID never generates images, so the image request was refused before anything was sent to the provider.',
 };
 
 export class ProviderError extends Error {
@@ -78,7 +84,7 @@ export function sanitizeProviderText(value: unknown, max = 240): string | null {
 export interface SafeProviderError {
   code: ProviderErrorCode;
   message: string;
-  /** For invalid_response only: which fields broke which rule (paths and zod messages, never values). */
+  /** A safe sentence with the specifics: for invalid_response which fields broke which rule (paths and zod messages, never values); for timeout how long the request was given and that it may still have been billed. */
   detail?: string;
   /** HTTP status of a provider rejection, when there was one. */
   status?: number;
@@ -111,7 +117,8 @@ export function classifyHttpError(status: number, body: unknown, retryAfterHeade
   const provider: ProviderDiagnostics | undefined = keep
     ? { code: code || undefined, type: type || undefined, param: typeof err?.param === 'string' ? err.param.slice(0, 80) : undefined, message: sanitizeProviderText(err?.message) ?? undefined }
     : undefined;
-  const retryAfterMs = retryAfterHeader && /^\d+$/.test(retryAfterHeader) ? Math.min(Number(retryAfterHeader) * 1000, 15_000) : undefined;
+  // The provider's Retry-After is honored (up to a minute) instead of retrying early.
+  const retryAfterMs = retryAfterHeader && /^\d+$/.test(retryAfterHeader) ? Math.min(Number(retryAfterHeader) * 1000, 60_000) : undefined;
 
   if (status === 401 || code === 'invalid_api_key') return new ProviderError('invalid_api_key', { status });
   if (code === 'insufficient_quota' || type === 'insufficient_quota') return new ProviderError('insufficient_quota', { status, provider });

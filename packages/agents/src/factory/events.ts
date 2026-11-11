@@ -36,6 +36,15 @@ export const FACTORY_EVENT_TYPES = [
   'landing.proposed',
   'visual.generated',
   'layout.completed',
+  'visual.direction.published',
+  'template.selection.completed',
+  'images.sourcing.requested',
+  'images.sourced',
+  'image.generation.refused',
+  'template.quality.requested',
+  'template.quality.completed',
+  'concept.review.requested',
+  'concept.review.completed',
   'review.requested',
   'review.completed',
   'fix.requested',
@@ -92,11 +101,27 @@ export interface FactoryEventPayloads {
   /** F4: the structured landing page content. */
   'landing.proposed': { agent: string; summary: string; content: unknown; missingInformation: string[] };
   /** F4: a base image (or brand-colored base) was produced and STORED; only the asset reference travels, never the bytes. */
-  'visual.generated': { agent: string; conceptId: string; asset: unknown; failed: boolean; error?: SafeProviderError; directionSummary: string; /** What happened to this concept's image (generated / failed / skipped, with the reason). */ result?: unknown };
+  'visual.generated': { agent: string; conceptId: string; /** null when a planned image failed: no stand-in asset is stored for a single failed image of a concept that has several. */ asset: unknown | null; failed: boolean; error?: SafeProviderError; directionSummary: string; /** What happened to this concept's image (generated / failed / skipped, with the reason). */ result?: unknown; /** Several images per concept: the planned image this event is about, and its full record. */ variationId?: string; variation?: unknown };
   /** F4: the layouts of one concept were rendered (asset references only). */
-  'layout.completed': { agent: string; conceptId: string; assets: unknown[]; layouts: unknown[]; skipped: unknown[] };
+  'layout.completed': { agent: string; conceptId: string; assets: unknown[]; layouts: unknown[]; skipped: unknown[]; /** Hybrid Production: what happened to each template creative of this report (rendered / fallback / failed / skipped). */ templateCreatives?: unknown[] };
+  /** F4 Hybrid Production: the Visual Researcher published the Visual Direction Brief (style, palette, composition, references with their permission status). */
+  'visual.direction.published': { agent: string; direction: unknown; refined: boolean; note: string; /** a DiscoverySummary when web visual discovery ran (candidates and reference links only) */ discovery?: unknown };
+  /** F4 Hybrid Production: the Template Selector chose a template for every planned template creative (a TemplateSelectionPlan). */
+  'template.selection.completed': { agent: string; plan: unknown; mode: 'automatic' | 'assisted' | 'manual'; modelAssisted: boolean; note: string };
+  /** F4 NO AI HYBRID: the coordinator asks the Visual Researcher to source and allocate pictures for the planned creatives (existing, website, repository, licensed). */
+  'images.sourcing.requested': { slots: number; concepts: number };
+  /** F4 NO AI HYBRID: the Visual Researcher answers with the approved pictures, their rights and which picture each creative uses (no bytes). */
+  'images.sourced': { agent: string; summary: string; sourcing: unknown };
+  /** F4 NO AI HYBRID: something tried to request an AI image and the guard refused it before anything was sent. Carries no prompt and no secret. */
+  'image.generation.refused': { agent: string | null; reason: 'no_ai_hybrid'; count: number };
+  /** F4 Hybrid Production: the coordinator asks the Template Quality Reviewer to verify the template side of the export. */
+  'template.quality.requested': { planned: number };
+  'template.quality.completed': { agent: string; report: unknown; error?: string };
   'review.requested': { round: number; scope: { variantIds: string[]; assetIds: string[]; landing: boolean } };
-  'review.completed': { agent: string; round: number; findings: unknown[]; summary: string; modelReview: 'done' | 'partial' | 'failed' | 'skipped' };
+  'review.completed': { agent: string; round: number; findings: unknown[]; summary: string; modelReview: 'done' | 'partial' | 'failed' | 'skipped'; /** The six acceptance criteria as scored by the reviewer (null when only images were reviewed). */ scores?: unknown; /** Review work left out, with the reason (a limit, a failure). */ skipped?: unknown[] };
+  /** F4 (depth): the concepts are critiqued BEFORE any image is paid for. */
+  'concept.review.requested': { concepts: unknown[] };
+  'concept.review.completed': { agent: string; critique: unknown | null; deterministic: unknown[]; modelReview: 'done' | 'failed' | 'skipped' };
   /** F4: the coordinator hands the open findings of a round to the Fixer. */
   'fix.requested': { round: number; findingIds: string[] };
   /** F4: the Fixer asks the owner of a deliverable to correct it (wave 1: copy/landing/image, wave 2: layouts). */

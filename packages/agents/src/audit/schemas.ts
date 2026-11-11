@@ -66,6 +66,14 @@ export type AuditIssue = z.infer<typeof AuditIssue>;
 
 export const AUDIT_REPORT_VERSION = 1;
 
+/**
+ * LIMITS OF THE STORED AUDIT. The auditor's draft is held to the stricter limit (that is all the model may write). The policy layer then adds
+ * EVERY disputed finding the draft left out to the contradictions, so the stored audit must accept what the policy produces. Producer
+ * (policy.ts) and schema share this number; a producer/consumer test fails if they drift apart.
+ */
+export const STORED_AUDIT_LIMITS = { contradictions: 40 } as const;
+const Contradiction = z.object({ topic: z.string().max(200), detail: text(700), findingIds: z.array(z.string().max(20)).max(8), status: z.enum(['open', 'resolved']) });
+
 export const AuditReportDraft = z.object({
   schemaVersion: z.number().int(),
   language: z.string().max(40),
@@ -78,9 +86,7 @@ export const AuditReportDraft = z.object({
   messaging: Section,
   presence: Section,
   mainProblems: z.array(AuditIssue).max(10),
-  contradictions: z
-    .array(z.object({ topic: z.string().max(200), detail: text(700), findingIds: z.array(z.string().max(20)).max(8), status: z.enum(['open', 'resolved']) }))
-    .max(10),
+  contradictions: z.array(Contradiction).max(10),
   strengths: z.array(AuditStatement).max(8),
   weaknesses: z.array(AuditStatement).max(10),
   opportunities: z
@@ -111,6 +117,8 @@ export type AuditReportDraft = z.infer<typeof AuditReportDraft>;
 const Metric = z.object({ label: z.string(), value: z.string() });
 
 export const MarketingAuditReport = AuditReportDraft.extend({
+  /** Stored limit (see STORED_AUDIT_LIMITS): the policy adds every disputed finding the draft left out. */
+  contradictions: z.array(Contradiction).max(STORED_AUDIT_LIMITS.contradictions),
   /** 2. Product context, copied from the referenced F1 Product Manifest (not written by a model). */
   productContext: z.object({
     f1ReportId: z.string(),

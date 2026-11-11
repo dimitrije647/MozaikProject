@@ -6,8 +6,23 @@ import { wordTokens } from '../../../creative/checks';
 import type { ReviewClaim } from '../../../discovery/f1/prompts';
 import type { AgentOutcome } from '../../../factory/events';
 import { CREATIVE_COORDINATOR_NAME, CREATIVE_INFO, creativeKeyByName, type CreativeKey, type CreativePlan } from '../../../creative/board';
-import type { AssetRecord, ImageResultRecord, LandingContent, LayoutRecord, ReviewFindingRecord, RevisionRecord, SkippedLayout } from '../../../creative/schemas';
-import { CopyOutput } from '../../../creative/schemas';
+import type { AssetRecord, ImageResultRecord, ImageVariationRecord, LandingContent, LayoutRecord, ReviewFindingRecord, RevisionRecord, Rubric, SkippedLayout } from '../../../creative/schemas';
+
+interface RawConceptFinding {
+  kind: ReviewFindingRecord['kind'];
+  severity: string;
+  assetRef: string | null;
+  finding: string;
+}
+import { CopyOutput, CTA_TYPES, type ConceptCritique } from '../../../creative/schemas';
+import { planImageAllocation } from '../../../creative/image-allocation';
+import { designFormatIds } from '../../../hybrid/design-plan';
+import type { DiscoverySummary } from '../../../hybrid/records';
+import { planHybrid } from '../../../hybrid/plan';
+import type { ImageryBlock, TemplateCreativeRecord, TemplateQualityReport, TemplateSelectionPlan } from '../../../hybrid/records';
+import type { ImageAllocation } from '../../../imagery/allocate';
+import type { VisualDirectionBrief } from '../../../templates/schema';
+import { currentDirection } from './hybrid-agents';
 import { OnEventTypes, guarded } from '../../run-context';
 import type { F4Env } from './env';
 
@@ -47,6 +62,19 @@ export class CreativeCoordinator {
   private changed = { variantIds: new Set<string>(), assetIds: new Set<string>(), landing: false };
   private modelReviewFailed = false;
   private visualSeen = new Set<string>();
+  private conceptGate = false;
+  private conceptTimer: NodeJS.Timeout | undefined;
+  // Hybrid Production
+  private directionReady = false;
+  private directionTimer: NodeJS.Timeout | undefined;
+  private visualReason: string | null = null;
+  private productionStarted = false;
+  // NO AI HYBRID: the pictures are sourced (and assigned to the planned creatives) before any template is chosen
+  private imagesRequested = false;
+  private imagesReady = false;
+  private imagesTimer: NodeJS.Timeout | undefined;
+  private qualityTimer: NodeJS.Timeout | undefined;
+  private pendingReview: { round: number; scope: { variantIds: string[]; assetIds: string[]; landing: boolean } } | null = null;
 
   constructor(
     private readonly env: F4Env,
@@ -66,9 +94,14 @@ export class CreativeCoordinator {
         { specification: new OnEventTypes(['landing.proposed']), processor: guarded(guard, ({ event }) => this.onLanding(event.payload as never)) },
         { specification: new OnEventTypes(['visual.generated']), processor: guarded(guard, ({ event }) => this.onVisual(event.payload as never)) },
         { specification: new OnEventTypes(['layout.completed']), processor: guarded(guard, ({ event }) => this.onLayout(event.payload as never)) },
+        { specification: new OnEventTypes(['visual.direction.published']), processor: guarded(guard, ({ event }) => this.onDirection(event.payload as never)) },
+        { specification: new OnEventTypes(['template.selection.completed']), processor: guarded(guard, ({ event }) => this.onSelection(event.payload as never)) },
+        { specification: new OnEventTypes(['images.sourced']), processor: guarded(guard, ({ event }) => this.onImages(event.payload as never)) },
+        { specification: new OnEventTypes(['template.quality.completed']), processor: guarded(guard, ({ event }) => this.onTemplateQuality(event.payload as never)) },
         { specification: new OnEventTypes(['task.completed']), processor: guarded(guard, ({ event }) => this.onTaskCompleted(event.payload as never)) },
         { specification: new OnEventTypes(['crosscheck.requested']), processor: guarded(guard, ({ event }) => this.onForeignRequest(event.payload as never)) },
         { specification: new OnEventTypes(['crosscheck.answered']), processor: guarded(guard, ({ event }) => this.onAnswer(event.payload as never)) },
+        { specification: new OnEventTypes(['concept.review.completed']), processor: guarded(guard, ({ event }) => this.onConceptReview(event.payload as never)) },
         { specification: new OnEventTypes(['review.completed']), processor: guarded(guard, ({ event }) => this.onReviewCompleted(event.payload as never)) },
         { specification: new OnEventTypes(['revision.applied']), processor: guarded(guard, ({ event }) => this.onRevisionApplied(event.payload as never)) },
         { specification: new OnEventTypes(['revision.completed']), processor: guarded(guard, ({ event }) => this.onRevisionCompleted(event.payload as never)) },
@@ -94,16 +127,36 @@ export class CreativeCoordinator {
       maxRegenerations: env.tools.images ? env.tools.images.usage().limits.maxRegenerations : 0,
       maxRepairRounds: settings.maxRepairRounds,
       maxModelCalls: settings.maxModelCalls,
+      variations: settings.variations,
+      imageConcurrency: settings.imageConcurrency,
+      approvedBudgetUsd: settings.approvedBudgetUsd,
+      hybrid: settings.hybrid ? { originals: settings.hybrid.originals, templateCreatives: settings.hybrid.templateCreatives } : null,
     };
     for (const s of this.preSources) ctx.emit('source.retrieved', { agent: CREATIVE_COORDINATOR_NAME, source: s }, this.participant);
     for (const s of plan.skipped) {
       board.setStatus(s.agent, { state: 'skipped', reason: s.reason });
       ctx.emit('participant.idle', { agent: s.agent, reason: s.reason, skipped: true }, this.participant);
     }
-    for (const a of plan.activated) board.setStatus(a.agent, { state: a.key === 'copywriter' || a.key === 'landing' ? 'working' : 'waiting', reason: a.reason });
+    for (const a of plan.activated) board.setStatus(a.agent, { state: a.key === 'copywriter' || a.key === 'landing' || a.key === 'researcher' ? 'working' : 'waiting', reason: a.reason });
     this.barrier = ctx.setTimer(settings.productionTimeoutMs, () => this.forceBarrier());
     if (!plan.activated.some((a) => a.key === 'landing')) this.landingResolved = true;
-    for (const key of ['copywriter', 'landing', 'layout'] as CreativeKey[]) if (plan.activated.some((a) => a.key === key)) ctx.emit('task.assigned', { agent: CREATIVE_INFO[key].name, task: key }, this.participant);
+    for (const key of ['copywriter', 'landing', 'layout', 'researcher'] as CreativeKey[]) if (plan.activated.some((a) => a.key === key)) ctx.emit('task.assigned', { agent: CREATIVE_INFO[key].name, task: key }, this.participant);
+    // the Visual Researcher never holds the production back for long: without its brief the deterministic one is used
+    if (settings.hybrid && !env.seed) this.directionTimer = ctx.setTimer(settings.agentTimeoutMs + 5_000, () => this.useFallbackDirection('The Visual Researcher did not publish in time.'));
+    if (settings.hybrid && env.seed) {
+      this.directionReady = true;
+      if (env.seed.hybrid?.direction) board.direction = structuredClone(env.seed.hybrid.direction);
+      else board.direction = currentDirection(env);
+    }
+    if (env.seed) {
+      // image-only continuation: copy, landing and cross-checks are already done (they belong to the earlier campaign), so the Visual
+      // Creator starts at once and only the missing images are requested
+      this.copyCommitted = true;
+      this.landingResolved = true;
+      this.crossPlanned = true;
+      board.setStatus(CREATIVE_INFO.visual.name, { state: 'working', reason: 'Image-only continuation' });
+      ctx.emit('task.assigned', { agent: CREATIVE_INFO.visual.name, task: 'visual' }, this.participant);
+    }
   }
 
   // ---- production: copy, landing, visuals, layouts -----------------------------------------------------------------
@@ -122,11 +175,24 @@ export class CreativeCoordinator {
     }
     const perPair = new Map<string, number>();
     const kept: { tok: Set<string> }[] = [];
-    for (const v of out.variants) {
+    // When the cap on copy variants would bite, every concept still gets its first variants before any concept gets a second one
+    // (otherwise the last concept could be left with no copy at all, and nothing could be laid out for it).
+    const usable = out.variants.filter((v) => keyToId.has(v.conceptKey) && input.channels.includes(v.channel));
+    let ordered = out.variants;
+    if (usable.length > env.settings.maxVariants) {
+      const rank = new Map<string, number>();
+      const withRank = out.variants.map((v, i) => {
+        const r = rank.get(v.conceptKey) ?? 0;
+        rank.set(v.conceptKey, r + 1);
+        return { v, r, i };
+      });
+      ordered = withRank.sort((x, y) => x.r - y.r || x.i - y.i).map((x) => x.v);
+    }
+    for (const v of ordered) {
       const conceptId = keyToId.get(v.conceptKey);
       if (!conceptId || !input.channels.includes(v.channel)) continue; // unknown concept or a channel the user did not select
       const pair = `${conceptId}|${v.channel}`;
-      if ((perPair.get(pair) ?? 0) >= 2 || board.variants.length >= 12) continue;
+      if ((perPair.get(pair) ?? 0) >= 2 || board.variants.length >= env.settings.maxVariants) continue;
       const tok = tokens(`${v.headline} ${v.body}`);
       if (kept.some((k) => jaccard(k.tok, tok) > 0.8)) {
         board.note('Near-identical copy variants were dropped.');
@@ -141,9 +207,205 @@ export class CreativeCoordinator {
     board.setStatus(p.agent, { findings: board.variants.length });
     if (!board.concepts.length || !board.variants.length) return this.failPhase('The copywriter produced no usable concept or variant.');
     this.copyCommitted = true;
-    // The Visual Creator starts NOW (it does not wait for the landing page or the cross-checks).
-    board.setStatus(CREATIVE_INFO.visual.name, { state: 'working', reason: 'Copy proposed' });
+    // Several originals per concept: the images are placed by the deterministic planner from the REAL concepts and their channels,
+    // before anything is requested. The model never decides how many images there are.
+    if (env.settings.hybrid) {
+      const { settings } = env;
+      const hs = settings.hybrid!;
+      board.hybridPlan = planHybrid({
+        concepts: board.concepts.map((c) => {
+          const mine = board.variants.filter((v) => v.conceptId === c.id);
+          const channels = [...new Set(mine.map((v) => v.channel))];
+          return { id: c.id, name: c.name, channels: channels.length ? channels : input.channels, variants: mine.length };
+        }),
+        originals: settings.imageGeneration ? hs.originals : 0,
+        templateCreatives: hs.templateCreatives,
+        channelPriority: settings.channelPriority,
+        fixedSize: settings.imageSizeExplicit ? settings.imageSize : null,
+        brandImages: env.hybrid!.brandImages.length,
+        basis: 'concepts',
+        formatIds: designFormatIds(hs),
+      });
+      board.allocation = board.hybridPlan.allocation;
+      for (const w of board.hybridPlan.warnings) board.note(w);
+    } else if (env.settings.variations && env.settings.imageGeneration) {
+      const { settings } = env;
+      board.allocation = planImageAllocation({
+        target: settings.imageTarget,
+        concepts: board.concepts.map((c) => {
+          const mine = board.variants.filter((v) => v.conceptId === c.id);
+          const channels = [...new Set(mine.map((v) => v.channel))];
+          return { id: c.id, name: c.name, channels: channels.length ? channels : input.channels, variants: mine.length };
+        }),
+        channelPriority: settings.channelPriority,
+        fixedSize: settings.imageSizeExplicit ? settings.imageSize : null,
+        layoutsPerOriginal: settings.layoutsPerOriginal,
+        basis: 'concepts',
+      });
+    }
+    // Depth: the concepts are critiqued BEFORE the Visual Creator starts, so a weak concept is improved before any image is paid for.
+    if (env.settings.depth && env.settings.imageGeneration && !env.seed) return this.startConceptGate();
+    this.startVisual('Copy proposed');
+  }
+
+  /** The Visual Creator starts (it does not wait for the landing page or the cross-checks). */
+  private startVisual(reason: string) {
+    this.visualReason = reason;
+    this.maybeStartProduction();
+  }
+
+  /** Hybrid: the pictures and the template choice need the Visual Direction Brief, so they start once it is published (or the fallback brief is in). */
+  private maybeStartProduction() {
+    const { env } = this;
+    if (this.productionStarted || this.visualReason === null || this.finished) return;
+    if (env.settings.hybrid && !this.directionReady) return;
+    // NO AI HYBRID: the Visual Researcher sources and assigns the pictures first; the Template Selector then works with what really exists
+    if (env.settings.noAiImages && !env.seed && env.board.hybridPlan && !this.imagesReady) return this.requestImages();
+    this.productionStarted = true;
+    env.board.setStatus(CREATIVE_INFO.visual.name, { state: 'working', reason: this.visualReason });
     env.ctx.emit('task.assigned', { agent: CREATIVE_INFO.visual.name, task: 'visual' }, this.participant);
+    if (env.settings.hybrid && !env.seed && env.board.hybridPlan) {
+      env.board.setStatus(CREATIVE_INFO.selector.name, { state: 'working', reason: 'Choosing a template for every planned creative' });
+      env.ctx.emit('task.assigned', { agent: CREATIVE_INFO.selector.name, task: 'select' }, this.participant);
+    }
+  }
+
+  /** NO AI HYBRID: asks the Visual Researcher to source pictures; a missing answer never holds the campaign back for long. */
+  private requestImages() {
+    if (this.imagesRequested) return;
+    this.imagesRequested = true;
+    const { env } = this;
+    const { ctx, board, settings } = env;
+    board.setStatus(CREATIVE_INFO.researcher.name, { state: 'working', reason: 'Sourcing the pictures of the campaign' });
+    this.imagesTimer = ctx.setTimer(Math.min(settings.agentTimeoutMs, 100_000), () => this.onImages({ agent: CREATIVE_INFO.researcher.name, summary: 'Picture sourcing did not answer in time.', sourcing: null }));
+    ctx.emit('images.sourcing.requested', { slots: board.hybridPlan?.slots.length ?? 0, concepts: board.concepts.length }, this.participant);
+  }
+
+  /** NO AI HYBRID: the pictures are in. Every planned creative is given its picture (or none: then it is text-first); the production starts. */
+  private onImages(p: { agent: string; summary: string; sourcing: { imagery: ImageryBlock; allocation: ImageAllocation; discovery?: DiscoverySummary | null } | null }) {
+    const { env } = this;
+    const { board, ctx } = env;
+    if (this.finished || this.imagesReady) return;
+    this.imagesReady = true;
+    if (this.imagesTimer) ctx.clearTimer(this.imagesTimer);
+    const plan = board.hybridPlan;
+    if (plan) {
+      const bySlot = new Map((p.sourcing?.allocation.slots ?? []).map((s) => [s.slotId, s]));
+      for (const slot of plan.slots) {
+        const a = bySlot.get(slot.slotId);
+        slot.imageId = a?.imageId ?? null;
+        slot.secondaryImageId = a?.secondaryImageId ?? null;
+        slot.focus = a?.focus ?? null;
+        slot.source = a?.imageId ? 'brand_image' : 'none';
+      }
+    }
+    if (p.sourcing) {
+      board.imagery = p.sourcing.imagery;
+      if (p.sourcing.discovery) board.discovery = p.sourcing.discovery;
+    } else {
+      // sourcing failed: no library picture is used by guesswork
+      env.hybrid!.brandImages = [];
+      board.note(`${p.summary} No picture was used by guesswork.`);
+    }
+    board.summaries[CREATIVE_INFO.researcher.name] = [board.summaries[CREATIVE_INFO.researcher.name], p.summary].filter(Boolean).join(' ').slice(0, 900);
+    board.setStatus(CREATIVE_INFO.researcher.name, { state: 'done' });
+    for (const n of p.sourcing?.imagery.notes.slice(0, 6) ?? []) board.note(n);
+    this.maybeStartProduction();
+  }
+
+  private onDirection(p: { direction: VisualDirectionBrief; refined: boolean; note: string; discovery?: DiscoverySummary | null }) {
+    const { board, ctx } = this.env;
+    if (this.finished || this.directionReady) return;
+    this.directionReady = true;
+    if (this.directionTimer) ctx.clearTimer(this.directionTimer);
+    board.direction = p.direction;
+    board.directionRefined = p.refined;
+    board.discovery = p.discovery ?? null;
+    if (p.note) board.summaries[CREATIVE_INFO.researcher.name] = p.note;
+    this.maybeStartProduction();
+  }
+
+  private useFallbackDirection(why: string) {
+    const { board, ctx } = this.env;
+    if (this.finished || this.directionReady) return;
+    this.directionReady = true;
+    if (this.directionTimer) ctx.clearTimer(this.directionTimer);
+    board.direction = currentDirection(this.env);
+    board.directionRefined = false;
+    board.note(`${why} The deterministic Visual Direction Brief from the style library and the brand was used.`);
+    this.maybeStartProduction();
+  }
+
+  private onSelection(p: { plan: TemplateSelectionPlan }) {
+    if (this.finished) return;
+    this.env.board.selection = p.plan;
+    for (const w of p.plan.warnings.slice(0, 6)) this.env.board.note(w);
+    // a planned creative that no template could be chosen for is BLOCKED, with its reason: it counts as planned and not delivered, never silently dropped
+    if (this.env.settings.noAiImages) {
+      const placed = new Set(p.plan.items.map((i) => i.slotId));
+      for (const slot of this.env.board.hybridPlan?.slots ?? []) {
+        if (placed.has(slot.slotId) || this.env.board.templateCreatives.some((t) => t.slotId === slot.slotId)) continue;
+        this.putCreative({ slotId: slot.slotId, conceptId: slot.conceptId, templateId: '', templateName: '(none)', templateVersion: 0, collectionId: this.env.hybrid?.collection?.id ?? null, collectionVersion: this.env.hybrid?.collection?.version ?? null, paletteKey: null, variationId: null, channel: slot.channel, format: slot.formatId, width: slot.width, height: slot.height, status: 'skipped', assetId: null, sourceAssetIds: [], origin: null, flags: ['blocked'], reason: slot.source === 'none' ? 'Blocked: this creative has no picture and no text-first template of the chosen collection fits it. Add a picture to unblock it.' : 'Blocked: no template of the chosen collection fits this creative.' });
+      }
+    }
+  }
+
+  private onTemplateQuality(p: { report: TemplateQualityReport | null }) {
+    const { board, ctx } = this.env;
+    if (this.finished || !this.pendingReview) return;
+    if (this.qualityTimer) ctx.clearTimer(this.qualityTimer);
+    if (p.report) board.templateQuality = p.report;
+    const review = this.pendingReview;
+    this.pendingReview = null;
+    ctx.emit('review.requested', review, this.participant);
+  }
+
+  private startConceptGate() {
+    const { ctx, board, settings } = this.env;
+    this.conceptGate = true;
+    board.setStatus(CREATIVE_INFO.reviewer.name, { state: 'working', reason: 'Concept critique before the images' });
+    // the images never wait forever for the critique
+    this.conceptTimer = ctx.setTimer(settings.reviewTimeoutMs + 4_000, () => this.onConceptReview({ critique: null, deterministic: [], modelReview: 'failed' }));
+    ctx.emit('concept.review.requested', { concepts: board.concepts }, this.participant);
+  }
+
+  private onConceptReview(p: { critique: ConceptCritique | null; deterministic: RawConceptFinding[]; modelReview: 'done' | 'failed' | 'skipped' }) {
+    if (!this.conceptGate || this.finished) return;
+    this.conceptGate = false;
+    const { env } = this;
+    const { board, ctx } = env;
+    if (this.conceptTimer) ctx.clearTimer(this.conceptTimer);
+    const flagged = new Map<string, { severity: 'major' | 'minor'; why: string; source: 'deterministic' | 'llm_text'; kind: ReviewFindingRecord['kind'] }>();
+    const mark = (id: string | null, severity: 'major' | 'minor', why: string, source: 'deterministic' | 'llm_text', kind: ReviewFindingRecord['kind']) => {
+      if (id && !flagged.has(id)) flagged.set(id, { severity, why, source, kind });
+    };
+    for (const d of p.deterministic) mark(d.assetRef, d.severity === 'major' ? 'major' : 'minor', d.finding, 'deterministic', d.kind);
+    for (const c of p.critique?.concepts ?? []) {
+      const low = Math.min(c.specificity, c.originality, c.audienceFit, c.visualPotential);
+      if (c.verdict === 'revise' || low <= 2) mark(c.conceptId, low <= 2 ? 'major' : 'minor', c.problem || 'The critique asks for a stronger concept.', 'llm_text', low <= 2 && c.originality <= 2 ? 'generic_concept' : 'strategy_mismatch');
+    }
+    const revised: string[] = [];
+    for (const c of p.critique?.concepts ?? []) {
+      const concept = board.concepts.find((x) => x.id === c.conceptId);
+      if (!concept) continue;
+      const note = [c.artDirection, c.problem && flagged.has(c.conceptId) ? `Problem to avoid: ${c.problem}` : ''].filter(Boolean).join(' ').slice(0, 480);
+      if (note) board.conceptNotes[concept.id] = note;
+      const better = c.visualIdeaRevision?.trim();
+      if (flagged.has(concept.id) && better && better.length >= 30 && better !== concept.visualIdea) {
+        board.conceptHistory.push({ conceptId: concept.id, field: 'visualIdea', before: concept.visualIdea, after: better, reason: flagged.get(concept.id)!.why.slice(0, 200) });
+        concept.visualIdea = better.slice(0, 300);
+        revised.push(concept.id);
+      }
+    }
+    for (const [id, f] of flagged) {
+      const fixed = revised.includes(id);
+      const name = board.concepts.find((x) => x.id === id)?.name ?? id;
+      board.findings.push({ id: board.next('Q'), round: 0, kind: f.kind, severity: f.severity, assetRef: id, finding: `Concept "${name}": ${f.why}`.slice(0, 300), evidence: 'Concept critique before the images (measured overlap/thinness, or the reviewer\'s scores).', suggestedCorrection: fixed ? 'Revised before the images were generated.' : 'Give the concept a specific subject, setting and angle that belong to this business.', responsibleAgent: 'copywriter', source: f.source, status: fixed ? 'fixed' : f.severity === 'major' ? 'unresolved' : 'open', resolvedInRound: fixed ? 0 : null });
+    }
+    board.conceptReview = { critique: p.critique, modelReview: p.modelReview, flagged: [...flagged.keys()], revised, note: p.modelReview === 'done' ? `${flagged.size} concept(s) flagged, ${revised.length} revised before the images.` : p.modelReview === 'skipped' ? 'The critique was skipped: not enough text-model calls were left.' : 'The critique did not finish; only the automatic checks ran.' };
+    if (p.modelReview !== 'done') board.skip('concept critique before the images', board.conceptReview.note);
+    board.setStatus(CREATIVE_INFO.reviewer.name, { state: 'waiting', reason: 'Waiting for the production to finish' });
+    this.startVisual(revised.length ? `Concepts improved (${revised.length}); art direction attached` : 'Concepts critiqued');
   }
 
   private onLanding(p: { agent: string; summary: string; content: LandingContent; missingInformation: string[] }) {
@@ -155,10 +417,17 @@ export class CreativeCoordinator {
     this.landingResolved = true;
   }
 
-  private onVisual(p: { conceptId: string; asset: AssetRecord; failed: boolean; error?: SafeProviderError; directionSummary: string; result?: ImageResultRecord }) {
+  private onVisual(p: { conceptId: string; variationId?: string; asset: AssetRecord | null; failed: boolean; error?: SafeProviderError; directionSummary: string; result?: ImageResultRecord; variation?: ImageVariationRecord }) {
     const { board } = this.env;
     this.visualSeen.add(p.conceptId);
-    board.assets.push(p.asset);
+    if (p.asset) board.assets.push(p.asset);
+    if (p.variationId && p.variation) {
+      // one record per planned image, replaced if the same image reports again; the concept-level result is derived from them at the end
+      const i = board.variations.findIndex((v) => v.variationId === p.variationId);
+      if (i >= 0) board.variations[i] = p.variation;
+      else board.variations.push(p.variation);
+      return;
+    }
     if (!p.result) return;
     const i = board.imageResults.findIndex((r) => r.conceptId === p.conceptId);
     if (i >= 0) board.imageResults[i] = p.result;
@@ -168,11 +437,19 @@ export class CreativeCoordinator {
     else if (p.result.outcome === 'skipped' && p.result.stage === 'budget') board.note(p.result.explanation ?? '');
   }
 
-  private onLayout(p: { conceptId: string; assets: AssetRecord[]; layouts: LayoutRecord[]; skipped: SkippedLayout[] }) {
+  private onLayout(p: { conceptId: string; assets: AssetRecord[]; layouts: LayoutRecord[]; skipped: SkippedLayout[]; templateCreatives?: TemplateCreativeRecord[] }) {
     const { board } = this.env;
     for (const a of p.assets) board.assets.push(a);
     for (const l of p.layouts) board.layouts.push(l);
     for (const s of p.skipped) board.skippedLayouts.push(s);
+    for (const t of p.templateCreatives ?? []) this.putCreative(t);
+  }
+
+  private putCreative(t: TemplateCreativeRecord) {
+    const list = this.env.board.templateCreatives;
+    const i = list.findIndex((x) => x.slotId === t.slotId);
+    if (i >= 0) list[i] = t;
+    else list.push(t);
   }
 
   private onTaskCompleted(p: { agent: string; outcome: 'succeeded' | 'failed' | 'skipped'; error?: SafeProviderError; reason?: string }) {
@@ -181,6 +458,7 @@ export class CreativeCoordinator {
     if (!key || this.finished) return;
     const state = p.outcome === 'succeeded' ? { state: 'done' as const, error: null } : p.outcome === 'skipped' ? { state: 'skipped' as const, reason: p.reason ?? 'Nothing to do' } : { state: p.error?.code === 'timeout' ? ('timed_out' as const) : ('failed' as const), error: p.error ?? null };
     board.setStatus(p.agent, state);
+    if (key === 'researcher' && p.outcome !== 'succeeded') this.useFallbackDirection(`The Visual Researcher ${p.outcome === 'failed' ? 'failed' : 'was skipped'}.`);
     if (key === 'reviewer' || key === 'fixer') {
       // These are handled per round: a failure here ends the loop honestly instead of hanging it.
       if (p.outcome !== 'succeeded') {
@@ -271,7 +549,7 @@ export class CreativeCoordinator {
   // ---- bounded fan-in barrier -> review ---------------------------------------------------------------------------------------
 
   private requiredReported() {
-    const need = this.plan.activated.filter((a) => ['copywriter', 'landing', 'visual', 'layout'].includes(a.key)).map((a) => a.agent);
+    const need = this.plan.activated.filter((a) => ['copywriter', 'landing', 'visual', 'layout', 'researcher', 'selector'].includes(a.key)).map((a) => a.agent);
     return need.every((n) => this.reported.has(n));
   }
 
@@ -284,7 +562,7 @@ export class CreativeCoordinator {
   private forceBarrier() {
     if (this.barrierDone || this.finished) return;
     const { board } = this.env;
-    for (const a of this.plan.activated) if (['copywriter', 'landing', 'visual', 'layout'].includes(a.key) && !this.reported.has(a.agent)) {
+    for (const a of this.plan.activated) if (['copywriter', 'landing', 'visual', 'layout', 'researcher', 'selector'].includes(a.key) && !this.reported.has(a.agent)) {
       board.setStatus(a.agent, { state: 'timed_out', error: toSafeError('timeout') });
       board.note(`${a.agent} did not finish in time; the review continues with what exists.`);
     }
@@ -297,7 +575,10 @@ export class CreativeCoordinator {
   private concludeBarrier() {
     this.barrierDone = true;
     if (this.barrier) this.env.ctx.clearTimer(this.barrier);
-    this.startReview(1, { variantIds: this.env.board.variants.map((v) => v.id), assetIds: this.env.board.assets.filter((a) => a.kind === 'layout' && a.status !== 'superseded').map((a) => a.id), landing: !!this.env.board.landing });
+    const { env } = this;
+    // a continuation reviews what is NEW (the earlier text and layouts were reviewed with the earlier campaign)
+    const copied = new Set((env.seed?.assets ?? []).map((a) => a.id));
+    this.startReview(1, { variantIds: env.seed ? [] : env.board.variants.map((v) => v.id), assetIds: env.board.assets.filter((a) => a.kind === 'layout' && a.status !== 'superseded' && !copied.has(a.id)).map((a) => a.id), landing: env.seed ? false : !!env.board.landing });
   }
 
   private startReview(round: number, scope: { variantIds: string[]; assetIds: string[]; landing: boolean }) {
@@ -308,6 +589,14 @@ export class CreativeCoordinator {
       board.note(`The review of round ${round} timed out.`);
       this.finish('The review timed out.');
     });
+    if (this.env.settings.hybrid && this.plan.activated.some((a) => a.key === 'templateReviewer')) {
+      // the Template Quality Reviewer opens every template creative first; the Content & Brand Reviewer then sees its report
+      this.pendingReview = { round, scope };
+      board.setStatus(CREATIVE_INFO.templateReviewer.name, { state: 'working', reason: `Checking the template creatives (round ${round})` });
+      this.qualityTimer = ctx.setTimer(settings.reviewTimeoutMs, () => this.onTemplateQuality({ report: null }));
+      ctx.emit('template.quality.requested', { planned: board.hybridPlan?.slots.length ?? 0 }, this.participant);
+      return;
+    }
     ctx.emit('review.requested', { round, scope }, this.participant);
   }
 
@@ -323,13 +612,15 @@ export class CreativeCoordinator {
     return `${f.kind}|${subject}|${normalizeText(f.finding).slice(0, 40)}`;
   }
 
-  private onReviewCompleted(p: { round: number; findings: Omit<ReviewFindingRecord, 'id' | 'round' | 'status' | 'resolvedInRound'>[]; summary: string; modelReview: 'done' | 'partial' | 'failed' | 'skipped' }) {
+  private onReviewCompleted(p: { round: number; findings: Omit<ReviewFindingRecord, 'id' | 'round' | 'status' | 'resolvedInRound'>[]; summary: string; modelReview: 'done' | 'partial' | 'failed' | 'skipped'; scores?: Rubric | null; skipped?: { what: string; reason: string }[] }) {
     const { env } = this;
     const { board, settings, ctx } = env;
     if (this.finished || p.round !== board.round) return;
     if (this.reviewTimer) ctx.clearTimer(this.reviewTimer);
     board.summaries[CREATIVE_INFO.reviewer.name] = p.summary;
     if (p.modelReview === 'failed') this.modelReviewFailed = true;
+    if (p.scores) board.rubrics.push({ round: p.round, scores: p.scores });
+    for (const s of p.skipped ?? []) board.skip(s.what, s.reason);
     const known = new Map(board.findings.map((f) => [this.fingerprint(f), f]));
     const thisRound: ReviewFindingRecord[] = [];
     for (const raw of p.findings) {
@@ -396,12 +687,17 @@ export class CreativeCoordinator {
       }
     } else if (patch.kind === 'landing' && board.landing) {
       const l = board.landing as Record<string, any>;
-      for (const c of patch.changes as { path: string; value: string }[]) {
+      // a deterministic alignment of the call-to-action TYPE with the ads (the text revision cannot change it)
+      if (typeof patch.ctaObjective === 'string' && (CTA_TYPES as readonly string[]).includes(patch.ctaObjective)) {
+        l.ctaObjective = patch.ctaObjective;
+        if (Array.isArray(l.ctas) && l.ctas[0]) l.ctas[0] = { ...l.ctas[0], objective: patch.ctaObjective };
+      }
+      for (const c of (patch.changes ?? []) as { path: string; value: string }[]) {
         const [a, b] = c.path.split('.');
         if (b) l[a][b] = c.value;
         else l[a] = c.value;
       }
-      const removals = [...(patch.removals as { list: 'benefits' | 'sections' | 'faq' | 'trustSignals'; index: number }[])].sort((x, y) => y.index - x.index);
+      const removals = [...((patch.removals ?? []) as { list: 'benefits' | 'sections' | 'faq' | 'trustSignals'; index: number }[])].sort((x, y) => y.index - x.index);
       for (const r of removals) if (Array.isArray(l[r.list]) && r.index >= 0 && r.index < l[r.list].length) l[r.list].splice(r.index, 1);
       this.changed.landing = true;
     } else if (patch.kind === 'layout' || patch.kind === 'image') {
@@ -416,8 +712,9 @@ export class CreativeCoordinator {
         const r = a.kind === 'image' && a.source === 'ai_image' ? board.imageResults.find((x) => x.conceptId === a.conceptId) : undefined;
         if (r) Object.assign(r, { requestAttempted: true, outcome: 'generated', stage: null, errorCode: null, providerStatus: null, providerCode: null, message: null, explanation: null, fallbackUsed: false, assetId: a.id });
       }
+      for (const t of (patch.templateCreatives ?? []) as TemplateCreativeRecord[]) this.putCreative(t);
       for (const l of (patch.layouts ?? []) as LayoutRecord[]) {
-        const i = board.layouts.findIndex((x) => x.variantId === l.variantId && x.format === l.format && x.conceptId === l.conceptId);
+        const i = board.layouts.findIndex((x) => (l.slotId ? x.slotId === l.slotId : x.variantId === l.variantId && x.format === l.format && x.conceptId === l.conceptId && (x.variationId ?? null) === (l.variationId ?? null)));
         if (i >= 0) board.layouts[i] = l;
         else board.layouts.push(l);
       }
@@ -474,6 +771,7 @@ export class CreativeCoordinator {
       ctx.emit('participant.idle', { agent: CREATIVE_INFO.fixer.name, reason: 'No issue required a repair, so no Fixer was created', skipped: true }, this.participant);
     }
     board.setStatus(CREATIVE_INFO.reviewer.name, { state: 'done' });
+    if (this.env.settings.hybrid && this.plan.activated.some((a) => a.key === 'templateReviewer')) board.setStatus(CREATIVE_INFO.templateReviewer.name, { state: board.templateQuality ? 'done' : 'skipped', reason: board.templateQuality ? null : 'The check did not run' });
     ctx.emit('campaign.completed', { report: { why, modelReviewFailed: this.modelReviewFailed }, meta: null }, this.participant);
   }
 }

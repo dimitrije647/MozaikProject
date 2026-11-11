@@ -1,6 +1,7 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query, Res, StreamableFile } from '@nestjs/common';
 import type { Response } from 'express';
 import { AuthUser, CurrentUser } from '../auth/current-user.decorator';
+import { ContinueImagesDto } from './dto/factory.dto';
 import { ListAuditsQueryDto, ListEventsQueryDto, StartAuditDto, StartCreativeDto, StartDiscoveryDto, StartSmokeTestDto, StartStrategyDto } from './dto/mozaik.dto';
 import { MozaikService } from './mozaik.service';
 
@@ -76,6 +77,22 @@ export class MozaikController {
     return this.mozaik.preflightCreativeProduction(u.id, projectId, dto);
   }
 
+  /**
+   * Image-only continuation: generate ONLY the missing original images of a finished campaign, as a new campaign that reuses the
+   * strategy, copy, landing content and the images that succeeded. The preflight is free; starting is billed and needs an approved
+   * spending limit and an explicit confirmation.
+   */
+  @Post('campaigns/:campaignId/continue-images/preflight')
+  @HttpCode(200)
+  preflightContinueImages(@CurrentUser() u: AuthUser, @Param('campaignId') campaignId: string, @Body() dto: ContinueImagesDto) {
+    return this.mozaik.preflightImageContinuation(u.id, campaignId, dto);
+  }
+
+  @Post('campaigns/:campaignId/continue-images')
+  continueImages(@CurrentUser() u: AuthUser, @Param('campaignId') campaignId: string, @Body() dto: ContinueImagesDto) {
+    return this.mozaik.startImageContinuation(u.id, campaignId, dto);
+  }
+
   @Get('projects/:projectId/campaigns')
   campaigns(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string, @Query() query: ListAuditsQueryDto) {
     return this.mozaik.listCampaigns(u.id, projectId, query);
@@ -134,6 +151,30 @@ export class MozaikController {
       'X-Content-Type-Options': 'nosniff',
       'Cache-Control': 'private, no-store',
     });
+    return new StreamableFile(zip);
+  }
+
+  /** Only the original AI images (and a list of what each one is), as a ZIP. */
+  @Get('campaigns/:campaignId/export/originals')
+  async exportOriginals(@CurrentUser() u: AuthUser, @Param('campaignId') campaignId: string, @Res({ passthrough: true }) res: Response) {
+    const { zip, filename } = await this.mozaik.exportOriginals(u.id, campaignId);
+    res.set({ 'Content-Type': 'application/zip', 'Content-Length': String(zip.length), 'Content-Disposition': `attachment; filename="${filename}"`, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store' });
+    return new StreamableFile(zip);
+  }
+
+  /** Hybrid Production: only the template creatives (rendered locally; not AI images), as a ZIP. */
+  @Get('campaigns/:campaignId/export/templates')
+  async exportTemplates(@CurrentUser() u: AuthUser, @Param('campaignId') campaignId: string, @Res({ passthrough: true }) res: Response) {
+    const { zip, filename } = await this.mozaik.exportCreatives(u.id, campaignId, 'templates');
+    res.set({ 'Content-Type': 'application/zip', 'Content-Length': String(zip.length), 'Content-Disposition': `attachment; filename="${filename}"`, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store' });
+    return new StreamableFile(zip);
+  }
+
+  /** Hybrid Production: every finished creative (original AI images and template creatives), as a ZIP. */
+  @Get('campaigns/:campaignId/export/creatives')
+  async exportCreatives(@CurrentUser() u: AuthUser, @Param('campaignId') campaignId: string, @Res({ passthrough: true }) res: Response) {
+    const { zip, filename } = await this.mozaik.exportCreatives(u.id, campaignId, 'all');
+    res.set({ 'Content-Type': 'application/zip', 'Content-Length': String(zip.length), 'Content-Disposition': `attachment; filename="${filename}"`, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store' });
     return new StreamableFile(zip);
   }
 

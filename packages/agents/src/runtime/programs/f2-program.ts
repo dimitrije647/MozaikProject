@@ -1,6 +1,9 @@
 import type { InferenceRunnerConfig, Participant, SituationHandler } from '@mozaik-ai/core';
 import { toSafeError } from '../../ai/errors';
+import { SpendBudget, scopeFor } from '../../ai/budget';
+import { resolveGeneration, synthesisTaskTimeoutMs, type GenerationTimeout } from '../../ai/timeouts';
 import { DEFAULT_BUDGET, InferenceGateway, type InferenceBudget, type UsageSnapshot } from '../../ai/gateway';
+import { capOutputTokens } from '../../ai/pricing';
 import { OpenAIClient } from '../../ai/openai-http';
 import { AUDIT_INFO, AUDIT_KEYS, AuditBoardStore, type AuditFinding, type AuditKey, type AuditPlan, type AuditorKey } from '../../audit/board';
 import type { AuditFacts, F1Context } from '../../audit/context';
@@ -39,6 +42,12 @@ export interface AuditRunConfig {
   maxModelCalls?: number;
   /** `max_output_tokens` for auditors. Reviews use less, the synthesizer up to twice as much. Default 2500. */
   maxOutputTokens?: number;
+  /** The approved spending limit in US dollars for THIS run; null/absent = none. Enforced before every paid request. */
+  spendCapUsd?: number | null;
+  /** The campaign-wide spend ledger shared by every phase (the factory passes it). Absent = this run gets a ledger of its own with `spendCapUsd`. */
+  ledger?: SpendBudget;
+  /** Deeper work where it adds something (more cross-check passes; F4: a concept critique before the images). */
+  depth?: boolean;
   /** Maximum cross-check requests (each costs one model call). Default 4. */
   maxReviews?: number;
   /** Pages analyzed in detail (home included). Default 5. */
@@ -48,6 +57,8 @@ export interface AuditRunConfig {
   agentTimeoutMs?: number;
   reviewTimeoutMs?: number;
   callTimeoutMs?: number;
+  /** Scales the clock of long structured answers with their output cap (default: on, unless callTimeoutMs is fixed). Tests may tune it. */
+  generation?: Partial<GenerationTimeout>;
   timeoutMs?: number;
   maxRetries?: number;
   retryBaseDelayMs?: number;
@@ -94,7 +105,7 @@ export function planF2(input: AuditInput, f1: F1Context, files: { images: ImageI
   const off = (key: AuditKey, reason: string) => plan.skipped.push({ agent: AUDIT_INFO[key].name, key, reason });
 
   let siteOk = false;
-  if (!input.websiteUrl) off('seo', 'No website URL is set for this project');
+  if (!input.websiteUrl) off('seo', 'Not evaluated — no website supplied. Website SEO analysis was skipped; the rest of the audit continues.');
   else {
     const c = files.checkUrl(input.websiteUrl);
     if (c.ok) {
@@ -107,11 +118,11 @@ export function planF2(input: AuditInput, f1: F1Context, files: { images: ImageI
   }
 
   if (input.socialProfiles.length || input.socialDetails.length) on('social', `${input.socialProfiles.length} social profile URL(s) supplied`);
-  else off('social', 'No social profile was supplied');
+  else off('social', 'Not evaluated — no social profile supplied. Account-specific social analysis was skipped; the strategy still recommends a social approach.');
 
   const hasBrandMaterial = siteOk || files.images.length > 0 || f1.findings.some((f) => f.agent === 'Visual Analyzer') || !!f1.report.productManifest.brand || (input.styleNotes?.trim().length ?? 0) >= 20;
   if (hasBrandMaterial) on('brand', 'Brand material available (website, images, F1 visual analysis or a style description)');
-  else off('brand', 'No website, images, F1 visual analysis or brand description to audit');
+  else off('brand', 'Not evaluated — no website, images, F1 visual analysis or brand description to audit. Brand positioning is covered by the messaging audit.');
 
   on('messaging', 'Always runs: audits the product communication');
   on('presence', 'Always runs: checks cross-channel completeness and consistency');
@@ -137,12 +148,17 @@ export class F2Program implements RunProgram {
     private readonly config: AuditRunConfig,
     private readonly sink: AuditSink,
   ) {
-    const auditorTokens = clamp(config.maxOutputTokens, 800, 6000, 2500);
+    const auditorTokens = capOutputTokens(config.model, clamp(config.maxOutputTokens, 800, 16000, 2500)).tokens;
     const synthTokens = Math.min(8000, auditorTokens * 2);
+    const generation = resolveGeneration(config.generation, config.callTimeoutMs !== undefined);
     const budget: InferenceBudget = {
+      spend: scopeFor(config.ledger, config.spendCapUsd, 'F2'),
+      // a cut-off answer is asked again with a larger cap (up to what the model supports) instead of failing the agent
+      escalateTo: capOutputTokens(config.model, 16000).tokens,
       maxModelCalls: clamp(config.maxModelCalls, 1, 30, 14),
       maxOutputTokens: synthTokens,
       callTimeoutMs: clamp(config.callTimeoutMs, 50, 300_000, DEFAULT_BUDGET.callTimeoutMs),
+      generation,
       maxRetries: clamp(config.maxRetries, 0, 3, DEFAULT_BUDGET.maxRetries),
       retryBaseDelayMs: clamp(config.retryBaseDelayMs, 1, 30_000, DEFAULT_BUDGET.retryBaseDelayMs),
     };
@@ -155,13 +171,17 @@ export class F2Program implements RunProgram {
       synthTokens,
       maxModelCalls: budget.maxModelCalls,
       maxReviews: clamp(config.maxReviews, 0, 8, 4),
+      depth: config.depth === true,
       agentTimeoutMs,
+      synthTimeoutMs: clamp(config.agentTimeoutMs, 50, 600_000, 150_000),
       reviewTimeoutMs: clamp(config.reviewTimeoutMs, 50, 600_000, 90_000),
       collectTimeoutMs: Math.max(30, Math.floor(agentTimeoutMs * 0.7)),
       maxPages: clamp(config.maxPages, 1, 8, 5),
       maxLinkChecks: clamp(config.maxLinkChecks, 0, 20, 8),
       fixtureSources: config.fixtureSources === true,
     };
+    // the synthesis writes the longest answer of the phase: its task deadline follows the clock of its request (and the one larger re-ask)
+    if (generation) this.settings.synthTimeoutMs = Math.max(this.settings.agentTimeoutMs, synthesisTaskTimeoutMs(synthTokens, budget.escalateTo, generation));
     this.tools = {
       web: config.tools?.web ?? new WebFetchTool({ maxPages: this.settings.maxPages + this.settings.maxLinkChecks + 4 }),
       pagespeed: config.tools?.pagespeed ?? new PageSpeedTool({ apiKey: process.env.PAGESPEED_API_KEY }),
@@ -360,7 +380,7 @@ export class F2Program implements RunProgram {
             measured: this.measured(env.facts),
             partial,
           };
-          self.openTask(settings.agentTimeoutMs, () => {
+          self.openTask(settings.synthTimeoutMs, () => {
             ctx.emit('task.completed', { agent: name, outcome: 'failed', error: toSafeError('timeout') }, self.participant);
             ctx.emit('phase.failed', { phase: PHASE, reason: 'synthesis_failed', errors: [{ agent: name, error: toSafeError('timeout') }] }, self.participant);
           });

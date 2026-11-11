@@ -1,6 +1,7 @@
 import type { SafeProviderError } from '../ai/errors';
 import { retiredImageModel } from '../ai/image-models';
-import type { ImageResultRecord } from './schemas';
+import { VISUAL_ROLES } from './image-allocation';
+import type { ImageAllocationPlan, ImageCounts, ImageResultRecord, ImageVariationRecord } from './schemas';
 
 /** Failures that will hit every concept the same way: after one of them no further image request is made. */
 export const SYSTEMATIC_IMAGE_FAILURES = new Set(['invalid_api_key', 'permission_denied', 'model_unavailable', 'insufficient_quota']);
@@ -113,4 +114,121 @@ export function distinctReasons(results: { outcome: string; requestAttempted: bo
   const all = results.filter((r) => r.outcome !== 'generated' && !!r.explanation);
   const primary = all.filter((r) => r.requestAttempted || !r.explanation!.startsWith('Not attempted'));
   return [...new Set((primary.length ? primary : all).map((r) => r.explanation!))].slice(0, limit);
+}
+
+// ---- several original images per concept ------------------------------------------------------------------------------------------
+
+/** The identity and plan of one image, before anything is requested for it. */
+export interface VariationBase {
+  conceptId: string;
+  conceptName: string;
+  variationId: string;
+  index: number;
+  variationName: string;
+  visualGoal: string;
+  role: ImageVariationRecord['role'];
+  targetChannels: ImageVariationRecord['targetChannels'];
+  size: ImageVariationRecord['size'];
+  imagePrompt: string;
+  plannedBy: ImageVariationRecord['plannedBy'];
+  providerModel: string | null;
+  quality: string | null;
+}
+
+const blank = { requestAttempted: false, stage: null, generatedAssetId: null, usage: null, costUsd: null, safeError: null, explanation: null, conceptual: true } as const;
+
+export const variationPlanned = (b: VariationBase): ImageVariationRecord => ({ ...b, ...blank, status: 'planned' });
+
+export const variationGenerated = (b: VariationBase, assetId: string, usage: ImageVariationRecord['usage'], costUsd: number | null): ImageVariationRecord => ({ ...b, ...blank, status: 'generated', requestAttempted: true, generatedAssetId: assetId, usage, costUsd });
+
+/** A request that was sent and came back without a usable picture. The provider's own words are kept (sanitized). */
+export function variationFailed(b: VariationBase, err: SafeProviderError, now: Date): ImageVariationRecord {
+  const e = explainImageFailure(b.providerModel ?? 'the image model', err, now);
+  return { ...b, ...blank, status: 'failed', requestAttempted: true, stage: e.stage, explanation: e.explanation, safeError: { code: err.code, message: err.providerMessage ?? err.message, status: err.status ?? null, providerCode: err.providerCode ?? null } };
+}
+
+/** Nothing was sent for this image: the limit on images or money, the configuration, the plan, or an earlier failure that affects all of them. */
+export const variationNotAttempted = (b: VariationBase, stage: NonNullable<Stage>, explanation: string, status: 'skipped' | 'failed' | 'blocked_by_budget'): ImageVariationRecord => ({ ...b, ...blank, status, stage, explanation });
+
+/** The provider delivered a picture (it is billed) but it could not be stored. */
+export const variationStorageFailure = (b: VariationBase, detail: string, usage: ImageVariationRecord['usage'], costUsd: number | null): ImageVariationRecord => ({
+  ...b,
+  ...blank,
+  status: 'failed',
+  requestAttempted: true,
+  stage: 'storage',
+  usage,
+  costUsd,
+  explanation: `Image generation succeeded (OpenAI delivered the image and bills it), but storing it failed: ${detail}.`,
+  safeError: { code: 'storage', message: detail, status: null, providerCode: null },
+});
+
+/**
+ * One record per planned image, always. A slot the Visual Creator never reported on (its picture plan failed, no image model was
+ * selected, ...) gets a record built from facts: it was never requested, and why.
+ */
+export function completeVariations(args: { allocation: ImageAllocationPlan; records: ImageVariationRecord[]; concepts: { id: string; name: string }[]; model: string | null; quality: string | null; imageGeneration: boolean; planningError: string | null }): ImageVariationRecord[] {
+  return args.allocation.variations.map((slot) => {
+    const have = args.records.find((r) => r.variationId === slot.variationId);
+    if (have) return have;
+    const concept = args.concepts.find((c) => c.id === slot.conceptId);
+    const role = VISUAL_ROLES[slot.role];
+    const base: VariationBase = {
+      conceptId: slot.conceptId,
+      conceptName: concept?.name ?? slot.conceptId,
+      variationId: slot.variationId,
+      index: slot.index,
+      variationName: `${concept?.name ?? slot.conceptId} — ${role.label}`.slice(0, 60),
+      visualGoal: role.brief,
+      role: slot.role,
+      targetChannels: slot.targetChannels,
+      size: slot.size,
+      imagePrompt: '',
+      plannedBy: 'deterministic',
+      providerModel: args.model,
+      quality: args.quality,
+    };
+    if (!args.imageGeneration) return variationNotAttempted(base, 'configuration', 'No image model was selected for this campaign, so no AI image was requested.', 'skipped');
+    return variationNotAttempted(base, 'planning', `The picture plan could not be completed${args.planningError ? ` (${args.planningError})` : ''}, so no image was requested for this slot.`, 'failed');
+  });
+}
+
+/** The honest tally of a set of image records. "generated" counts genuine provider results only. */
+export function countVariations(records: Pick<ImageVariationRecord, 'status' | 'requestAttempted'>[], requested: number): ImageCounts {
+  const n = (f: (r: (typeof records)[number]) => boolean) => records.filter(f).length;
+  return {
+    requested,
+    planned: records.length,
+    attempted: n((r) => r.requestAttempted),
+    generated: n((r) => r.status === 'generated'),
+    failed: n((r) => r.status === 'failed'),
+    skipped: n((r) => r.status === 'skipped' || r.status === 'planned'),
+    blockedByBudget: n((r) => r.status === 'blocked_by_budget'),
+  };
+}
+
+/**
+ * The concept-level result derived from the concept's images: generated as soon as ONE image exists; otherwise the first real
+ * failure (or the budget / skip reason), flagged as a stand-in. Keeps the per-concept views (summary, checks) working unchanged.
+ */
+export function conceptResultFromVariations(concept: { id: string; name: string }, records: ImageVariationRecord[], model: string | null, baseAssetId: string): ImageResultRecord {
+  const mine = records.filter((r) => r.conceptId === concept.id);
+  const ok = mine.find((r) => r.status === 'generated');
+  const base = { conceptId: concept.id, conceptName: concept.name, model, assetId: ok?.generatedAssetId ?? baseAssetId };
+  if (ok) return generatedResult(base);
+  const bad = mine.find((r) => r.status === 'failed') ?? mine.find((r) => r.status === 'blocked_by_budget') ?? mine[0];
+  if (!bad) return notAttempted(base, 'planning', 'No image was planned for this concept.', 'skipped');
+  const attempted = mine.some((r) => r.requestAttempted);
+  return {
+    ...base,
+    requestAttempted: attempted,
+    outcome: bad.status === 'failed' ? 'failed' : 'skipped',
+    stage: bad.stage,
+    errorCode: bad.safeError?.code ?? null,
+    providerStatus: bad.safeError?.status ?? null,
+    providerCode: bad.safeError?.providerCode ?? null,
+    message: bad.safeError?.message ?? null,
+    explanation: bad.explanation,
+    fallbackUsed: true,
+  };
 }

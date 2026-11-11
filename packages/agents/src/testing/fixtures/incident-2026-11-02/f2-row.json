@@ -1,0 +1,1760 @@
+{
+ "id": "fx-f2-audit",
+ "projectId": "fx-project",
+ "runId": "fx-f2-run",
+ "f1ReportId": "fx-f1-report",
+ "schemaVersion": 1,
+ "language": "en",
+ "model": "gpt-6.1-sol",
+ "createdAt": "2026-11-02T11:44:10.584Z",
+ "reportJson": {
+  "seo": {
+   "assessment": "Fixture 0265 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral co",
+   "statements": [
+    {
+     "text": "Fixture 0266 entry detail value text sample fixture neutral content example record entry detail value",
+     "basis": "Fixture 0267 detail value text sample fixture neutral content example record entry ",
+     "status": "verified",
+     "severity": "info",
+     "findingIds": [
+      "A8-2"
+     ],
+     "recommendation": null
+    },
+    {
+     "text": "Fixture 0268 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral ",
+     "basis": "Fixture 0269 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content exam",
+     "status": "inferred",
+     "severity": "low",
+     "findingIds": [
+      "A8-4",
+      "A8-5",
+      "A8-6"
+     ],
+     "recommendation": "Fixture 0270 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content e"
+    }
+   ]
+  },
+  "brand": {
+   "assessment": "Fixture 0271 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example",
+   "statements": [
+    {
+     "text": "Fixture 0272 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample",
+     "basis": "Fixture 0273 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral ",
+     "status": "inferred",
+     "severity": "info",
+     "findingIds": [
+      "A10-1",
+      "A10-2"
+     ],
+     "recommendation": null
+    }
+   ]
+  },
+  "social": {
+   "assessment": "Fixture 0274 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixtu",
+   "statements": [
+    {
+     "text": "Fixture 0275 record entry detail value text sample fixture neutral content example r",
+     "basis": "Fixture 0276 entry detail value text sample fixture neutral content example record",
+     "status": "unknown",
+     "severity": "info",
+     "findingIds": [
+      "A12-4"
+     ],
+     "recommendation": "Fixture 0277 detail value text sample fixture neutral content example record entry detail"
+    }
+   ]
+  },
+  "partial": false,
+  "channels": [],
+  "language": "en",
+  "presence": {
+   "assessment": "Fixture 0278 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail val",
+   "statements": [
+    {
+     "text": "Fixture 0279 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neu",
+     "basis": "Fixture 0280 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry",
+     "status": "inferred",
+     "severity": "info",
+     "findingIds": [
+      "A12-1",
+      "A12-2"
+     ],
+     "recommendation": null
+    }
+   ]
+  },
+  "f3Handoff": {
+   "constraints": [
+    "Fixture 0281 fixture neutral content example record entry detail value text sample",
+    "Fixture 0282 neutral content example record entry detail value tex",
+    "Fixture 0283 content example record entry detail value text sample fixture neutral ",
+    "Fixture 0284 example record entry detail value text sample fixture neutral content example rec"
+   ],
+   "priorityThemes": [
+    "Fixture 0285 record entry detail value text sample fixture neutral content",
+    "Fixture 0286 entry detail value text sample fixture neutral content exampl",
+    "Fixture 0287 detail value text sample fixture neutral content example record e"
+   ],
+   "channelHypotheses": [
+    "Fixture 0288 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value t"
+   ],
+   "positioningQuestions": [
+    "Fixture 0289 text sample fixture neutral content example record entry detail value text sampl",
+    "Fixture 0290 sample fixture neutral content example record entry detail value text sample fixture neutral content example recor",
+    "Fixture 0291 fixture neutral content example record entry detail value text sample fixture neutral c",
+    "Fixture 0292 neutral content example record entry detail value text sample fixture neutral content e"
+   ],
+   "audienceHypothesesToTest": [
+    "Fixture 0293 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral c"
+   ]
+  },
+  "messaging": {
+   "assessment": "Fixture 0294 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixt",
+   "statements": [
+    {
+     "text": "Fixture 0295 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text samp",
+     "basis": "Fixture 0296 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entr",
+     "status": "claimed",
+     "severity": "high",
+     "findingIds": [
+      "A11-7",
+      "A11-8",
+      "A11-6"
+     ],
+     "recommendation": "Fixture 0297 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value t"
+    },
+    {
+     "text": "Fixture 0298 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail valu",
+     "basis": "Fixture 0299 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value tex",
+     "status": "inferred",
+     "severity": "medium",
+     "findingIds": [
+      "A8-3",
+      "A11-2",
+      "A10-3"
+     ],
+     "recommendation": "Fixture 0300 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text s"
+    },
+    {
+     "text": "Fixture 0301 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail val",
+     "basis": "Fixture 0302 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample f",
+     "status": "inferred",
+     "severity": "medium",
+     "findingIds": [
+      "A11-3"
+     ],
+     "recommendation": "Fixture 0303 content example record entry detail value text sample fixture neutral content example record entry detail value text sample"
+    },
+    {
+     "text": "Fixture 0304 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value tex",
+     "basis": "Fixture 0305 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture",
+     "status": "inferred",
+     "severity": "medium",
+     "findingIds": [
+      "A11-4"
+     ],
+     "recommendation": "Fixture 0306 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record e"
+    },
+    {
+     "text": "Fixture 0307 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sam",
+     "basis": "Fixture 0308 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value t",
+     "status": "inferred",
+     "severity": "info",
+     "findingIds": [
+      "A11-1",
+      "A11-5",
+      "A11-10"
+     ],
+     "recommendation": null
+    }
+   ]
+  },
+  "strengths": [
+   {
+    "text": "Fixture 0309 text sample fixture neutral content example record entry detail value text sample fixture neutral content examp",
+    "basis": "Fixture 0310 sample fixture neutral content example record entry detail value text sample fixture neutral cont",
+    "status": "inferred",
+    "severity": "info",
+    "findingIds": [
+     "A11-1",
+     "A11-5",
+     "A11-10"
+    ],
+    "recommendation": null
+   },
+   {
+    "text": "Fixture 0311 fixture neutral content example record entry detail value text samp",
+    "basis": "Fixture 0312 neutral content example record entry detail value text sa",
+    "status": "inferred",
+    "severity": "info",
+    "findingIds": [
+     "A12-1",
+     "A10-1"
+    ],
+    "recommendation": null
+   }
+  ],
+  "weaknesses": [
+   {
+    "text": "Fixture 0313 content example record entry detail value text sample fixture neutral content example re",
+    "basis": "Fixture 0314 example record entry detail value text sample fixture neutral content example r",
+    "status": "claimed",
+    "severity": "high",
+    "findingIds": [
+     "A11-7",
+     "A11-8"
+    ],
+    "recommendation": "Fixture 0315 record entry detail value text sample fixture "
+   },
+   {
+    "text": "Fixture 0316 entry detail value text sample fixture neutral content ex",
+    "basis": "Fixture 0317 detail value text sample fixture neutral content example record entr",
+    "status": "inferred",
+    "severity": "medium",
+    "findingIds": [
+     "A8-3",
+     "A11-2",
+     "A10-3"
+    ],
+    "recommendation": "Fixture 0318 value text sample fixture neutral content example r"
+   }
+  ],
+  "limitations": [
+   "Fixture 0319 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture ",
+   "Fixture 0320 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value t",
+   "Fixture 0321 fixture neutral content example record entry detail value text sample fixture neutral content exam",
+   "Fixture 0322 neutral content example record entry detail value text sample fixture neutral content example record entry ",
+   "Fixture 0323 content example record entry detail value text sam"
+  ],
+  "mainProblems": [
+   {
+    "area": "messaging",
+    "title": "Fixture 0324 example record entry detail value text s",
+    "impact": "Prospective buyers cannot assess the scope or limits of consequential benefit and compliance assurances from the supplied material.",
+    "status": "claimed",
+    "severity": "high",
+    "findingIds": [
+     "A11-7",
+     "A11-8"
+    ],
+    "description": "Fixture 0325 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixtur",
+    "recommendation": "Fixture 0326 entry detail value text sample fixture neutral content example record entry detail value text sample fixtu"
+   },
+   {
+    "area": "cross",
+    "title": "Fixture 0327 detail value text sample fixture neutral c",
+    "impact": "Visitors may need additional reading to understand the service category and what they receive.",
+    "status": "inferred",
+    "severity": "medium",
+    "findingIds": [
+     "A8-3",
+     "A11-2",
+     "A10-3"
+    ],
+    "description": "Fixture 0328 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture",
+    "recommendation": "Fixture 0329 text sample fixture neutral content example record entry detail value text sample "
+   },
+   {
+    "area": "messaging",
+    "title": "Fixture 0330 sample fixture neutral ",
+    "impact": "Buyers cannot clearly determine the delivery arrangement or ongoing responsibilities.",
+    "status": "inferred",
+    "severity": "medium",
+    "findingIds": [
+     "A11-6"
+    ],
+    "description": "Fixture 0331 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value te",
+    "recommendation": "Fixture 0332 neutral content example record entry detail value text sample fixture neutral conten"
+   },
+   {
+    "area": "messaging",
+    "title": "Fixture 0333 content example record entry detail",
+    "impact": "Prospective customers may have difficulty judging organizational fit.",
+    "status": "inferred",
+    "severity": "medium",
+    "findingIds": [
+     "A11-3"
+    ],
+    "description": "Fixture 0334 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral ",
+    "recommendation": "Fixture 0335 record entry detail value text sample fixture neutral content exam"
+   },
+   {
+    "area": "messaging",
+    "title": "Fixture 0336 entry detail value text sample",
+    "impact": "The entry offer sets inconsistent expectations about the required commitment.",
+    "status": "inferred",
+    "severity": "medium",
+    "findingIds": [
+     "A11-4"
+    ],
+    "description": "Fixture 0337 detail value text sample fixture neutral content example record entry detail value",
+    "recommendation": "Fixture 0338 value text sample fixture neutral content example record entry d"
+   },
+   {
+    "area": "seo",
+    "title": "Fixture 0339 text sample fixture neutral content exam",
+    "impact": "Page structure and summaries are less precise; the image's accessibility impact remains undetermined. No ranking penalty is established.",
+    "status": "inferred",
+    "severity": "low",
+    "findingIds": [
+     "A8-4",
+     "A8-5",
+     "A8-6"
+    ],
+    "description": "Fixture 0340 sample fixture neutral content example record entry detail value text sample fixture neutral content example rec",
+    "recommendation": "Fixture 0341 fixture neutral content example record entry detail value text sample fixtu"
+   }
+  ],
+  "opportunities": [
+   {
+    "area": "messaging",
+    "title": "Fixture 0342 neutral content example record entry detail",
+    "effort": "high",
+    "priority": "high",
+    "rationale": "Fixture 0343 content example record entry detail value text sample fixture neutral content example record entry det",
+    "findingIds": [
+     "A11-7",
+     "A11-8"
+    ]
+   },
+   {
+    "area": "cross",
+    "title": "Fixture 0344 example record entry detai",
+    "effort": "medium",
+    "priority": "high",
+    "rationale": "Fixture 0345 record entry detail value text sample fixture neutral content example record entry",
+    "findingIds": [
+     "A11-2",
+     "A10-3",
+     "A11-6"
+    ]
+   },
+   {
+    "area": "messaging",
+    "title": "Fixture 0346 entry detail valu",
+    "effort": "medium",
+    "priority": "medium",
+    "rationale": "Fixture 0347 detail value text sample fixture neutral content example record entry detail value text sample fi",
+    "findingIds": [
+     "A11-3"
+    ]
+   },
+   {
+    "area": "cross",
+    "title": "Fixture 0348 value text sample fixture neutral cont",
+    "effort": "low",
+    "priority": "medium",
+    "rationale": "Fixture 0349 text sample fixture neutral content example record entry detail value text sample fixt",
+    "findingIds": [
+     "A11-4",
+     "A8-4",
+     "A8-5",
+     "A8-6"
+    ]
+   }
+  ],
+  "schemaVersion": 1,
+  "websiteHealth": {
+   "robots": "Fixture 0350 sample fixtu",
+   "perPage": [
+    {
+     "url": "https://fixture.invalid/",
+     "title": "Fixture 0352 neutral content example record",
+     "status": 200,
+     "h1Count": 1,
+     "noindex": false,
+     "viewport": true,
+     "canonical": "https://fixture.invalid/",
+     "structuredData": [],
+     "metaDescription": "Fixture 0354 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral "
+    },
+    {
+     "url": "https://fixture.invalid/p355",
+     "title": "Fixture 0356 entry detail value text sample f",
+     "status": 200,
+     "h1Count": 2,
+     "noindex": false,
+     "viewport": true,
+     "canonical": "https://fixture.invalid/p357",
+     "structuredData": [],
+     "metaDescription": "Fixture 0358 value text sample fixture neutral con"
+    },
+    {
+     "url": "https://fixture.invalid/p359",
+     "title": "Fixture 0360 sample fixture neutral content example record e",
+     "status": 200,
+     "h1Count": 1,
+     "noindex": false,
+     "viewport": true,
+     "canonical": "https://fixture.invalid/p361",
+     "structuredData": [],
+     "metaDescription": "Fixture 0362 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content e"
+    },
+    {
+     "url": "https://fixture.invalid/p363",
+     "title": "Fixture 0364 example record entry ",
+     "status": 200,
+     "h1Count": 1,
+     "noindex": false,
+     "viewport": true,
+     "canonical": "https://fixture.invalid/p365",
+     "structuredData": [],
+     "metaDescription": "Fixture 0366 entry detail value text sample fixture neutral content example record entry detail v"
+    },
+    {
+     "url": "https://fixture.invalid/p367",
+     "title": "Fixture 0368 value text sample fixture neutral cont",
+     "status": 200,
+     "h1Count": 1,
+     "noindex": false,
+     "viewport": true,
+     "canonical": "https://fixture.invalid/p369",
+     "structuredData": [],
+     "metaDescription": "Fixture 0370 sample fixture neutral content example record entry detail value text sample fixture neutral co"
+    }
+   ],
+   "sitemap": "Fixture 0371 fixture neutral content example record entry d",
+   "pageSpeed": {
+    "note": "Fixture 0372 neutral content example record entry detail value text sample fixture neutral content example reco",
+    "status": "unavailable",
+    "metrics": []
+   },
+   "reachable": true,
+   "websiteUrl": "https://fixture.invalid/",
+   "pagesAnalyzed": 5,
+   "brokenInternalLinks": 0
+  },
+  "contradictions": [
+   {
+    "topic": "Fixture 0374 example recor",
+    "detail": "Fixture 0375 record entry detail value text sample fixture neutral content example record entry detail",
+    "status": "open",
+    "findingIds": [
+     "A11-4"
+    ]
+   },
+   {
+    "topic": "Fixture 0376 entry detail value text sample fixture ne",
+    "detail": "Fixture 0377 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record ",
+    "status": "resolved",
+    "findingIds": [
+     "A11-7",
+     "A11-8",
+     "A10-2"
+    ]
+   },
+   {
+    "topic": "Fixture 0378 value text sample fixture neutral content example recor",
+    "detail": "Fixture 0379 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record ent",
+    "status": "open",
+    "findingIds": [
+     "A8-1",
+     "A8-7",
+     "A12-5",
+     "A12-3"
+    ]
+   },
+   {
+    "topic": "Fixture 0380 sample fixture",
+    "detail": "Fixture 0381 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value tex",
+    "status": "open",
+    "findingIds": [
+     "A8-8"
+    ]
+   }
+  ],
+  "productContext": {
+   "name": "Fixture 03",
+   "summary": "Fixture 0383 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail va",
+   "category": "Fixture 0384 example record entry detail v",
+   "offering": "Fixture 0385 record entry detail value text sample fixture neutral content example record entry detail value text sample fi",
+   "f1Partial": false,
+   "f1ReportId": "fx-f1-report",
+   "businessType": "service",
+   "f1Confidence": 0.72,
+   "f1GeneratedAt": "2026-11-02T11:42:11.974Z",
+   "f1SchemaVersion": 2,
+   "targetCustomers": [
+    "Fixture 0386 entry detail v",
+    "Fixture 0387 detail valu",
+    "Fixture 0388 valu",
+    "Fixture 0389 text sample fixture neutral content exam"
+   ],
+   "valueProposition": "Fixture 0390 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample f"
+  },
+  "socialPlatforms": [],
+  "evidenceAppendix": {
+   "sources": [
+    {
+     "id": "S1",
+     "kind": "f1_report",
+     "live": false,
+     "error": null,
+     "label": "Fixture 0391 fixture neutral content example record e",
+     "origin": "previous_phase",
+     "status": "retrieved",
+     "fixture": false
+    },
+    {
+     "id": "S2",
+     "kind": "pagespeed",
+     "live": false,
+     "error": "Fixture 0392 neutral content example record entry detail value text sample fixture neutral content example reco",
+     "label": "Fixture 0393 content exam",
+     "origin": "live_api",
+     "status": "skipped",
+     "fixture": false
+    },
+    {
+     "id": "S3",
+     "kind": "website",
+     "live": true,
+     "error": null,
+     "label": "Fixture 0394 example record entry detail va",
+     "origin": "public_page",
+     "status": "retrieved",
+     "fixture": false
+    },
+    {
+     "id": "S4",
+     "kind": "website",
+     "live": true,
+     "error": null,
+     "label": "Fixture 0395 record entry detail value text s",
+     "origin": "public_page",
+     "status": "retrieved",
+     "fixture": false
+    },
+    {
+     "id": "S5",
+     "kind": "website",
+     "live": true,
+     "error": null,
+     "label": "Fixture 0396 entry detail value text sample fixture neutral ",
+     "origin": "public_page",
+     "status": "retrieved",
+     "fixture": false
+    },
+    {
+     "id": "S6",
+     "kind": "website",
+     "live": true,
+     "error": null,
+     "label": "Fixture 0397 detail value text sam",
+     "origin": "public_page",
+     "status": "retrieved",
+     "fixture": false
+    },
+    {
+     "id": "S7",
+     "kind": "website",
+     "live": true,
+     "error": null,
+     "label": "Fixture 0398 value text sample fixture neutral cont",
+     "origin": "public_page",
+     "status": "retrieved",
+     "fixture": false
+    },
+    {
+     "id": "S8",
+     "kind": "robots",
+     "live": true,
+     "error": null,
+     "label": "Fixture 03",
+     "origin": "public_page",
+     "status": "retrieved",
+     "fixture": false
+    },
+    {
+     "id": "S9",
+     "kind": "sitemap",
+     "live": true,
+     "error": null,
+     "label": "Fixture 040",
+     "origin": "public_page",
+     "status": "retrieved",
+     "fixture": false
+    },
+    {
+     "id": "S10",
+     "kind": "website",
+     "live": true,
+     "error": null,
+     "label": "Fixture 0401 fixtur",
+     "origin": "public_page",
+     "status": "retrieved",
+     "fixture": false
+    },
+    {
+     "id": "S11",
+     "kind": "website",
+     "live": true,
+     "error": null,
+     "label": "Fixture 0402 neutral content example recor",
+     "origin": "public_page",
+     "status": "retrieved",
+     "fixture": false
+    }
+   ],
+   "findings": [
+    {
+     "at": "2026-11-02T11:42:32.653Z",
+     "id": "A12-1",
+     "area": "presence",
+     "kind": "assessment",
+     "agent": "Presence Auditor",
+     "title": "Fixture 0403 content example record entry detail value t",
+     "excerpt": "Fixture 0404 example record entry detail value text sample fixture neutral content example",
+     "locator": "Fixture ",
+     "severity": "info",
+     "sourceId": "S11",
+     "statement": "Fixture 0406 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detai",
+     "crosscheck": "agreed (SEO Auditor)",
+     "classification": "inferred",
+     "recommendation": null
+    },
+    {
+     "at": "2026-11-02T11:42:32.653Z",
+     "id": "A12-2",
+     "area": "presence",
+     "kind": "observation",
+     "agent": "Presence Auditor",
+     "title": "Fixture 0407 detail value text sample fixture neut",
+     "excerpt": "Fixture 0408 value text sample fixture neutral content example record entry deta",
+     "locator": "Fixture",
+     "severity": "info",
+     "sourceId": "S3",
+     "statement": "Fixture 0410 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content exa",
+     "crosscheck": "not_requested",
+     "classification": "verified",
+     "recommendation": null
+    },
+    {
+     "at": "2026-11-02T11:42:32.653Z",
+     "id": "A12-3",
+     "area": "presence",
+     "kind": "assessment",
+     "agent": "Presence Auditor",
+     "title": "Fixture 0411 fixture neutral content example record entry",
+     "excerpt": "Fixture 0412 neutral content example record entry d",
+     "locator": "A3-9",
+     "severity": "info",
+     "sourceId": null,
+     "statement": "Fixture 0413 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value ",
+     "crosscheck": "insufficient (SEO Auditor)",
+     "classification": "inferred",
+     "recommendation": null
+    },
+    {
+     "at": "2026-11-02T11:42:32.654Z",
+     "id": "A12-4",
+     "area": "presence",
+     "kind": "gap",
+     "agent": "Presence Auditor",
+     "title": "Fixture 0414 example record entry detail value text sample f",
+     "excerpt": "Fixture 0415 record entry detail value text sample fixtur",
+     "locator": "Fixture ",
+     "severity": "info",
+     "sourceId": "S11",
+     "statement": "Fixture 0417 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sam",
+     "crosscheck": "not_requested",
+     "classification": "unknown",
+     "recommendation": "Fixture 0418 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry"
+    },
+    {
+     "at": "2026-11-02T11:42:32.654Z",
+     "id": "A12-5",
+     "area": "presence",
+     "kind": "observation",
+     "agent": "Presence Auditor",
+     "title": "Fixture 0419 text sample fixture neutral content example record e",
+     "excerpt": "Fixture 0420 sample fixture n",
+     "locator": "Fixture 0421 ",
+     "severity": "low",
+     "sourceId": "S11",
+     "statement": "Fixture 0422 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text s",
+     "crosscheck": "insufficient (SEO Auditor)",
+     "classification": "verified",
+     "recommendation": "Fixture 0423 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content exam"
+    },
+    {
+     "at": "2026-11-02T11:42:40.954Z",
+     "id": "A10-1",
+     "area": "brand",
+     "kind": "assessment",
+     "agent": "Brand Auditor",
+     "title": "Fixture 0424 example record entry detail value text samp",
+     "excerpt": "Fixture 0425 record entry detail value text sample fixture neutral content example record",
+     "locator": "A3-3",
+     "severity": "info",
+     "sourceId": null,
+     "statement": "Fixture 0426 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral con",
+     "crosscheck": "agreed (Messaging Auditor)",
+     "classification": "inferred",
+     "recommendation": null
+    },
+    {
+     "at": "2026-11-02T11:42:40.954Z",
+     "id": "A10-2",
+     "area": "brand",
+     "kind": "observation",
+     "agent": "Brand Auditor",
+     "title": "Fixture 0427 detail value text sample fixture neutral content exa",
+     "excerpt": "Fixture 0428 value text sample fixture neutral content example r",
+     "locator": "Fixture 0429 text sample fixture neutral co",
+     "severity": "info",
+     "sourceId": "S4",
+     "statement": "Fixture 0430 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fi",
+     "crosscheck": "corrected (Messaging Auditor)",
+     "classification": "verified",
+     "recommendation": null
+    },
+    {
+     "at": "2026-11-02T11:42:40.954Z",
+     "id": "A10-3",
+     "area": "brand",
+     "kind": "assessment",
+     "agent": "Brand Auditor",
+     "title": "Fixture 0431 fixture neutral content example record entry ",
+     "excerpt": "Fixture 0432 neutral content example record entry detail value text sample fixture neutral content example",
+     "locator": "A2-8",
+     "severity": "medium",
+     "sourceId": null,
+     "statement": "Fixture 0433 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text",
+     "crosscheck": "agreed (Messaging Auditor)",
+     "classification": "inferred",
+     "recommendation": "Fixture 0434 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example reco"
+    },
+    {
+     "at": "2026-11-02T11:42:40.955Z",
+     "id": "A10-4",
+     "area": "brand",
+     "kind": "gap",
+     "agent": "Brand Auditor",
+     "title": "Fixture 0435 record entry detail value text sample fixture neutral ",
+     "excerpt": "Fixture 0436 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record ent",
+     "locator": "Fixture 0437 detail value te",
+     "severity": "medium",
+     "sourceId": "S3",
+     "statement": "Fixture 0438 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value",
+     "crosscheck": "not_requested",
+     "classification": "unknown",
+     "recommendation": "Fixture 0439 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content ex"
+    },
+    {
+     "at": "2026-11-02T11:42:40.955Z",
+     "id": "A10-5",
+     "area": "brand",
+     "kind": "gap",
+     "agent": "Brand Auditor",
+     "title": "Fixture 0440 sample fixture neutral content example record e",
+     "excerpt": "Fixture",
+     "locator": "A1-10",
+     "severity": "medium",
+     "sourceId": null,
+     "statement": "Fixture 0442 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail val",
+     "crosscheck": "not_requested",
+     "classification": "unknown",
+     "recommendation": "Fixture 0443 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content examp"
+    },
+    {
+     "at": "2026-11-02T11:42:44.286Z",
+     "id": "A8-1",
+     "area": "seo",
+     "kind": "observation",
+     "agent": "SEO Auditor",
+     "title": "Fixture 0444 example record entry detail",
+     "excerpt": "Fixture 0445 record entry ",
+     "locator": "Fixture 0446 entry detail value text sample fixture neutra",
+     "severity": "info",
+     "sourceId": "S3",
+     "statement": "Fixture 0447 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record ent",
+     "crosscheck": "insufficient (Presence Auditor)",
+     "classification": "verified",
+     "recommendation": null
+    },
+    {
+     "at": "2026-11-02T11:42:44.293Z",
+     "id": "A8-2",
+     "area": "seo",
+     "kind": "observation",
+     "agent": "SEO Auditor",
+     "title": "Fixture 0448 value text sample fixture neutral content exa",
+     "excerpt": "Fixture 0449 text sample fixture neutral c",
+     "locator": "https://fixture.invalid/p450",
+     "severity": "info",
+     "sourceId": "S8",
+     "statement": "Fixture 0451 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry ",
+     "crosscheck": "not_requested",
+     "classification": "verified",
+     "recommendation": null
+    },
+    {
+     "at": "2026-11-02T11:42:44.307Z",
+     "id": "A8-3",
+     "area": "seo",
+     "kind": "assessment",
+     "agent": "SEO Auditor",
+     "title": "Fixture 0452 neutral content example record entry detail va",
+     "excerpt": "Fixture 0453 content example record entry detail value text s",
+     "locator": "https://fixture.invalid/p454",
+     "severity": "medium",
+     "sourceId": "S3",
+     "statement": "Fixture 0455 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content e",
+     "crosscheck": "agreed (Messaging Auditor)",
+     "classification": "inferred",
+     "recommendation": "Fixture 0456 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry de"
+    },
+    {
+     "at": "2026-11-02T11:42:44.308Z",
+     "id": "A8-4",
+     "area": "seo",
+     "kind": "observation",
+     "agent": "SEO Auditor",
+     "title": "Fixture 0457 detail value text sample fixture n",
+     "excerpt": "Fixture 0458 value text sample fixture neutral content example record entry detail value text",
+     "locator": "https://fixture.invalid/p459",
+     "severity": "low",
+     "sourceId": "S4",
+     "statement": "Fixture 0460 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample f",
+     "crosscheck": "agreed (Presence Auditor)",
+     "classification": "verified",
+     "recommendation": "Fixture 0461 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail "
+    },
+    {
+     "at": "2026-11-02T11:42:44.329Z",
+     "id": "A8-5",
+     "area": "seo",
+     "kind": "assessment",
+     "agent": "SEO Auditor",
+     "title": "Fixture 0462 neutral content example record entry detail valu",
+     "excerpt": "Fixture 0463 content example record entry detail value text sample fixture neut",
+     "locator": "https://fixture.invalid/p464",
+     "severity": "low",
+     "sourceId": "S4",
+     "statement": "Fixture 0465 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example re",
+     "crosscheck": "agreed (Messaging Auditor)",
+     "classification": "inferred",
+     "recommendation": "Fixture 0466 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example reco"
+    },
+    {
+     "at": "2026-11-02T11:42:44.329Z",
+     "id": "A8-6",
+     "area": "seo",
+     "kind": "observation",
+     "agent": "SEO Auditor",
+     "title": "Fixture 0467 detail value text sample fix",
+     "excerpt": "Fixture 0468 value text sample fixtu",
+     "locator": "https://fixture.invalid/p469",
+     "severity": "low",
+     "sourceId": "S5",
+     "statement": "Fixture 0470 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example re",
+     "crosscheck": "agreed (Presence Auditor)",
+     "classification": "verified",
+     "recommendation": "Fixture 0471 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value t"
+    },
+    {
+     "at": "2026-11-02T11:42:44.351Z",
+     "id": "A8-7",
+     "area": "seo",
+     "kind": "assessment",
+     "agent": "SEO Auditor",
+     "title": "Fixture 0472 neutral content example record entry detail v",
+     "excerpt": "Fixture 0473 content example ",
+     "locator": "Fixture 0474 example record ",
+     "severity": "low",
+     "sourceId": "S3",
+     "statement": "Fixture 0475 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sam",
+     "crosscheck": "insufficient (Messaging Auditor)",
+     "classification": "inferred",
+     "recommendation": "Fixture 0476 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text s"
+    },
+    {
+     "at": "2026-11-02T11:42:44.352Z",
+     "id": "A8-8",
+     "area": "seo",
+     "kind": "observation",
+     "agent": "SEO Auditor",
+     "title": "Fixture 0477 detail value text sample fixture neutr",
+     "excerpt": "Fixture 0478 value text ",
+     "locator": "Fixture 0479 text s",
+     "severity": "info",
+     "sourceId": "S10",
+     "statement": "Fixture 0480 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral conten",
+     "crosscheck": "not_requested",
+     "classification": "verified",
+     "recommendation": "Fixture 0481 fixture neutral content example record entry detail value text sample fixture neutral content ex"
+    },
+    {
+     "at": "2026-11-02T11:42:44.352Z",
+     "id": "A8-9",
+     "area": "seo",
+     "kind": "gap",
+     "agent": "SEO Auditor",
+     "title": "Fixture 0482 neutral content exampl",
+     "excerpt": null,
+     "locator": "Fixture 0483 content example record entry ",
+     "severity": "info",
+     "sourceId": null,
+     "statement": "Fixture 0484 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sam",
+     "crosscheck": "not_requested",
+     "classification": "unknown",
+     "recommendation": "Fixture 0485 record entry detail value text sample fixture neutral content example record entry detail value text sample fi"
+    },
+    {
+     "at": "2026-11-02T11:42:53.252Z",
+     "id": "A11-1",
+     "area": "messaging",
+     "kind": "assessment",
+     "agent": "Messaging Auditor",
+     "title": "Fixture 0486 entry detail value text sample fix",
+     "excerpt": "Fixture 0487 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content exa",
+     "locator": "https://fixture.invalid/p488",
+     "severity": "info",
+     "sourceId": "S4",
+     "statement": "Fixture 0489 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content examp",
+     "crosscheck": "not_requested",
+     "classification": "inferred",
+     "recommendation": null
+    },
+    {
+     "at": "2026-11-02T11:42:53.253Z",
+     "id": "A11-2",
+     "area": "messaging",
+     "kind": "assessment",
+     "agent": "Messaging Auditor",
+     "title": "Fixture 0490 sample fixture neutral content example recor",
+     "excerpt": "Fixture 0491 fixture neu",
+     "locator": "https://fixture.invalid/p492",
+     "severity": "medium",
+     "sourceId": "S3",
+     "statement": "Fixture 0493 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content exam",
+     "crosscheck": "agreed (SEO Auditor)",
+     "classification": "inferred",
+     "recommendation": "Fixture 0494 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content ex"
+    },
+    {
+     "at": "2026-11-02T11:42:53.261Z",
+     "id": "A11-3",
+     "area": "messaging",
+     "kind": "assessment",
+     "agent": "Messaging Auditor",
+     "title": "Fixture 0495 record entry detail value text sample fixt",
+     "excerpt": "Fixture 0496 entry detail value text sample fixture neutral content example record entry detail value text sample fixture n",
+     "locator": "https://fixture.invalid/p497",
+     "severity": "medium",
+     "sourceId": "S4",
+     "statement": "Fixture 0498 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture ne",
+     "crosscheck": "agreed (SEO Auditor)",
+     "classification": "inferred",
+     "recommendation": "Fixture 0499 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail va"
+    },
+    {
+     "at": "2026-11-02T11:42:53.262Z",
+     "id": "A11-4",
+     "area": "messaging",
+     "kind": "assessment",
+     "agent": "Messaging Auditor",
+     "title": "Fixture 0500 sample fixture neutral conte",
+     "excerpt": "Fixture 0501 fixture neutral content example record entry detail value text sample fixture neutral content example record ",
+     "locator": "https://fixture.invalid/p502",
+     "severity": "medium",
+     "sourceId": "S4",
+     "statement": "Fixture 0503 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record en",
+     "crosscheck": "agreed (SEO Auditor)",
+     "classification": "inferred",
+     "recommendation": "Fixture 0504 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value t"
+    },
+    {
+     "at": "2026-11-02T11:42:53.263Z",
+     "id": "A11-5",
+     "area": "messaging",
+     "kind": "assessment",
+     "agent": "Messaging Auditor",
+     "title": "Fixture 0505 record entry detail value text sample fixt",
+     "excerpt": "Fixture 0506 entry detail value text sample fixture neutral content example record entry detail value text sample fixture ",
+     "locator": "https://fixture.invalid/p507",
+     "severity": "info",
+     "sourceId": "S4",
+     "statement": "Fixture 0508 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail",
+     "crosscheck": "not_requested",
+     "classification": "inferred",
+     "recommendation": null
+    },
+    {
+     "at": "2026-11-02T11:42:53.263Z",
+     "id": "A11-6",
+     "area": "messaging",
+     "kind": "assessment",
+     "agent": "Messaging Auditor",
+     "title": "Fixture 0509 text sample fixture neutral content example record",
+     "excerpt": "Fixture 0510 sample fixture neutral content exampl",
+     "locator": "https://fixture.invalid/p511",
+     "severity": "medium",
+     "sourceId": "S4",
+     "statement": "Fixture 0512 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content exa",
+     "crosscheck": "not_requested",
+     "classification": "inferred",
+     "recommendation": "Fixture 0513 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral conte"
+    },
+    {
+     "at": "2026-11-02T11:42:53.263Z",
+     "id": "A11-7",
+     "area": "messaging",
+     "kind": "claim_on_source",
+     "agent": "Messaging Auditor",
+     "title": "Fixture 0514 example record entry detail value text sample fixt",
+     "excerpt": "Fixture 0515 record entry detail value text sample fixture neutral content example record entry detail valu",
+     "locator": "https://fixture.invalid/p516",
+     "severity": "high",
+     "sourceId": "S3",
+     "statement": "Fixture 0517 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text s",
+     "crosscheck": "corrected (Brand Auditor)",
+     "classification": "claimed",
+     "recommendation": "Fixture 0518 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record e"
+    },
+    {
+     "at": "2026-11-02T11:42:53.264Z",
+     "id": "A11-8",
+     "area": "messaging",
+     "kind": "claim_on_source",
+     "agent": "Messaging Auditor",
+     "title": "Fixture 0519 text sample fixture neutral content example record ent",
+     "excerpt": "Fixture 0520 sample fixture neutral content",
+     "locator": "https://fixture.invalid/p521",
+     "severity": "high",
+     "sourceId": "S4",
+     "statement": "Fixture 0522 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value t",
+     "crosscheck": "corrected (Brand Auditor)",
+     "classification": "claimed",
+     "recommendation": "Fixture 0523 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture n"
+    },
+    {
+     "at": "2026-11-02T11:42:53.264Z",
+     "id": "A11-9",
+     "area": "messaging",
+     "kind": "claim_on_source",
+     "agent": "Messaging Auditor",
+     "title": "Fixture 0524 example record entry detail value text sample fixture",
+     "excerpt": "Fixture 0525 record entry detail value text sample fixture neutral conten",
+     "locator": "https://fixture.invalid/p526",
+     "severity": "medium",
+     "sourceId": "S3",
+     "statement": "Fixture 0527 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content ",
+     "crosscheck": "agreed (Brand Auditor)",
+     "classification": "claimed",
+     "recommendation": "Fixture 0528 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neu"
+    },
+    {
+     "at": "2026-11-02T11:42:53.265Z",
+     "id": "A11-10",
+     "area": "messaging",
+     "kind": "assessment",
+     "agent": "Messaging Auditor",
+     "title": "Fixture 0529 text sample fixture neutral content examp",
+     "excerpt": "Fixture 0530 sample fixture neutral content example record entry detail val",
+     "locator": "https://fixture.invalid/p531",
+     "severity": "info",
+     "sourceId": "S5",
+     "statement": "Fixture 0532 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixtur",
+     "crosscheck": "not_requested",
+     "classification": "inferred",
+     "recommendation": null
+    }
+   ]
+  },
+  "executiveSummary": "Fixture 0533 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example ",
+  "additionalLimitations": [
+   "Fixture 0534 example record entry detail value text sample fixture neutral content example",
+   "Fixture 0535 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture ",
+   "Fixture 0536 entry detail value text sample fixture neutral",
+   "Fixture 0537 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content examp",
+   "Fixture 0538 value text sample fixture neutral content example record entry detail value text sample fixture neutral ",
+   "Fixture 0539 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content ",
+   "Fixture 0540 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail va",
+   "Fixture 0541 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example"
+  ]
+ },
+ "metadataJson": {
+  "generatedAt": "2026-11-02T11:44:10.196Z",
+  "model": "gpt-6.1-sol",
+  "findings": [
+   {
+    "at": "2026-11-02T11:42:32.653Z",
+    "id": "A12-1",
+    "area": "presence",
+    "kind": "assessment",
+    "agent": "Presence Auditor",
+    "title": "Fixture 0542 neutral content example record entry detail",
+    "excerpt": "Fixture 0543 content example record entry detail value text sample fixture neutral content",
+    "locator": "Fixture ",
+    "severity": "info",
+    "sourceId": "S11",
+    "statement": "Fixture 0545 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entr",
+    "adjustment": null,
+    "confidence": 0.97,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 054"
+     ]
+    },
+    "sourceType": "website",
+    "classification": "inferred",
+    "recommendation": null
+   },
+   {
+    "at": "2026-11-02T11:42:32.653Z",
+    "id": "A12-2",
+    "area": "presence",
+    "kind": "observation",
+    "agent": "Presence Auditor",
+    "title": "Fixture 0547 detail value text sample fixture neut",
+    "excerpt": "Fixture 0548 value text sample fixture neutral content example record entry deta",
+    "locator": "Fixture",
+    "severity": "info",
+    "sourceId": "S3",
+    "statement": "Fixture 0550 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content exa",
+    "adjustment": null,
+    "confidence": 0.99,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "sourceType": "website",
+    "classification": "verified",
+    "recommendation": null
+   },
+   {
+    "at": "2026-11-02T11:42:32.653Z",
+    "id": "A12-3",
+    "area": "presence",
+    "kind": "assessment",
+    "agent": "Presence Auditor",
+    "title": "Fixture 0551 fixture neutral content example record entry",
+    "excerpt": "Fixture 0552 neutral content example record entry d",
+    "locator": "A3-9",
+    "severity": "info",
+    "sourceId": null,
+    "statement": "Fixture 0553 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value ",
+    "adjustment": null,
+    "confidence": 0.93,
+    "crosscheck": {
+     "status": "insufficient",
+     "reviewers": [
+      "Fixture 055"
+     ]
+    },
+    "sourceType": "f1_finding",
+    "classification": "inferred",
+    "recommendation": null
+   },
+   {
+    "at": "2026-11-02T11:42:32.654Z",
+    "id": "A12-4",
+    "area": "presence",
+    "kind": "gap",
+    "agent": "Presence Auditor",
+    "title": "Fixture 0555 record entry detail value text sample fixture n",
+    "excerpt": "Fixture 0556 entry detail value text sample fixture neutr",
+    "locator": "Fixture ",
+    "severity": "info",
+    "sourceId": "S11",
+    "statement": "Fixture 0558 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fix",
+    "adjustment": null,
+    "confidence": 0.99,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "sourceType": "website",
+    "classification": "unknown",
+    "recommendation": "Fixture 0559 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detai"
+   },
+   {
+    "at": "2026-11-02T11:42:32.654Z",
+    "id": "A12-5",
+    "area": "presence",
+    "kind": "observation",
+    "agent": "Presence Auditor",
+    "title": "Fixture 0560 sample fixture neutral content example record entry ",
+    "excerpt": "Fixture 0561 fixture neutral ",
+    "locator": "Fixture 0562 ",
+    "severity": "low",
+    "sourceId": "S11",
+    "statement": "Fixture 0563 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fi",
+    "adjustment": null,
+    "confidence": 0.9,
+    "crosscheck": {
+     "status": "insufficient",
+     "reviewers": [
+      "Fixture 056"
+     ]
+    },
+    "sourceType": "website",
+    "classification": "verified",
+    "recommendation": "Fixture 0565 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry"
+   },
+   {
+    "at": "2026-11-02T11:42:40.954Z",
+    "id": "A10-1",
+    "area": "brand",
+    "kind": "assessment",
+    "agent": "Brand Auditor",
+    "title": "Fixture 0566 entry detail value text sample fixture neut",
+    "excerpt": "Fixture 0567 detail value text sample fixture neutral content example record entry detail",
+    "locator": "A3-3",
+    "severity": "info",
+    "sourceId": null,
+    "statement": "Fixture 0568 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example ",
+    "adjustment": null,
+    "confidence": 0.88,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0569 text"
+     ]
+    },
+    "sourceType": "f1_finding",
+    "classification": "inferred",
+    "recommendation": null
+   },
+   {
+    "at": "2026-11-02T11:42:40.954Z",
+    "id": "A10-2",
+    "area": "brand",
+    "kind": "observation",
+    "agent": "Brand Auditor",
+    "title": "Fixture 0570 sample fixture neutral content example record entry ",
+    "excerpt": "Fixture 0571 fixture neutral content example record entry detail",
+    "locator": "Fixture 0572 neutral content example record",
+    "severity": "info",
+    "sourceId": "S4",
+    "statement": "Fixture 0573 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content e",
+    "adjustment": null,
+    "confidence": 0.99,
+    "crosscheck": {
+     "status": "corrected",
+     "reviewers": [
+      "Fixture 0574 exam"
+     ]
+    },
+    "sourceType": "website",
+    "classification": "verified",
+    "recommendation": null
+   },
+   {
+    "at": "2026-11-02T11:42:40.954Z",
+    "id": "A10-3",
+    "area": "brand",
+    "kind": "assessment",
+    "agent": "Brand Auditor",
+    "title": "Fixture 0575 record entry detail value text sample fixture",
+    "excerpt": "Fixture 0576 entry detail value text sample fixture neutral content example record entry detail value text",
+    "locator": "A2-8",
+    "severity": "medium",
+    "sourceId": null,
+    "statement": "Fixture 0577 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral conte",
+    "adjustment": null,
+    "confidence": 0.86,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0578 valu"
+     ]
+    },
+    "sourceType": "f1_finding",
+    "classification": "inferred",
+    "recommendation": "Fixture 0579 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample "
+   },
+   {
+    "at": "2026-11-02T11:42:40.955Z",
+    "id": "A10-4",
+    "area": "brand",
+    "kind": "gap",
+    "agent": "Brand Auditor",
+    "title": "Fixture 0580 sample fixture neutral content example record entry de",
+    "excerpt": "Fixture 0581 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fix",
+    "locator": "Fixture 0582 neutral content",
+    "severity": "medium",
+    "sourceId": "S3",
+    "statement": "Fixture 0583 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral conte",
+    "adjustment": null,
+    "confidence": 0.99,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "sourceType": "website",
+    "classification": "unknown",
+    "recommendation": "Fixture 0584 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text"
+   },
+   {
+    "at": "2026-11-02T11:42:40.955Z",
+    "id": "A10-5",
+    "area": "brand",
+    "kind": "gap",
+    "agent": "Brand Auditor",
+    "title": "Fixture 0585 record entry detail value text sample fixture n",
+    "excerpt": "Fixture",
+    "locator": "A1-10",
+    "severity": "medium",
+    "sourceId": null,
+    "statement": "Fixture 0587 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral conten",
+    "adjustment": null,
+    "confidence": 0.98,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "sourceType": "f1_finding",
+    "classification": "unknown",
+    "recommendation": "Fixture 0588 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sa"
+   },
+   {
+    "at": "2026-11-02T11:42:44.286Z",
+    "id": "A8-1",
+    "area": "seo",
+    "kind": "observation",
+    "agent": "SEO Auditor",
+    "title": "Fixture 0589 text sample fixture neutral",
+    "excerpt": "Fixture 0590 sample fixtur",
+    "locator": "Fixture 0591 fixture neutral content example record entry ",
+    "severity": "info",
+    "sourceId": "S3",
+    "statement": "Fixture 0592 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixtu",
+    "adjustment": null,
+    "confidence": 0.99,
+    "crosscheck": {
+     "status": "insufficient",
+     "reviewers": [
+      "Fixture 0593 con"
+     ]
+    },
+    "sourceType": "website",
+    "classification": "verified",
+    "recommendation": null
+   },
+   {
+    "at": "2026-11-02T11:42:44.293Z",
+    "id": "A8-2",
+    "area": "seo",
+    "kind": "observation",
+    "agent": "SEO Auditor",
+    "title": "Fixture 0594 example record entry detail value text sample",
+    "excerpt": "Fixture 0595 record entry detail value tex",
+    "locator": "https://fixture.invalid/p596",
+    "severity": "info",
+    "sourceId": "S8",
+    "statement": "Fixture 0597 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral cont",
+    "adjustment": null,
+    "confidence": 0.99,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "sourceType": "website",
+    "classification": "verified",
+    "recommendation": null
+   },
+   {
+    "at": "2026-11-02T11:42:44.307Z",
+    "id": "A8-3",
+    "area": "seo",
+    "kind": "assessment",
+    "agent": "SEO Auditor",
+    "title": "Fixture 0598 value text sample fixture neutral content exam",
+    "excerpt": "Fixture 0599 text sample fixture neutral content example reco",
+    "locator": "https://fixture.invalid/p600",
+    "severity": "medium",
+    "sourceId": "S3",
+    "statement": "Fixture 0601 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text ",
+    "adjustment": null,
+    "confidence": 0.91,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0602 neut"
+     ]
+    },
+    "sourceType": "website",
+    "classification": "inferred",
+    "recommendation": "Fixture 0603 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content "
+   },
+   {
+    "at": "2026-11-02T11:42:44.308Z",
+    "id": "A8-4",
+    "area": "seo",
+    "kind": "observation",
+    "agent": "SEO Auditor",
+    "title": "Fixture 0604 example record entry detail value ",
+    "excerpt": "Fixture 0605 record entry detail value text sample fixture neutral content example record ent",
+    "locator": "https://fixture.invalid/p606",
+    "severity": "low",
+    "sourceId": "S4",
+    "statement": "Fixture 0607 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail v",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0608 val"
+     ]
+    },
+    "sourceType": "website",
+    "classification": "verified",
+    "recommendation": "Fixture 0609 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record e"
+   },
+   {
+    "at": "2026-11-02T11:42:44.329Z",
+    "id": "A8-5",
+    "area": "seo",
+    "kind": "assessment",
+    "agent": "SEO Auditor",
+    "title": "Fixture 0610 sample fixture neutral content example record en",
+    "excerpt": "Fixture 0611 fixture neutral content example record entry detail value text sam",
+    "locator": "https://fixture.invalid/p612",
+    "severity": "low",
+    "sourceId": "S4",
+    "statement": "Fixture 0613 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral co",
+    "adjustment": null,
+    "confidence": 0.92,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0614 exam"
+     ]
+    },
+    "sourceType": "website",
+    "classification": "inferred",
+    "recommendation": "Fixture 0615 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content examp"
+   },
+   {
+    "at": "2026-11-02T11:42:44.329Z",
+    "id": "A8-6",
+    "area": "seo",
+    "kind": "observation",
+    "agent": "SEO Auditor",
+    "title": "Fixture 0616 entry detail value text samp",
+    "excerpt": "Fixture 0617 detail value text sampl",
+    "locator": "https://fixture.invalid/p618",
+    "severity": "low",
+    "sourceId": "S5",
+    "statement": "Fixture 0619 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content examp",
+    "adjustment": null,
+    "confidence": 0.99,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0620 sam"
+     ]
+    },
+    "sourceType": "website",
+    "classification": "verified",
+    "recommendation": "Fixture 0621 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value t"
+   },
+   {
+    "at": "2026-11-02T11:42:44.351Z",
+    "id": "A8-7",
+    "area": "seo",
+    "kind": "assessment",
+    "agent": "SEO Auditor",
+    "title": "Fixture 0622 neutral content example record entry detail v",
+    "excerpt": "Fixture 0623 content example ",
+    "locator": "Fixture 0624 example record ",
+    "severity": "low",
+    "sourceId": "S3",
+    "statement": "Fixture 0625 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sam",
+    "adjustment": null,
+    "confidence": 0.95,
+    "crosscheck": {
+     "status": "insufficient",
+     "reviewers": [
+      "Fixture 0626 entr"
+     ]
+    },
+    "sourceType": "website",
+    "classification": "inferred",
+    "recommendation": "Fixture 0627 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample "
+   },
+   {
+    "at": "2026-11-02T11:42:44.352Z",
+    "id": "A8-8",
+    "area": "seo",
+    "kind": "observation",
+    "agent": "SEO Auditor",
+    "title": "Fixture 0628 value text sample fixture neutral cont",
+    "excerpt": "Fixture 0629 text sample",
+    "locator": "Fixture 0630 sample",
+    "severity": "info",
+    "sourceId": "S10",
+    "statement": "Fixture 0631 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content examp",
+    "adjustment": null,
+    "confidence": 0.96,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "sourceType": "website",
+    "classification": "verified",
+    "recommendation": "Fixture 0632 neutral content example record entry detail value text sample fixture neutral content example re"
+   },
+   {
+    "at": "2026-11-02T11:42:44.352Z",
+    "id": "A8-9",
+    "area": "seo",
+    "kind": "gap",
+    "agent": "SEO Auditor",
+    "title": "Fixture 0633 content example record",
+    "excerpt": null,
+    "locator": "Fixture 0634 example record entry detail v",
+    "severity": "info",
+    "sourceId": null,
+    "statement": "Fixture 0635 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixt",
+    "adjustment": null,
+    "confidence": 1,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "sourceType": "user_provided",
+    "classification": "unknown",
+    "recommendation": "Fixture 0636 entry detail value text sample fixture neutral content example record entry detail value text sample fixture n"
+   },
+   {
+    "at": "2026-11-02T11:42:53.252Z",
+    "id": "A11-1",
+    "area": "messaging",
+    "kind": "assessment",
+    "agent": "Messaging Auditor",
+    "title": "Fixture 0637 detail value text sample fixture n",
+    "excerpt": "Fixture 0638 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example re",
+    "locator": "https://fixture.invalid/p639",
+    "severity": "info",
+    "sourceId": "S4",
+    "statement": "Fixture 0640 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example re",
+    "adjustment": null,
+    "confidence": 0.97,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "sourceType": "website",
+    "classification": "inferred",
+    "recommendation": null
+   },
+   {
+    "at": "2026-11-02T11:42:53.253Z",
+    "id": "A11-2",
+    "area": "messaging",
+    "kind": "assessment",
+    "agent": "Messaging Auditor",
+    "title": "Fixture 0641 fixture neutral content example record entry",
+    "excerpt": "Fixture 0642 neutral con",
+    "locator": "https://fixture.invalid/p643",
+    "severity": "medium",
+    "sourceId": "S3",
+    "statement": "Fixture 0644 example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example reco",
+    "adjustment": null,
+    "confidence": 0.94,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 064"
+     ]
+    },
+    "sourceType": "website",
+    "classification": "inferred",
+    "recommendation": "Fixture 0646 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record en"
+   },
+   {
+    "at": "2026-11-02T11:42:53.261Z",
+    "id": "A11-3",
+    "area": "messaging",
+    "kind": "assessment",
+    "agent": "Messaging Auditor",
+    "title": "Fixture 0647 detail value text sample fixture neutral c",
+    "excerpt": "Fixture 0648 value text sample fixture neutral content example record entry detail value text sample fixture neutral conten",
+    "locator": "https://fixture.invalid/p649",
+    "severity": "medium",
+    "sourceId": "S4",
+    "statement": "Fixture 0650 sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral conte",
+    "adjustment": null,
+    "confidence": 0.92,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 065"
+     ]
+    },
+    "sourceType": "website",
+    "classification": "inferred",
+    "recommendation": "Fixture 0652 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixt"
+   },
+   {
+    "at": "2026-11-02T11:42:53.262Z",
+    "id": "A11-4",
+    "area": "messaging",
+    "kind": "assessment",
+    "agent": "Messaging Auditor",
+    "title": "Fixture 0653 content example record entry",
+    "excerpt": "Fixture 0654 example record entry detail value text sample fixture neutral content example record entry detail value text ",
+    "locator": "https://fixture.invalid/p655",
+    "severity": "medium",
+    "sourceId": "S4",
+    "statement": "Fixture 0656 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text s",
+    "adjustment": null,
+    "confidence": 0.99,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 065"
+     ]
+    },
+    "sourceType": "website",
+    "classification": "inferred",
+    "recommendation": "Fixture 0658 value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral c"
+   },
+   {
+    "at": "2026-11-02T11:42:53.263Z",
+    "id": "A11-5",
+    "area": "messaging",
+    "kind": "assessment",
+    "agent": "Messaging Auditor",
+    "title": "Fixture 0659 text sample fixture neutral content exampl",
+    "excerpt": "Fixture 0660 sample fixture neutral content example record entry detail value text sample fixture neutral content example ",
+    "locator": "https://fixture.invalid/p661",
+    "severity": "info",
+    "sourceId": "S4",
+    "statement": "Fixture 0662 neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture",
+    "adjustment": null,
+    "confidence": 0.96,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "sourceType": "website",
+    "classification": "inferred",
+    "recommendation": null
+   },
+   {
+    "at": "2026-11-02T11:42:53.263Z",
+    "id": "A11-6",
+    "area": "messaging",
+    "kind": "assessment",
+    "agent": "Messaging Auditor",
+    "title": "Fixture 0663 content example record entry detail value text sam",
+    "excerpt": "Fixture 0664 example record entry detail value tex",
+    "locator": "https://fixture.invalid/p665",
+    "severity": "medium",
+    "sourceId": "S4",
+    "statement": "Fixture 0666 entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value ",
+    "adjustment": null,
+    "confidence": 0.9,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "sourceType": "website",
+    "classification": "inferred",
+    "recommendation": "Fixture 0667 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detai"
+   },
+   {
+    "at": "2026-11-02T11:42:53.263Z",
+    "id": "A11-7",
+    "area": "messaging",
+    "kind": "claim_on_source",
+    "agent": "Messaging Auditor",
+    "title": "Fixture 0668 value text sample fixture neutral content example ",
+    "excerpt": "Fixture 0669 text sample fixture neutral content example record entry detail value text sample fixture neut",
+    "locator": "https://fixture.invalid/p670",
+    "severity": "high",
+    "sourceId": "S3",
+    "statement": "Fixture 0671 fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral con",
+    "adjustment": null,
+    "confidence": 0.98,
+    "crosscheck": {
+     "status": "corrected",
+     "reviewers": [
+      "Fixture 0672 "
+     ]
+    },
+    "sourceType": "website",
+    "classification": "claimed",
+    "recommendation": "Fixture 0673 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixt"
+   },
+   {
+    "at": "2026-11-02T11:42:53.264Z",
+    "id": "A11-8",
+    "area": "messaging",
+    "kind": "claim_on_source",
+    "agent": "Messaging Auditor",
+    "title": "Fixture 0674 example record entry detail value text sample fixture ",
+    "excerpt": "Fixture 0675 record entry detail value text",
+    "locator": "https://fixture.invalid/p676",
+    "severity": "high",
+    "sourceId": "S4",
+    "statement": "Fixture 0677 detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content ex",
+    "adjustment": null,
+    "confidence": 0.98,
+    "crosscheck": {
+     "status": "corrected",
+     "reviewers": [
+      "Fixture 0678 "
+     ]
+    },
+    "sourceType": "website",
+    "classification": "claimed",
+    "recommendation": "Fixture 0679 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail"
+   },
+   {
+    "at": "2026-11-02T11:42:53.264Z",
+    "id": "A11-9",
+    "area": "messaging",
+    "kind": "claim_on_source",
+    "agent": "Messaging Auditor",
+    "title": "Fixture 0680 sample fixture neutral content example record entry d",
+    "excerpt": "Fixture 0681 fixture neutral content example record entry detail value te",
+    "locator": "https://fixture.invalid/p682",
+    "severity": "medium",
+    "sourceId": "S3",
+    "statement": "Fixture 0683 content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sa",
+    "adjustment": null,
+    "confidence": 0.92,
+    "crosscheck": {
+     "status": "agreed",
+     "reviewers": [
+      "Fixture 0684 "
+     ]
+    },
+    "sourceType": "website",
+    "classification": "claimed",
+    "recommendation": "Fixture 0685 record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value tex"
+   },
+   {
+    "at": "2026-11-02T11:42:53.265Z",
+    "id": "A11-10",
+    "area": "messaging",
+    "kind": "assessment",
+    "agent": "Messaging Auditor",
+    "title": "Fixture 0686 entry detail value text sample fixture ne",
+    "excerpt": "Fixture 0687 detail value text sample fixture neutral content example recor",
+    "locator": "https://fixture.invalid/p688",
+    "severity": "info",
+    "sourceId": "S5",
+    "statement": "Fixture 0689 text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail value text sample fixture neutral content example record entry detail valu",
+    "adjustment": null,
+    "confidence": 0.97,
+    "crosscheck": {
+     "status": "not_requested",
+     "reviewers": []
+    },
+    "sourceType": "website",
+    "classification": "inferred",
+    "recommendation": null
+   }
+  ]
+ }
+}

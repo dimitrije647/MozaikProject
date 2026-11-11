@@ -38,6 +38,9 @@ export interface LayoutOp {
   format: string;
   channel: ChannelId;
   variantId: string;
+  /** Several images per concept: the planned image whose layout this is, and the original it is cut from. */
+  variationId?: string | null;
+  baseAssetId?: string | null;
   findingIds: string[];
   overrides: LayoutOverrides;
 }
@@ -54,8 +57,10 @@ export interface FindingPlan {
 export interface RepairPlan {
   copy: Map<string, Set<string>>; // variantId -> finding ids
   landing: Set<string>;
+  /** Findings that are repaired by aligning the landing call to action with the ads (deterministic: no model call, no wording changed). */
+  ctaAlign: Set<string>;
   images: Map<string, Set<string>>; // conceptId -> finding ids
-  layouts: Map<string, { conceptId: string; format: string; channel: ChannelId; variantId: string; findingIds: Set<string>; overrides: LayoutOverrides }>;
+  layouts: Map<string, { conceptId: string; format: string; channel: ChannelId; variantId: string; variationId?: string | null; baseAssetId?: string | null; findingIds: Set<string>; overrides: LayoutOverrides }>;
   byFinding: FindingPlan[];
 }
 
@@ -65,7 +70,7 @@ export interface RepairOptions {
   owners: { copywriter: string; landing: string; layout: string; visual: string };
 }
 
-const layoutKey = (conceptId: string, format: string, variantId: string) => `${conceptId}|${format}|${variantId}`;
+export const layoutKey = (conceptId: string, format: string, variantId: string, variationId?: string | null) => `${conceptId}|${format}|${variantId}${variationId ? `|${variationId}` : ''}`;
 
 /** Parameters that address the cause the reviewer measured. */
 export function overridesFor(f: Pick<ReviewFindingRecord, 'kind' | 'finding'>): LayoutOverrides {
@@ -89,20 +94,20 @@ const merge = (a: LayoutOverrides, b: LayoutOverrides): LayoutOverrides => ({
 });
 
 export function planRepairs(board: CreativeBoard, findings: ReviewFindingRecord[], opts: RepairOptions): RepairPlan {
-  const plan: RepairPlan = { copy: new Map(), landing: new Set(), images: new Map(), layouts: new Map(), byFinding: [] };
+  const plan: RepairPlan = { copy: new Map(), landing: new Set(), ctaAlign: new Set(), images: new Map(), layouts: new Map(), byFinding: [] };
   const none = (f: ReviewFindingRecord, owner: string, note: string) => plan.byFinding.push({ findingId: f.id, operation: 'none', owner, opKey: null, note });
   const variantOf = (ref: string | null) => {
     if (!ref) return undefined;
     if (board.variants.some((v) => v.id === ref)) return ref;
     return board.layouts.find((l) => l.assetId === ref)?.variantId;
   };
-  const addLayout = (conceptId: string, format: string, channel: ChannelId, variantId: string, f: ReviewFindingRecord) => {
-    const k = layoutKey(conceptId, format, variantId);
+  const addLayout = (conceptId: string, format: string, channel: ChannelId, variantId: string, f: ReviewFindingRecord, variationId?: string | null, baseAssetId?: string | null) => {
+    const k = layoutKey(conceptId, format, variantId, variationId);
     const cur = plan.layouts.get(k);
     if (cur) {
       cur.findingIds.add(f.id);
       cur.overrides = merge(cur.overrides, overridesFor(f));
-    } else plan.layouts.set(k, { conceptId, format, channel, variantId, findingIds: new Set([f.id]), overrides: overridesFor(f) });
+    } else plan.layouts.set(k, { conceptId, format, channel, variantId, variationId, baseAssetId, findingIds: new Set([f.id]), overrides: overridesFor(f) });
     return k;
   };
 
@@ -115,13 +120,17 @@ export function planRepairs(board: CreativeBoard, findings: ReviewFindingRecord[
       }
       (plan.copy.get(v) ?? plan.copy.set(v, new Set()).get(v)!).add(f.id);
       plan.byFinding.push({ findingId: f.id, operation: 'revise_copy', owner: opts.owners.copywriter, opKey: `copy:${v}`, note: '' });
+    } else if (f.responsibleAgent === 'landing' && f.kind === 'cta_mismatch' && f.source === 'deterministic') {
+      // the landing page's text revision cannot change its call-to-action TYPE, so this one is aligned directly (and said so)
+      plan.ctaAlign.add(f.id);
+      plan.byFinding.push({ findingId: f.id, operation: 'align_cta', owner: opts.owners.landing, opKey: 'cta:landing', note: '' });
     } else if (f.responsibleAgent === 'landing') {
       plan.landing.add(f.id);
       plan.byFinding.push({ findingId: f.id, operation: 'revise_landing', owner: opts.owners.landing, opKey: 'landing', note: '' });
     } else if (f.responsibleAgent === 'layout') {
       const existing = board.layouts.find((l) => l.assetId === f.assetRef);
       if (existing) {
-        const k = addLayout(existing.conceptId, existing.format, existing.channel, existing.variantId, f);
+        const k = addLayout(existing.conceptId, existing.format, existing.channel, existing.variantId, f, existing.variationId, existing.baseAssetId);
         plan.byFinding.push({ findingId: f.id, operation: 'rerender_layout', owner: opts.owners.layout, opKey: `layout:${k}`, note: '' });
       } else if (f.assetRef && board.concepts.some((c) => c.id === f.assetRef)) {
         // the concept has no exported layout at all: render each requested format again
@@ -160,21 +169,21 @@ export function planRepairs(board: CreativeBoard, findings: ReviewFindingRecord[
  */
 export function layoutOperations(board: CreativeBoard, plan: RepairPlan, applied: { variantIds: string[]; conceptIds: string[] }, nextId: () => string): LayoutOp[] {
   const ops = new Map<string, LayoutOp>();
-  const add = (conceptId: string, format: string, channel: ChannelId, variantId: string, findingIds: Iterable<string>, overrides: LayoutOverrides) => {
-    const k = layoutKey(conceptId, format, variantId);
+  const add = (conceptId: string, format: string, channel: ChannelId, variantId: string, findingIds: Iterable<string>, overrides: LayoutOverrides, variationId?: string | null, baseAssetId?: string | null) => {
+    const k = layoutKey(conceptId, format, variantId, variationId);
     const cur = ops.get(k);
     if (cur) {
       cur.findingIds = [...new Set([...cur.findingIds, ...findingIds])];
       cur.overrides = merge(cur.overrides, overrides);
-    } else ops.set(k, { id: nextId(), kind: 'rerender_layout', conceptId, format, channel, variantId, findingIds: [...findingIds], overrides });
+    } else ops.set(k, { id: nextId(), kind: 'rerender_layout', conceptId, format, channel, variantId, variationId, baseAssetId, findingIds: [...findingIds], overrides });
   };
-  for (const v of plan.layouts.values()) add(v.conceptId, v.format, v.channel, v.variantId, v.findingIds, v.overrides);
+  for (const v of plan.layouts.values()) add(v.conceptId, v.format, v.channel, v.variantId, v.findingIds, v.overrides, v.variationId, v.baseAssetId);
   for (const l of board.layouts) {
     const a = board.assets.find((x) => x.id === l.assetId);
     if (a?.status === 'superseded') continue;
     const copyIds = plan.copy.get(l.variantId);
-    if (applied.variantIds.includes(l.variantId)) add(l.conceptId, l.format, l.channel, l.variantId, copyIds ?? [], {});
-    if (applied.conceptIds.includes(l.conceptId)) add(l.conceptId, l.format, l.channel, l.variantId, [...(plan.images.get(l.conceptId) ?? [])], {});
+    if (applied.variantIds.includes(l.variantId)) add(l.conceptId, l.format, l.channel, l.variantId, copyIds ?? [], {}, l.variationId, l.baseAssetId);
+    if (applied.conceptIds.includes(l.conceptId)) add(l.conceptId, l.format, l.channel, l.variantId, [...(plan.images.get(l.conceptId) ?? [])], {}, l.variationId, l.baseAssetId);
   }
   return [...ops.values()];
 }
