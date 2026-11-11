@@ -171,3 +171,22 @@ export async function analyzeImage(buf: Buffer): Promise<ImageAnalysis | null> {
 }
 
 const round = (v: number) => Math.round(v * 1000) / 1000;
+
+/**
+ * A picture as the campaign pipeline stores it: PNG, JPEG or WebP, with the mime type of its REAL bytes (never the server's content-type header).
+ * Anything else that decodes (GIF: first frame, AVIF, TIFF) is converted to PNG once, at import, so it is not dropped later by the
+ * PNG/JPEG/WebP-only library filter. null = not a decodable raster picture (SVG is never rasterized here).
+ */
+export async function toCampaignRaster(buf: Buffer): Promise<{ data: Buffer; mimeType: 'image/png' | 'image/jpeg' | 'image/webp'; ext: '.png' | '.jpg' | '.webp' } | null> {
+  try {
+    const meta = await sharp(buf, { failOn: 'error', limitInputPixels: 80_000_000 }).metadata();
+    if (meta.format === 'png') return { data: buf, mimeType: 'image/png', ext: '.png' };
+    if (meta.format === 'jpeg') return { data: buf, mimeType: 'image/jpeg', ext: '.jpg' };
+    if (meta.format === 'webp' && !(meta.pages && meta.pages > 1)) return { data: buf, mimeType: 'image/webp', ext: '.webp' };
+    if (!meta.format || meta.format === 'svg') return null;
+    const data = await sharp(buf, { failOn: 'error', limitInputPixels: 80_000_000, pages: 1 }).rotate().png().toBuffer();
+    return { data, mimeType: 'image/png', ext: '.png' };
+  } catch {
+    return null;
+  }
+}

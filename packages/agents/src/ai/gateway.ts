@@ -1,15 +1,14 @@
 import {
   ModelMessageItem,
-  OpenAIResponses,
   type InferenceInput,
   type InferenceOutput,
   type InferenceRunner,
   type SemanticEvent,
 } from '@mozaik-ai/core';
 import type { Reservation, SpendController, SpendPriority, SpendSnapshot } from './budget';
-import { ProviderError, toProviderError, type ProviderErrorCode } from './errors';
+import { ProviderError, toProviderError, type ProviderErrorCode, type ProviderVendor } from './errors';
 import type { OpenAIClient } from './openai-http';
-import { textCostUsd, textReserveUsd } from './pricing';
+import { OpenAITransport, type TextTransport } from './text-transport';
 import { generationTimeoutMs, type GenerationTimeout } from './timeouts';
 
 /**
@@ -90,20 +89,20 @@ export interface UsageSnapshot {
   escalations: number;
 }
 
-// Mozaik's default OpenAI Responses mapper: converts a ModelContext to a Responses request and a
-// Responses reply back to Mozaik items. Constructing the endpoint only stores config (no client, no
-// env access); we use just its public mapper and do the HTTP ourselves.
-const mapper = new OpenAIResponses().endpointMapper;
-
 /**
- * Mozaik `InferenceRunner` for ONE run, backed by the user's OpenAI key.
+ * Mozaik `InferenceRunner` for ONE run, backed by the user's own key for ONE provider (OpenAI or Claude, chosen in Settings > AI providers).
+ * Every agent of the run talks through this one gateway, so a run never mixes providers.
  *
- * Why not Mozaik's DefaultInferenceRunner + OpenAIResponses: Mozaik's OpenAI mapper does not send
- * `max_output_tokens` (no output cap) or `store: false` (OpenAI would retain the conversation), and
- * the endpoint API has no abort signal. This runner adds an output cap, `store: false`, a call
- * budget, bounded retries, per-call timeout, cancellation and token accounting.
+ * Why not Mozaik's DefaultInferenceRunner + its endpoints: those do not send an output cap / `store: false`, and the endpoint API has no
+ * abort signal. This runner adds an output cap, a call budget, bounded retries, per-call timeout, cancellation, token accounting and the
+ * campaign spend ledger; the provider's wire format lives in a TextTransport (Mozaik's own mappers do the context conversion).
  */
 export class InferenceGateway implements InferenceRunner {
+  private readonly transport: TextTransport;
+  /** The provider every request of this run goes to. */
+  get provider(): ProviderVendor {
+    return this.transport.provider;
+  }
   private callsStarted = 0;
   private escalations = 0;
   private readonly total = emptyUsage();
@@ -121,10 +120,12 @@ export class InferenceGateway implements InferenceRunner {
   private readonly failureNotes = new Map<string, string>();
 
   constructor(
-    private readonly client: OpenAIClient,
+    client: OpenAIClient | TextTransport,
     private readonly budget: InferenceBudget = DEFAULT_BUDGET,
     private readonly sleep: (ms: number, signal: AbortSignal) => Promise<void> = abortableSleep,
-  ) {}
+  ) {
+    this.transport = 'build' in client && 'parse' in client ? client : new OpenAITransport(client);
+  }
 
   registerAgent(contextId: string, agentName: string) {
     this.agentNames.set(contextId, agentName);
@@ -202,21 +203,10 @@ export class InferenceGateway implements InferenceRunner {
       const stop = AbortSignal.any([this.runAbort.signal, agentAbort.signal]);
       let held: Reservation | null = null;
       try {
-        const request = mapper.toRequest(input) as { input: { role?: string; content?: unknown[] }[] };
-        const images = this.pendingImages.get(contextId);
-        if (images?.length) {
-          const lastUser = [...request.input].reverse().find((i) => i.role === 'user');
-          if (lastUser?.content) for (const img of images) lastUser.content.push({ type: 'input_image', image_url: `data:${img.mediaType};base64,${img.base64}`, detail: 'low' });
-        }
-        const body = {
-          ...request,
-          max_output_tokens: cap,
-          store: false, // do not let OpenAI retain the user's product text
-        };
+        const call = this.transport.build(input, cap, this.pendingImages.get(contextId));
         // Spend control: the worst case of this request (estimated input + the FULL output cap) is held BEFORE it is sent.
-        const model = (request as { model?: string }).model ?? input.model;
         if (this.budget.spend) {
-          const worst = textReserveUsd(model, JSON.stringify(body).length, body.max_output_tokens);
+          const worst = this.transport.reserveUsd(call);
           const priority = this.priorities.get(contextId) ?? 1;
           // a request that does not fit only because other requests hold their worst case waits for them to settle (they release the difference)
           await this.budget.spend.awaitRoom?.('text', worst, { priority }, stop);
@@ -230,17 +220,22 @@ export class InferenceGateway implements InferenceRunner {
         const limitMs = this.timeoutFor(contextId, cap);
         this.attempts.set(contextId, { limitMs, cap });
         const signal = AbortSignal.any([stop, AbortSignal.timeout(limitMs)]);
-        const response = await this.client.createResponse(body, signal);
+        const response = await this.transport.send(call, signal);
         this.failureNotes.delete(contextId);
-        const output = mapper.toResponse(response);
+        const result = this.transport.parse(response, call);
+        const output = result.output;
         this.record(contextId, output);
         if (held) {
-          const u = output.tokenUsage;
-          this.budget.spend!.settle(held, u ? textCostUsd(model, { inputTokens: u.inputTokens, outputTokens: u.outputTokens, cachedInputTokens: u.inputTokenDetails.cached_tokens }) : null);
+          this.budget.spend!.settle(held, result.costUsd);
           held = null;
         }
+        // a safety refusal was answered (and billed); repeating the same request would only be refused again
+        if (result.refused) {
+          this.pendingImages.delete(contextId);
+          return failure('refused');
+        }
         // An answer cut off by the output cap is useless as JSON, and the same cap would cut it off again: ask once more, bigger.
-        const cutOff = response.status === 'incomplete' && (response.incomplete_details as { reason?: string } | null | undefined)?.reason === 'max_output_tokens';
+        const cutOff = result.cutOff;
         if (cutOff && this.budget.escalateTo && cap < this.budget.escalateTo && escalated < 2) {
           escalated++;
           this.escalations++;

@@ -89,16 +89,17 @@ function Num({ label, value, min, max, onChange, hint }: { label: string; value:
 }
 
 const PRESET_INFO: Record<FactoryPresetId, { title: string; text: string }> = {
-  first_test: { title: 'First test (lowest cost)', text: '1 concept, Instagram only, 1 low-quality image, landing page, regeneration and vision review off, F3 up to 14 calls / 3 scouts.' },
-  demo: { title: 'Demo quality', text: '3 concepts, strategy-recommended channels, medium-quality images, 2 vision reviews. Costlier; never preselected.' },
-  full_production: { title: 'Full Production — 20 AI Images', text: '5 concepts, 20 original AI images (several per concept) at high quality with the most capable image model your key lists (Quality First), strategy-recommended channels, richer research and copy, Depth on (extra cross-checks and a concept critique before the images), up to 3 repair rounds and 4 vision reviews. ONE campaign budget is shared by the text agents, the images and the reviews; the estimate is shown before anything runs and you approve that one total to start. Never preselected.' },
-  hybrid_production: { title: 'Hybrid Production — 5 AI images + 15 template creatives', text: '5 original AI images + 15 template creatives = 20 finished creatives. Only the 5 originals are image requests; the 15 template creatives are rendered locally from the originals, your brand colors and logo and a library of templates, so they need no image request. 5 concepts, the most capable image model your key lists (Quality First) at medium quality (high is selectable), a visual direction and a template for every creative that you can preview for free and change by hand. ONE campaign budget is shared by the text agents, the images and the reviews; the estimate is shown before anything runs and you approve that one total to start. Never preselected.' },
+  first_test: { title: 'Legacy — First test (1 AI image)', text: '1 concept, Instagram only, 1 low-quality image, landing page, regeneration and vision review off, F3 up to 14 calls / 3 scouts.' },
+  demo: { title: 'Legacy — Demo quality (AI images)', text: '3 concepts, strategy-recommended channels, medium-quality images, 2 vision reviews. Costlier; never preselected.' },
+  full_production: { title: 'Legacy — Full Production (20 AI images)', text: '5 concepts, 20 original AI images (several per concept) at high quality with the most capable image model your key lists (Quality First), strategy-recommended channels, richer research and copy, Depth on (extra cross-checks and a concept critique before the images), up to 3 repair rounds and 4 vision reviews. ONE campaign budget is shared by the text agents, the images and the reviews; the estimate is shown before anything runs and you approve that one total to start. Never preselected.' },
+  hybrid_production: { title: 'Legacy — Hybrid Production (5 AI images + 15 template creatives)', text: '5 original AI images + 15 template creatives = 20 finished creatives. Only the 5 originals are image requests; the 15 template creatives are rendered locally from the originals, your brand colors and logo and a library of templates, so they need no image request. 5 concepts, the most capable image model your key lists (Quality First) at medium quality (high is selectable), a visual direction and a template for every creative that you can preview for free and change by hand. ONE campaign budget is shared by the text agents, the images and the reviews; the estimate is shown before anything runs and you approve that one total to start. Never preselected.' },
   no_ai_hybrid: {
-    title: 'NO AI HYBRID — 0 AI images + 20 template creatives',
-    text: 'The Mozaik AI agents plan, write, design and review the campaign with the text model, but NO AI image is ever generated: 0 AI-generated images + 20 template creatives = 20 finished creatives (5 concepts x 4). The pictures come from your uploads, the website and GitHub pictures you approve and licensed stock images with their credit; a creative with no fitting picture is drawn with typography only. There is no image model, no image quality, no number of AI images and no regeneration. ONE campaign budget covers the text model; the estimate is shown before anything runs and you approve that one total to start. Never preselected.',
+    title: 'Real Content Production (V3 default) — 0 AI images + 20 template creatives',
+    text: 'The Mozaik AI agents plan, write, design and review the campaign with the text model, but NO AI image is ever generated: 0 AI-generated images + 20 template creatives = 20 finished creatives (5 concepts x 4). The pictures come from your uploads, the website and GitHub pictures you approve and licensed stock images with their credit; a creative with no fitting picture is drawn with typography only. There is no image model, no image quality, no number of AI images and no regeneration. ONE campaign budget covers the text model; the estimate is shown before anything runs and you approve that one total to start. This is the default: the legacy presets below may request AI images and are used only when you choose one.',
   },
 };
-const PRESET_ORDER: FactoryPresetId[] = ['first_test', 'demo', 'full_production', 'hybrid_production', 'no_ai_hybrid'];
+/** V3: Real Content Production first (the default); the AI-image presets follow as LEGACY options. */
+const PRESET_ORDER: FactoryPresetId[] = ['no_ai_hybrid', 'first_test', 'demo', 'full_production', 'hybrid_production'];
 
 /** What NO AI HYBRID never sends: the server refuses (422) an image model, a picture count, originals or regeneration instead of ignoring them. */
 const IMAGE_F4_KEYS = ['imageModel', 'imageQuality', 'imageModelStrategy', 'maxImages', 'maxRegenerations', 'variations', 'imageConcurrency', 'layoutsPerOriginal'];
@@ -191,7 +192,7 @@ export function CampaignSetup({ projectId, onStarted, initialPreset, initialColl
   const project = useProject(projectId);
   const hybridPreview = useHybridPreview(projectId);
 
-  const [preset, setPreset] = React.useState<FactoryPresetId>(initialPreset ?? 'first_test');
+  const [preset, setPreset] = React.useState<FactoryPresetId>(initialPreset ?? 'no_ai_hybrid');
   // Hybrid Production: the user's changes on top of the preset defaults, the free preview and the confirmation of its visual direction
   const [hybridOv, setHybridOv] = React.useState<HybridSettingsInput>({});
   const [pv, setPv] = React.useState<HybridPreviewState | null>(null);

@@ -22,17 +22,23 @@ export type ProviderErrorCode =
   | 'spend_limit'
   | 'source_unavailable'
   /** NO AI HYBRID never generates an image: the request was refused before anything was sent. */
-  | 'image_generation_forbidden';
+  | 'image_generation_forbidden'
+  /** The model declined the request (Claude `stop_reason: "refusal"`). Billed like any answer; not retried automatically. */
+  | 'refused';
+
+/** Which provider a failure came from. The messages never contain the provider's own text. */
+export type ProviderVendor = 'openai' | 'anthropic';
 
 export const SAFE_PROVIDER_MESSAGES: Record<ProviderErrorCode, string> = {
-  invalid_api_key: 'OpenAI rejected the API key. Check or replace the key in Settings > AI providers.',
+  invalid_api_key: 'The AI provider rejected the API key. Check or replace the key in Settings > AI providers.',
   permission_denied: 'This API key is not allowed to use that model or resource (check project/organization access).',
-  insufficient_quota: 'The OpenAI account has no remaining quota or credit. Check billing on platform.openai.com.',
-  rate_limited: 'OpenAI rate limit reached. Wait a moment and try again.',
+  insufficient_quota: 'The AI provider account has no remaining quota or credit. Check billing with the provider (platform.openai.com or platform.claude.com).',
+  rate_limited: 'The AI provider rate limit was reached. Wait a moment and try again.',
   model_unavailable: 'That model does not exist or is not available to this API key.',
   bad_request:
-    'OpenAI rejected the request. The selected model may not support structured (JSON schema) output, or an output limit is too low.',
-  provider_unavailable: 'OpenAI is temporarily unavailable or could not be reached.',
+    'The AI provider rejected the request. The selected model may not support structured (JSON schema) output, or an output limit is too low.',
+  provider_unavailable: 'The AI provider is temporarily unavailable or could not be reached.',
+  refused: 'The model declined to answer this request (a safety refusal). Nothing was retried automatically.',
   invalid_response: 'The model returned no usable answer (empty, truncated or malformed).',
   timeout: 'The model did not answer in time.',
   cancelled: 'The run was cancelled.',
@@ -120,11 +126,13 @@ export function classifyHttpError(status: number, body: unknown, retryAfterHeade
   // The provider's Retry-After is honored (up to a minute) instead of retrying early.
   const retryAfterMs = retryAfterHeader && /^\d+$/.test(retryAfterHeader) ? Math.min(Number(retryAfterHeader) * 1000, 60_000) : undefined;
 
-  if (status === 401 || code === 'invalid_api_key') return new ProviderError('invalid_api_key', { status });
-  if (code === 'insufficient_quota' || type === 'insufficient_quota') return new ProviderError('insufficient_quota', { status, provider });
+  if (status === 401 || code === 'invalid_api_key' || type === 'authentication_error') return new ProviderError('invalid_api_key', { status });
+  // Anthropic: 402 billing_error (no credit) is the quota case
+  if (code === 'insufficient_quota' || type === 'insufficient_quota' || type === 'billing_error' || status === 402) return new ProviderError('insufficient_quota', { status, provider });
   if (status === 429) return new ProviderError('rate_limited', { status, retryable: true, retryAfterMs, provider });
   if (status === 404 || code === 'model_not_found') return new ProviderError('model_unavailable', { status, provider });
   if (status === 403) return new ProviderError('permission_denied', { status, provider });
+  // 529 overloaded_error (Anthropic) is >= 500 and retryable like any outage
   if (status >= 500 || status === 408 || status === 409) return new ProviderError('provider_unavailable', { status, retryable: true, retryAfterMs, provider });
   return new ProviderError('bad_request', { status, provider });
 }

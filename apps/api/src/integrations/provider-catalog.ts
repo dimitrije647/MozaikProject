@@ -11,6 +11,7 @@ export interface ProviderDefinition {
 /** Source of truth for the provider list; synced into IntegrationProvider on startup. */
 export const PROVIDER_CATALOG: ProviderDefinition[] = [
   { key: 'openai', name: 'OpenAI', category: 'AI', authType: 'api_key', description: 'GPT models for copy, strategy and analysis. Bring your own API key.' },
+  { key: 'anthropic', name: 'Claude (Anthropic)', category: 'AI', authType: 'api_key', description: 'Claude models for copy, strategy and analysis, through your own Claude Console API key. Claude.ai / Claude Code subscription sign-in is not supported.' },
   { key: 'gemini', name: 'Gemini', category: 'AI', authType: 'api_key', description: 'Google Gemini models for text and image understanding. Bring your own API key.' },
   { key: 'google', name: 'Google', category: 'Google', authType: 'oauth', description: 'Sign-in and account-level access for Google services, Search Console and Analytics.' },
   { key: 'google_drive', name: 'Google Drive', category: 'Google', authType: 'oauth', description: 'Export campaign assets and reports straight to a Drive folder.' },

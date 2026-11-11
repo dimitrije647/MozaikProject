@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/form';
 import { useToast } from '@/components/ui/toast';
 import { usageFromEvents } from '@/lib/agent-progress';
-import { keys, useCampaign, useCampaigns, useCancelRun, useCreativeAnalysis, useCreativePreflight, useOpenAiModels, useOpenAiStatus, useProjectRuns, useRunEventsFull, useStartCreative, useStrategies, useStrategy } from '@/lib/hooks';
+import { keys, useCampaign, useCampaigns, useCancelRun, useCreativeAnalysis, useCreativePreflight, useOpenAiModels, useOpenAiStatus, useTextProviderStatus, useProjectRuns, useRunEventsFull, useStartCreative, useStrategies, useStrategy } from '@/lib/hooks';
 import type { ChannelId, CreativePreflight, RunStatus, StartCreativeInput } from '@/lib/types';
 import { cn, formatDate } from '@/lib/utils';
 
@@ -46,7 +46,7 @@ const ALL_CHANNELS: { id: ChannelId; label: string }[] = [
 export function CreativeProductionPanel({ projectId }: { projectId: string }) {
   const toast = useToast();
   const qc = useQueryClient();
-  const openai = useOpenAiStatus();
+  const openai = useTextProviderStatus();
   const models = useOpenAiModels();
   const runs = useProjectRuns(projectId);
   const strategies = useStrategies(projectId);
@@ -91,7 +91,7 @@ export function CreativeProductionPanel({ projectId }: { projectId: string }) {
     if (latest && latest.status !== 'RUNNING') qc.invalidateQueries({ queryKey: keys.campaigns(projectId) });
   }, [latest?.id, latest?.status, projectId, qc]);
   React.useEffect(() => {
-    if (openai.data?.configured && models.data === undefined && !models.isFetching) void models.refetch();
+    if (openai.data?.configured && openai.data.provider === 'openai' && models.data === undefined && !models.isFetching) void models.refetch();
   }, [openai.data?.configured, models]);
 
   const status = openai.data;

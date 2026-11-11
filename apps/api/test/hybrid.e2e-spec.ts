@@ -90,7 +90,7 @@ describe('Hybrid Production', () => {
   it('the Hybrid preset exists with the specified defaults; First Test, Demo and Full Production keep exactly their settings', async () => {
     const { user } = await readyUser('hyb-presets');
     const { presets, default: def } = (await user.agent.get('/factory/presets').expect(200)).body;
-    expect(def).toBe('first_test');
+    expect(def).toBe('no_ai_hybrid'); // V3: Real Content Production is the default; the AI-image presets are legacy and must be named
     expect(Object.keys(presets)).toEqual(['first_test', 'demo', 'full_production', 'hybrid_production', 'no_ai_hybrid']);
     expect(presets.hybrid_production.f4).toMatchObject({ concepts: 5, maxImages: 5, imageQuality: 'medium', imageModelStrategy: 'quality', variations: true, imageModel: 'auto', maxRegenerations: 0 });
     expect(presets.hybrid_production.hybrid).toMatchObject({ originals: 5, templateCreatives: 15, style: 'auto', selection: 'automatic', allowTemplateFallback: false, reviewDirection: false });

@@ -4,7 +4,6 @@ import { SpendBudget, scopeFor } from '../../ai/budget';
 import { resolveGeneration, synthesisTaskTimeoutMs, type GenerationTimeout } from '../../ai/timeouts';
 import { DEFAULT_BUDGET, InferenceGateway, type InferenceBudget, type UsageSnapshot } from '../../ai/gateway';
 import { capOutputTokens } from '../../ai/pricing';
-import { OpenAIClient } from '../../ai/openai-http';
 import {
   AGENT_INFO,
   ANALYST_KEYS,
@@ -31,7 +30,7 @@ import { createWebExtractFromEnv } from '../../tools/web-extract';
 import { WebFetchTool } from '../../tools/web-fetch';
 import { createWebSearchFromEnv, type WebSearchTool } from '../../tools/web-search';
 import { ParticipantRegistry } from '../participant-registry';
-import type { InferenceCredentials } from '../providers';
+import { createTextTransport, type InferenceCredentials } from '../providers';
 import { OnEventTypes, guarded, type RunContext, type RunProgram } from '../run-context';
 import { clamp } from './smoke-program';
 import { F1Agent } from './f1/agent';
@@ -84,7 +83,7 @@ export interface DiscoveryRunConfig {
 export interface ReportMeta {
   schemaVersion: number;
   model: string;
-  provider: 'openai';
+  provider: 'openai' | 'anthropic';
   generatedAt: string;
   partial: boolean;
   usage: UsageSnapshot;
@@ -205,7 +204,7 @@ export class F1Program implements RunProgram {
       retryBaseDelayMs: clamp(config.retryBaseDelayMs, 1, 30_000, DEFAULT_BUDGET.retryBaseDelayMs),
     };
     // The key is handed to the client (private field) and not kept anywhere else.
-    this.gateway = new InferenceGateway(new OpenAIClient({ apiKey: credentials.apiKey, baseUrl: config.baseUrl }), budget);
+    this.gateway = new InferenceGateway(createTextTransport(credentials, { baseUrl: config.baseUrl }).transport, budget);
     this.input = config.input;
     this.documents = config.documents ?? [];
     this.images = config.images ?? [];
@@ -419,7 +418,7 @@ export class F1Program implements RunProgram {
               const meta: ReportMeta = {
                 schemaVersion: REPORT_V2_VERSION,
                 model: settings.model,
-                provider: 'openai',
+                provider: env.gateway.provider,
                 generatedAt: new Date().toISOString(),
                 partial,
                 usage,

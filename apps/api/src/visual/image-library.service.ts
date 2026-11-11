@@ -3,6 +3,7 @@ import {
   GitHubRepositoryTool,
   WebFetchTool,
   analyzeImage,
+  toCampaignRaster,
   attestRights,
   candidateRights,
   describeSocialSources,
@@ -175,7 +176,8 @@ export class ImageLibraryService {
 
   /** Every raster picture the owner uploaded (and every picture imported by the older "add licensed picture" flow) gets a library row, once. */
   async ensureRows(projectId: string): Promise<void> {
-    const assets = await this.prisma.projectAsset.findMany({ where: { projectId, type: { in: ['image', 'screenshot'] }, projectImage: null }, include: { provenance: true }, orderBy: { createdAt: 'asc' }, take: 40 });
+    // files that can never get a row are filtered IN the query, so they cannot fill the window and keep newer uploads out of the library
+    const assets = await this.prisma.projectAsset.findMany({ where: { projectId, type: { in: ['image', 'screenshot'] }, projectImage: null, mimeType: { in: ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'] }, fileSize: { gt: 0, lte: MAX_IMPORT_BYTES } }, include: { provenance: true }, orderBy: { createdAt: 'asc' }, take: 40 });
     for (const a of assets) {
       if (!RASTER.test(a.mimeType) || a.fileSize <= 0 || a.fileSize > MAX_IMPORT_BYTES) continue;
       const data = await readAll(this.storage.read(a.filePath)).catch(() => null);
@@ -558,13 +560,18 @@ export class ImageLibraryService {
       const got = row.source === 'website' ? (row.remoteUrl ? await this.readers.fetchWebsiteImage(row.remoteUrl) : ({ ok: false, message: 'The picture address is missing.' } as FetchedPicture)) : await this.readers.fetchRepositoryImage({ owner: String(meta.owner), repo: String(meta.repo), ref: String(meta.ref), path: String(meta.path) });
       if (!got.ok) throw new UnprocessableEntityException({ statusCode: 422, code: 'download_failed', message: `The picture could not be downloaded (${got.message}).` });
       if (!isImageBuffer(got.data)) throw new UnprocessableEntityException({ statusCode: 422, code: 'not_an_image', message: 'The file is not a PNG, JPEG, WebP or GIF picture.' });
+      // stored as the campaign pipeline reads it (PNG/JPEG/WebP of its real bytes): a GIF/AVIF is converted here instead of being dropped later
+      const raster = await toCampaignRaster(got.data);
+      if (!raster) throw new UnprocessableEntityException({ statusCode: 422, code: 'not_an_image', message: 'The picture could not be converted to PNG, JPEG or WebP for the campaign.' });
+      got.data = raster.data;
+      got.contentType = raster.mimeType;
       const analysis = await analyzeImage(got.data);
       if (!analysis) throw new UnprocessableEntityException({ statusCode: 422, code: 'not_an_image', message: 'The picture could not be read.' });
       const dims = { width: analysis.width, height: analysis.height };
       if (Math.max(dims.width, dims.height) < MIN_IMPORT_SIDE) throw new UnprocessableEntityException({ statusCode: 422, code: 'too_small', message: `The picture is only ${dims.width}x${dims.height} pixels; at least ${MIN_IMPORT_SIDE} on the long side is needed so it stays sharp in a creative.` });
       const twin = analysis ? await this.findNearDuplicate(projectId, analysis.phash, row.id) : null;
       if (twin) throw new UnprocessableEntityException({ statusCode: 422, code: 'duplicate', message: `This picture is nearly identical to "${twin.title}", which is already in the library, so it was not added again.` });
-      const ext = got.contentType.includes('png') ? '.png' : got.contentType.includes('webp') ? '.webp' : '.jpg';
+      const ext = raster.ext;
       const name = `${row.source}-${row.id}${ext}`.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80);
       const key = await this.storage.save(projectId, name, got.data);
       const attested = attestRights(rights, { at: new Date() });
@@ -674,6 +681,8 @@ export class ImageLibraryService {
     const usable = rows.filter((r) => {
       const e = exportEligibility(asRights(r.rightsJson));
       if (!e.eligible) skipped.push(`${r.title}: ${e.reason}`);
+      // never dropped silently: a picture the campaign cannot read is named (imports are normalized, so this is an older or unusual file)
+      else if (r.asset && !RASTER.test(r.asset.mimeType)) skipped.push(`${r.title}: its file type (${r.asset.mimeType}) cannot be used in a creative; re-upload it as PNG, JPEG or WebP.`);
       return e.eligible && !!r.asset && RASTER.test(r.asset.mimeType);
     });
     if (!o.withData) return { images: [], count: Math.min(usable.length, MAX_LIBRARY_IMAGES), skipped };

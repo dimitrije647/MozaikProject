@@ -1,6 +1,9 @@
 import { ConflictException, HttpException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit, UnprocessableEntityException } from '@nestjs/common';
 import { Prisma, RunStatus, type FactoryRun } from '@prisma/client';
 import {
+  AnthropicClient,
+  isClaudeModel,
+  resolveAnthropicBaseUrl,
   OpenAIClient,
   baseSizeFor,
   capOutputTokens,
@@ -54,6 +57,8 @@ import {
   f3Expected,
   initialPhases,
   mergeSettings,
+  DEFAULT_PRESET,
+  LEGACY_PRESETS,
   ImageGenerationForbidden,
   outcomeOf,
   type Candidates,
@@ -97,7 +102,7 @@ const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const clip = (s: unknown, n = 260) => (typeof s === 'string' && s.trim() ? (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s) : null);
 
 interface Blocker {
-  code: 'design_missing' | 'design_unconfirmed' | 'design_palette' | 'design_formats' | 'design_collection' | 'no_credentials' | 'no_model' | 'model_unavailable' | 'image_model_unsupported' | 'image_model_unavailable' | 'image_model_retired' | 'image_model_unresolved' | 'image_quality_unsupported' | 'factory_active' | 'run_active' | 'lineage' | 'missing_name' | 'missing_description' | 'report_unreadable' | 'report_damaged' | 'report_lineage';
+  code: 'provider_unsupported' | 'provider_no_images' | 'design_missing' | 'design_unconfirmed' | 'design_palette' | 'design_formats' | 'design_collection' | 'no_credentials' | 'no_model' | 'model_unavailable' | 'image_model_unsupported' | 'image_model_unavailable' | 'image_model_retired' | 'image_model_unresolved' | 'image_quality_unsupported' | 'factory_active' | 'run_active' | 'lineage' | 'missing_name' | 'missing_description' | 'report_unreadable' | 'report_damaged' | 'report_lineage';
   message: string;
 }
 
@@ -147,7 +152,8 @@ export class FactoryService implements OnModuleInit, OnModuleDestroy {
   }
 
   presets() {
-    return { default: 'first_test' as PresetId, presets: PRESETS };
+    // V3: the default is REAL CONTENT PRODUCTION (no_ai_hybrid): zero AI image requests. The AI-image presets stay available as LEGACY, only when chosen explicitly.
+    return { default: DEFAULT_PRESET, presets: PRESETS, legacy: LEGACY_PRESETS };
   }
 
   // ---- planning (no paid request; only the free model list) -------------------------------------------------------------------
@@ -211,8 +217,9 @@ export class FactoryService implements OnModuleInit, OnModuleDestroy {
     return out;
   }
 
-  private async listProviderModels(apiKey: string): Promise<string[] | null> {
+  private async listProviderModels(provider: 'openai' | 'anthropic', apiKey: string): Promise<string[] | null> {
     try {
+      if (provider === 'anthropic') return (await new AnthropicClient({ apiKey, baseUrl: resolveAnthropicBaseUrl() }).listModels(AbortSignal.timeout(15_000))).map((m) => m.id);
       const client = new OpenAIClient({ apiKey, baseUrl: resolveOpenAIBaseUrl() });
       return (await client.listModels(AbortSignal.timeout(15_000))).map((m) => m.id);
     } catch {
@@ -250,7 +257,7 @@ export class FactoryService implements OnModuleInit, OnModuleDestroy {
   private async resolve(userId: string, projectId: string, dto: StartFactoryDto, opts: { offline?: boolean } = {}) {
     const offline = opts.offline === true;
     const project = await this.projects.assertOwned(userId, projectId);
-    const preset: PresetId = dto.preset ?? 'first_test';
+    const preset: PresetId = dto.preset ?? DEFAULT_PRESET;
     const mode = dto.mode ?? 'continue';
     const reusePartial = dto.reusePartial ?? true;
     const rerunCreative = dto.rerunCreative ?? false;
@@ -302,26 +309,34 @@ export class FactoryService implements OnModuleInit, OnModuleDestroy {
     blockers.push(...inputs.blockers);
 
     // credentials and models (the model list is a free request; nothing is billed)
-    const cred = await this.credentials.getDecryptedCredential(userId, 'openai');
+    // THE provider of the whole campaign: the persisted default (Settings > AI providers). Every phase runs on it; nothing is switched silently.
+    const owner = await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { defaultAiProvider: true } });
+    const textProvider = (owner.defaultAiProvider ?? 'openai') as 'openai' | 'anthropic' | 'gemini';
+    const providerName = textProvider === 'anthropic' ? 'Claude' : 'OpenAI';
+    const cred = textProvider === 'gemini' ? null : await this.credentials.getDecryptedCredential(userId, textProvider);
     const textModel = settings.model ?? cred?.model ?? null;
     let providerModels: string[] | null = null;
-    if (offline) {
-      warnings.push('Free preview: nothing was sent to OpenAI, so your key, your models and the image model were not checked. Starting the campaign checks them first.');
+    if (textProvider === 'gemini') blockers.push({ code: 'provider_unsupported', message: 'The campaign agents run on OpenAI or Claude. Make one of them the default provider under Settings > AI providers.' });
+    else if (offline) {
+      warnings.push(`Free preview: nothing was sent to ${providerName}, so your key, your models and the image model were not checked. Starting the campaign checks them first.`);
       if (!textModel) warnings.push('No text model is saved yet (Settings > AI providers), so the text cost cannot be estimated.');
-    } else if (!cred) blockers.push({ code: 'no_credentials', message: 'A full campaign needs your OpenAI API key. Add it under Settings > AI providers.' });
-    else if (!textModel) blockers.push({ code: 'no_model', message: 'Choose an OpenAI text model first (Settings > AI providers). LaunchPilot never picks one for you.' });
+    } else if (!cred) blockers.push({ code: 'no_credentials', message: `A full campaign needs your ${providerName} API key. Add it under Settings > AI providers.` });
+    else if (!textModel) blockers.push({ code: 'no_model', message: `Choose ${textProvider === 'anthropic' ? 'a Claude' : 'an OpenAI'} text model first (Settings > AI providers). LaunchPilot never picks one for you.` });
+    else if ((textProvider === 'anthropic') !== isClaudeModel(textModel)) blockers.push({ code: 'model_unavailable', message: `The text model "${textModel}" is not ${textProvider === 'anthropic' ? 'a Claude' : 'an OpenAI'} model. LaunchPilot never switches providers on its own: pick a ${providerName} model or change the default provider in Settings > AI providers.` });
     else {
-      providerModels = await this.listProviderModels(cred.apiKey);
-      if (providerModels && !providerModels.includes(textModel)) blockers.push({ code: 'model_unavailable', message: `The text model "${textModel}" is not available to your OpenAI key. Pick one of your models in Settings > AI providers.` });
-      else if (!providerModels) warnings.push('Your OpenAI model list could not be read just now, so the models were not pre-checked. A wrong model would be reported by the first phase.');
+      providerModels = await this.listProviderModels(textProvider, cred.apiKey);
+      if (providerModels && !providerModels.includes(textModel)) blockers.push({ code: 'model_unavailable', message: `The text model "${textModel}" is not available to your ${providerName} key. Pick one of your models in Settings > AI providers.` });
+      else if (!providerModels) warnings.push(`Your ${providerName} model list could not be read just now, so the models were not pre-checked. A wrong model would be reported by the first phase.`);
     }
+    // Claude writes no images: an AI-image preset on Claude is blocked before anything is approved (never routed to OpenAI instead)
+    if (textProvider === 'anthropic' && settings.f4.imageModel && !(settings.hybrid && isNoAi(settings.hybrid))) blockers.push({ code: 'provider_no_images', message: 'Claude generates no images. Use Real Content Production (no AI images) with Claude, or make OpenAI the default provider for an AI-image preset.' });
     const runsCreative = plan.find((p) => p.phase === 'creative')?.action === 'run';
     // the image model: "auto" picks a CURRENT model from the key's own list; a retired or unlisted one is refused before anything is spent
     const requestedImageModel = settings.f4.imageModel;
     let imageChoice: ImageModelChoice | null = null;
     let imageNote = 'No image model: the layouts use brand-colored backgrounds and nothing is generated.';
     let imageAvailable: boolean | null = null;
-    if (runsCreative && requestedImageModel && (cred || offline)) {
+    if (runsCreative && requestedImageModel && textProvider === 'openai' && (cred || offline)) {
       // the free preview assumes the models OpenAI documents; it cannot know which ones your key lists
       imageChoice = chooseImageModel(requestedImageModel, offline ? Object.keys(IMAGE_MODEL_INFO) : providerModels, new Date(), settings.f4.imageModelStrategy, settings.f4.imageQuality);
       if (offline && imageChoice.model) imageChoice = { ...imageChoice, available: null, verification: 'unknown', note: `Preview: "${imageChoice.model}" is the model the ${settings.f4.imageModelStrategy} strategy would pick from the models OpenAI documents. It is not checked against your key; starting the campaign does that and may pick another.` };

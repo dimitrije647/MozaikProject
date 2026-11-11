@@ -4,7 +4,6 @@ import { SpendBudget, scopeFor } from '../../ai/budget';
 import { resolveGeneration, synthesisTaskTimeoutMs, type GenerationTimeout } from '../../ai/timeouts';
 import { DEFAULT_BUDGET, InferenceGateway, type InferenceBudget, type UsageSnapshot } from '../../ai/gateway';
 import { capOutputTokens } from '../../ai/pricing';
-import { OpenAIClient } from '../../ai/openai-http';
 import { AUDIT_INFO, AUDIT_KEYS, AuditBoardStore, type AuditFinding, type AuditKey, type AuditPlan, type AuditorKey } from '../../audit/board';
 import type { AuditFacts, F1Context } from '../../audit/context';
 import { finalizeAuditReport, type AuditPolicyIssue } from '../../audit/policy';
@@ -20,7 +19,7 @@ import { PageSpeedTool } from '../../tools/pagespeed';
 import { YouTubeTool } from '../../tools/social';
 import { WebFetchTool } from '../../tools/web-fetch';
 import { ParticipantRegistry } from '../participant-registry';
-import type { InferenceCredentials } from '../providers';
+import { createTextTransport, type InferenceCredentials } from '../providers';
 import { OnEventTypes, guarded, type RunContext, type RunProgram } from '../run-context';
 import { PhaseAgent } from './f1/agent';
 import { AuditCoordinator } from './f2/coordinator';
@@ -72,7 +71,7 @@ export interface AuditRunConfig {
 export interface AuditReportMeta {
   schemaVersion: number;
   model: string;
-  provider: 'openai';
+  provider: 'openai' | 'anthropic';
   generatedAt: string;
   partial: boolean;
   usage: UsageSnapshot;
@@ -162,7 +161,7 @@ export class F2Program implements RunProgram {
       maxRetries: clamp(config.maxRetries, 0, 3, DEFAULT_BUDGET.maxRetries),
       retryBaseDelayMs: clamp(config.retryBaseDelayMs, 1, 30_000, DEFAULT_BUDGET.retryBaseDelayMs),
     };
-    this.gateway = new InferenceGateway(new OpenAIClient({ apiKey: credentials.apiKey, baseUrl: config.baseUrl }), budget);
+    this.gateway = new InferenceGateway(createTextTransport(credentials, { baseUrl: config.baseUrl }).transport, budget);
     const agentTimeoutMs = clamp(config.agentTimeoutMs, 50, 600_000, 150_000);
     this.settings = {
       model: config.model,
@@ -406,7 +405,7 @@ export class F2Program implements RunProgram {
               const meta: AuditReportMeta = {
                 schemaVersion: AUDIT_REPORT_VERSION,
                 model: settings.model,
-                provider: 'openai',
+                provider: env.gateway.provider,
                 generatedAt: new Date().toISOString(),
                 partial,
                 usage,

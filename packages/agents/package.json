@@ -15,12 +15,13 @@
     "hello": "tsx --env-file=../../.env src/hello-world.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
     "@mozaik-ai/cloud-sdk": "^0.1.3",
     "@mozaik-ai/core": "^4.2.0",
     "cheerio": "^1",
     "dotenv": "^18.0.9",
-    "mammoth": "^1",
     "jszip": "^3.10.2",
+    "mammoth": "^1",
     "pdfjs-dist": "^4.10",
     "sharp": "^0.34",
     "zod": "^4"

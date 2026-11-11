@@ -412,10 +412,14 @@ describe('NO AI HYBRID', () => {
     expect(h.counts.templates.rendered).toBeGreaterThanOrEqual(18);
     expect(h.imagery).toMatchObject({ approved: 4, aiImagesGenerated: 0, imageRequests: 0, autoAdded: 0 });
     const ids = new Set(own.map((a: any) => a.id));
-    for (const t of h.creatives.filter((x: any) => x.status === 'rendered')) {
-      expect(t.sourceAssetIds.length).toBeGreaterThanOrEqual(1);
+    // V3: a picture is a source only when the template really DREW it. Every recorded source is one of the approved uploads, most creatives show one,
+    // and a creative without a picture is honestly marked typography-first (it never claims a source it did not draw).
+    const rendered = h.creatives.filter((x: any) => x.status === 'rendered');
+    for (const t of rendered) {
       for (const s of t.sourceAssetIds) expect(ids).toContain(String(s).replace('brand:', ''));
+      expect(t.sourceAssetIds.length > 0 ? t.flags.includes('photo_drawn') : t.flags.includes('typography_first')).toBe(true);
     }
+    expect(rendered.filter((t: any) => t.sourceAssetIds.length > 0).length).toBeGreaterThanOrEqual(12);
     expect(new Set(h.selection.items.map((i: any) => i.imageId)).size).toBeGreaterThanOrEqual(3);
     // F4 asks the same Mozaik participants as before
     const events = (await user.agent.get(`/runs/${camp.runId}/events`).expect(200)).body;

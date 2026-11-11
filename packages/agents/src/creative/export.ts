@@ -134,7 +134,14 @@ export function campaignMarkdown(pkg: CampaignPackage): string {
     if (h.imagery) {
       const im = h.imagery;
       lines.push('## NO AI HYBRID', '', `AI-generated images: 0 (image requests: ${im.imageRequests}${im.refusedAttempts ? `; ${im.refusedAttempts} attempt(s) were refused before anything was sent` : ''}). Source pictures discovered: ${im.discovered}. Approved pictures used: ${im.approved}${im.autoAdded ? ` (${im.autoAdded} added automatically from licensed stock)` : ''}. Template creatives: ${h.counts.templates.rendered + h.counts.templates.fallbackRendered} of ${h.counts.templates.planned} planned.`, '', 'Every creative is rendered locally from a collection template, the approved palette and the pictures listed below. The rights of each picture are in usage/sources.json and usage/rights.json.', '');
-      for (const l of im.library) lines.push(`- ${l.name} · ${l.source} · ${l.license} (${l.verification})${l.attribution ? ` · credit: ${l.attribution}` : ''}${l.usedBySlots.length ? ` · used by ${l.usedBySlots.length} creative(s)` : ' · not used'}`);
+      // counted from what was really DRAWN (a picture appears in a creative's sources only when its template drew it), not from the plan
+      const drawnBy = (id: string) => h.creatives.filter((c) => c.sourceAssetIds.includes(`brand:${id}`)).length;
+      const photographic = h.creatives.filter((c) => c.sourceAssetIds.length > 0).length;
+      lines.push(`Creatives with a real picture: ${photographic} of ${h.creatives.length}; typography-first: ${h.creatives.length - photographic}.`, '');
+      for (const l of im.library) {
+        const n = drawnBy(l.id);
+        lines.push(`- ${l.name} · ${l.source} · ${l.license} (${l.verification})${l.attribution ? ` · credit: ${l.attribution}` : ''}${n ? ` · drawn in ${n} creative(s)` : ' · not drawn in any creative'}`);
+      }
       if (im.blockedSlots.length) lines.push('', 'Blocked creatives:', ...im.blockedSlots.map((b) => `- ${b.slotId}: ${b.reason}`));
       lines.push('');
     } else lines.push('## Hybrid Production', '', `${h.counts.originals.generated} original AI image(s) of ${h.counts.originals.planned} planned + ${h.counts.templates.rendered + h.counts.templates.fallbackRendered} template creative(s) of ${h.counts.templates.planned} planned = ${h.counts.total.delivered} of ${h.counts.total.planned} finished creatives.`, '', 'Template creatives are NOT AI images: each one is rendered locally from a library template, your brand colors and logo, and the original image listed for it.', '');

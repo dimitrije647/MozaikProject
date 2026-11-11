@@ -80,7 +80,7 @@ const FULL = { preset: 'full_production', mode: 'fresh', approvedBudgetUsd: 7, c
   it('the new preset appears; First Test and Demo keep exactly their settings', async () => {
     const { user } = await readyUser('prod-presets');
     const { presets, default: def } = (await user.agent.get('/factory/presets').expect(200)).body;
-    expect(def).toBe('first_test');
+    expect(def).toBe('no_ai_hybrid'); // V3: Real Content Production is the default; the AI-image presets are legacy and must be named
     expect(Object.keys(presets)).toEqual(['first_test', 'demo', 'full_production', 'hybrid_production', 'no_ai_hybrid']);
     expect(presets.first_test.f4).toMatchObject({ concepts: 1, maxImages: 1, variations: false, maxModelCalls: 12, maxRepairRounds: 2 });
     expect(presets.demo.f4).toMatchObject({ concepts: 3, maxImages: 3, variations: false, maxModelCalls: 16, visionReviews: 2 });

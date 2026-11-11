@@ -747,7 +747,14 @@ async function renderInner(input: TemplateRenderInput): Promise<TemplateRenderRe
 
   const hero = await inspectImage(input.images?.hero, 'hero');
   const secondary = await inspectImage(input.images?.secondary, 'secondary');
-  const logo = await inspectImage(input.logo ?? undefined, 'logo');
+  // an unreadable logo (for example an SVG upload, which is never rasterized here) must not fail the creative: it is drawn as the brand name
+  // and flagged `logo_unreadable`, exactly like a logo that decodes to nothing visible
+  let logoUnreadable = false;
+  const logo = await inspectImage(input.logo ?? undefined, 'logo').catch((e) => {
+    if (!(e instanceof RenderError)) throw e;
+    logoUnreadable = true;
+    return null;
+  });
 
   const roles = resolvePalette(Array.isArray(input.palette) ? input.palette : [], input.anchors ? { ...input.anchors, exact: true } : styleAnchors(input.styleId));
   const hf = input.heroFocus && Number.isFinite(input.heroFocus[0]) && Number.isFinite(input.heroFocus[1]) ? ([clamp(input.heroFocus[0], 0, 1), clamp(input.heroFocus[1], 0, 1)] as [number, number]) : undefined;
@@ -778,6 +785,7 @@ async function renderInner(input: TemplateRenderInput): Promise<TemplateRenderRe
     drawn: [],
     painted: [],
   };
+  if (logoUnreadable && template.layers.some((l) => l.type === 'logo')) flag(S, 'logo_unreadable');
 
   for (const raw of template.layers) {
     const layer = layerFor(raw, cls);
@@ -803,4 +811,3 @@ async function renderInner(input: TemplateRenderInput): Promise<TemplateRenderRe
   const png = await sharp(S.canvas, rawOpts(width, height)).removeAlpha().png().toBuffer();
   return { ok: true, png, width, height, flags: S.flags, drawn: S.drawn, layers: S.painted };
 }
-

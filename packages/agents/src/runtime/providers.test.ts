@@ -27,8 +27,11 @@ describe('buildInferenceRunnerConfig', () => {
     assert.notEqual(a.supportedModels![0].endpoint, b.supportedModels![0].endpoint);
   });
 
-  it('rejects providers other than openai and gemini', () => {
-    assert.throws(() => buildInferenceRunnerConfig({ provider: 'anthropic' as never, apiKey: 'x' }), /Unsupported AI provider/);
+  it('rejects providers other than openai, gemini and anthropic (Claude API key); a subscription "provider" does not exist', () => {
+    for (const p of ['mistral', 'claude_subscription', 'claude-code'])
+      assert.throws(() => buildInferenceRunnerConfig({ provider: p as never, apiKey: 'x' }), /Unsupported AI provider/);
+    const claude = buildInferenceRunnerConfig({ provider: 'anthropic', apiKey: 'sk-ant-api03-userCCCCCCCCCCCC' });
+    assert.ok(claude.supportedModels!.length > 0 && claude.supportedModels!.every((m) => m.specification.provider === 'anthropic'));
   });
 });
 

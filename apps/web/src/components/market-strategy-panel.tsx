@@ -13,7 +13,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/form';
 import { useToast } from '@/components/ui/toast';
 import { usageFromEvents } from '@/lib/agent-progress';
-import { keys, useAudits, useCancelRun, useOpenAiStatus, useProjectRuns, useReports, useRunEvents, useStartStrategy, useStrategies, useStrategy, useStrategyAnalysis } from '@/lib/hooks';
+import { keys, useAudits, useCancelRun, useOpenAiStatus, useTextProviderStatus, useProjectRuns, useReports, useRunEvents, useStartStrategy, useStrategies, useStrategy, useStrategyAnalysis } from '@/lib/hooks';
 import type { RunStatus } from '@/lib/types';
 import { cn, formatDate } from '@/lib/utils';
 
@@ -38,7 +38,7 @@ const DEFAULT_TOKENS = 2500;
 export function MarketStrategyPanel({ projectId }: { projectId: string }) {
   const toast = useToast();
   const qc = useQueryClient();
-  const openai = useOpenAiStatus();
+  const openai = useTextProviderStatus();
   const runs = useProjectRuns(projectId);
   const f1Reports = useReports(projectId);
   const audits = useAudits(projectId);
@@ -88,7 +88,7 @@ export function MarketStrategyPanel({ projectId }: { projectId: string }) {
 
   function begin() {
     const ok = window.confirm(
-      `Run Market Research & Strategy with OpenAI model "${status?.model}"?\n\nThis uses YOUR OpenAI API credits: at most ${maxCalls} model calls (a typical run needs about 12-16), up to ${maxScouts} Channel Scouts created at run time and ${maxReviews} cross-check reviews, each call capped at ${maxTokens} output tokens.\n\nIt may also fetch competitor websites and, if configured, call a search provider or the public holiday calendar. The limits are enforced locally and are not an OpenAI spending cap.`,
+      `Run Market Research & Strategy with ${status?.providerName ?? 'OpenAI'} model "${status?.model}"?\n\nThis uses YOUR OpenAI API credits: at most ${maxCalls} model calls (a typical run needs about 12-16), up to ${maxScouts} Channel Scouts created at run time and ${maxReviews} cross-check reviews, each call capped at ${maxTokens} output tokens.\n\nIt may also fetch competitor websites and, if configured, call a search provider or the public holiday calendar. The limits are enforced locally and are not an OpenAI spending cap.`,
     );
     if (!ok) return;
     setSelectedRunId(null);

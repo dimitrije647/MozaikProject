@@ -358,9 +358,11 @@ describe('renderTemplate: images', () => {
         assert.equal(r.ok, false, `${label} as ${slot}`);
         if (!r.ok) assert.equal(r.reason, 'image_unreadable', label);
       }
+      // V3: a bad LOGO never fails the creative (an SVG logo upload used to fail every creative of a campaign): the brand name is drawn instead
+      // and the creative is flagged logo_unreadable when the template has a logo area
       const asLogo = await renderTemplate(input(t, { logo: buf }));
-      assert.equal(asLogo.ok, false, `${label} as logo`);
-      if (!asLogo.ok) assert.equal(asLogo.reason, 'image_unreadable');
+      assert.equal(asLogo.ok, true, `${label} as logo`);
+      if (asLogo.ok && t.layers.some((l) => l.type === 'logo')) assert.ok(asLogo.flags.includes('logo_unreadable'), `${label} as logo is flagged`);
     }
   });
 

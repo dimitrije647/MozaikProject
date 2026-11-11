@@ -242,6 +242,8 @@ export function selectTemplates(input: SelectionInput): SelectionResult {
   const uses = new Map<string, number>();
   // NO AI HYBRID: the same template drawn on the same picture twice is the same creative twice; that pair is penalised hard
   const pairUses = new Map<string, number>();
+  /** template|picture|format of every creative already chosen (an identical creative is never made twice) */
+  const made = new Set<string>();
   const familyUses = new Map<string, number>();
   const conceptFamilies = new Map<string, Map<string, number>>();
   const conceptCats = new Map<string, Map<string, number>>();
@@ -306,6 +308,22 @@ export function selectTemplates(input: SelectionInput): SelectionResult {
       unplaceable.push({ slotId: slot.slotId, reason: 'No template in the library is compatible with this slot\'s content and formats.' });
       continue;
     }
+    // A slot that was given a real picture is drawn WITH it: when any photo template fits, the typography-only ones are not candidates (the
+    // repetition penalties below could otherwise push a photo slot onto a text-only layout and leave an approved picture unused). Only when no
+    // photo template fits this slot does it fall back to typography, and that is said in its rationale.
+    // An identical creative (same template, same picture, same format) is never made twice: reusing a picture in ANOTHER format or layout is
+    // fine, repeating the exact same creative is not. When every photo template would repeat one, the slot falls back to typography.
+    const sameCreative = (c: Candidate) => !!slot.imageId && made.has(`${c.template.id}|${slot.imageId}|${slot.formatId}`);
+    if (!forced && slot.source !== 'none') {
+      const withPicture = ranked.filter((c) => c.template.layers.some((l) => l.type === 'image' && l.slot !== 'secondary'));
+      const fresh = withPicture.filter((c) => !sameCreative(c));
+      if (fresh.length) ranked = fresh;
+      else {
+        const distinct = ranked.filter((c) => !sameCreative(c));
+        if (distinct.length) ranked = distinct;
+        extra.push(withPicture.length ? 'typography-first: every photo template of the collection was already used with this picture in this format' : 'typography-first: no photo template of the collection fits this format');
+      }
+    }
     for (const c of ranked) eligibleIds.add(c.template.id);
     shortlists.set(slot.slotId, ranked.slice(0, 8));
 
@@ -323,6 +341,7 @@ export function selectTemplates(input: SelectionInput): SelectionResult {
     const t = best.template;
     bump(uses, t.id);
     if (slot.imageId) bump(pairUses, `${t.id}|${slot.imageId}`);
+    if (slot.imageId) made.add(`${t.id}|${slot.imageId}|${slot.formatId}`);
     bump(familyUses, t.family);
     bump(fam, t.family);
     bump(cats, t.category);

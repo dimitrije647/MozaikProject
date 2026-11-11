@@ -53,10 +53,67 @@ const TEXT_PRICES: Record<string, TextPrice> = {
   'o4-mini': { inputPerM: 1.1, cachedInputPerM: 0.275, outputPerM: 4.4 },
 };
 
+/**
+ * CLAUDE (Anthropic API) price book, USD per 1M tokens, standard tier (no batch, no fast mode), read from Anthropic's pricing page on
+ * CLAUDE_PRICE_BOOK_VERIFIED_AT. Kept apart from the OpenAI book on purpose: an OpenAI price is never used for a Claude model or the reverse.
+ * Anthropic reports cache reads and cache writes SEPARATELY from `input_tokens`, so Claude cost is computed by `claudeCostUsd`, not `textCostUsd`.
+ * LaunchPilot sends no `cache_control`, so cache writes are normally 0; they are still priced (5-minute write rate) if the provider reports any.
+ */
+export const CLAUDE_PRICE_BOOK_VERIFIED_AT = '2026-11-11';
+export const CLAUDE_PRICE_SOURCE = 'https://platform.claude.com/docs/en/about-claude/pricing';
+export interface ClaudePrice extends TextPrice {
+  cachedInputPerM: number;
+  cacheWritePerM: number;
+  /** Prompts above this many input tokens are billed at `long` (only where Anthropic lists a long-prompt rate). */
+  longAbove?: number;
+  long?: { inputPerM: number; cachedInputPerM: number; cacheWritePerM: number; outputPerM: number };
+}
+const CLAUDE_PRICES: Record<string, ClaudePrice> = {
+  'claude-fable-5-2': { inputPerM: 8, cacheWritePerM: 10, cachedInputPerM: 0.2, outputPerM: 40 },
+  'claude-opus-5-5': { inputPerM: 4, cacheWritePerM: 5, cachedInputPerM: 0.2, outputPerM: 20 },
+  'claude-opus-5': { inputPerM: 5, cacheWritePerM: 6.25, cachedInputPerM: 0.5, outputPerM: 25 },
+  'claude-opus-4-8': { inputPerM: 5, cacheWritePerM: 6.25, cachedInputPerM: 0.5, outputPerM: 25 },
+  'claude-sonnet-5-5': { inputPerM: 2, cacheWritePerM: 2.5, cachedInputPerM: 0.1, outputPerM: 10 },
+  'claude-sonnet-5': { inputPerM: 2, cacheWritePerM: 2.5, cachedInputPerM: 0.2, outputPerM: 10 },
+  'claude-haiku-5-5': {
+    inputPerM: 0.1, cacheWritePerM: 0.125, cachedInputPerM: 0.01, outputPerM: 0.5,
+    longAbove: 100_000, long: { inputPerM: 0.5, cacheWritePerM: 0.625, cachedInputPerM: 0.05, outputPerM: 2.5 },
+  },
+};
+/** Every model above: 128K max output tokens (Anthropic model overview). */
+const CLAUDE_MAX_OUTPUT = 128_000;
+
+export const isClaudeModel = (model: string | null | undefined): boolean => !!model && /^claude-/.test(model.trim());
+export const claudePrice = (model: string | null | undefined): ClaudePrice | null => (model ? (CLAUDE_PRICES[model.trim()] ?? null) : null);
+/** The Claude models LaunchPilot can price (the Settings list; any other id the key can see may still be chosen, but runs unpriced). */
+export const CLAUDE_PRICED_MODELS = Object.keys(CLAUDE_PRICES);
+
+export interface ClaudeUsageLike {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+}
+/** USD of one Claude answer from the usage Anthropic reported. null = no verified price for this model. */
+export function claudeCostUsd(model: string | null | undefined, u: ClaudeUsageLike): number | null {
+  const p = claudePrice(model);
+  if (!p) return null;
+  const input = u.input_tokens ?? 0;
+  const read = u.cache_read_input_tokens ?? 0;
+  const write = u.cache_creation_input_tokens ?? 0;
+  const rates = p.long && p.longAbove !== undefined && input + read + write > p.longAbove ? p.long : p;
+  return (input * rates.inputPerM + read * rates.cachedInputPerM + write * rates.cacheWritePerM + (u.output_tokens ?? 0) * rates.outputPerM) / 1_000_000;
+}
+/** Worst case of ONE Claude request (estimated input + the FULL max_tokens, which includes adaptive thinking). */
+export function claudeReserveUsd(model: string | null | undefined, inputChars: number, maxTokens: number): number | null {
+  return claudeCostUsd(model, { input_tokens: estimateTokens(inputChars), output_tokens: maxTokens });
+}
+
 /** A dated snapshot ("gpt-4.1-mini-2025-04-14") is priced like its family. */
 const family = (id: string) => id.trim().replace(/-\d{4}-\d{2}-\d{2}$/, '');
 
-export const textPrice = (model: string | null | undefined): TextPrice | null => (model ? (TEXT_PRICES[family(model)] ?? null) : null);
+/** The price of a text model from the book of ITS provider (OpenAI or Claude). */
+export const textPrice = (model: string | null | undefined): TextPrice | null => (model ? (isClaudeModel(model) ? claudePrice(model) : (TEXT_PRICES[family(model)] ?? null)) : null);
 
 /** Text models OpenAI has announced a shutdown for (deprecations page, read on PRICE_BOOK_VERIFIED_AT). They work until that date. */
 const TEXT_SHUTDOWNS: Record<string, { on: string; replacement: string }> = {
@@ -81,6 +138,7 @@ const VERIFIED_MAX_OUTPUT: Record<string, number> = { 'gpt-4.1-mini': 32_768, 'g
 export const UNVERIFIED_MAX_OUTPUT_TOKENS = 4096;
 
 export function maxOutputTokensFor(model: string | null | undefined): { limit: number; verified: boolean } {
+  if (claudePrice(model)) return { limit: CLAUDE_MAX_OUTPUT, verified: true };
   const v = model ? VERIFIED_MAX_OUTPUT[family(model)] : undefined;
   return v ? { limit: v, verified: true } : { limit: UNVERIFIED_MAX_OUTPUT_TOKENS, verified: false };
 }
@@ -102,6 +160,8 @@ export interface TextUsageLike {
 
 /** USD for measured text usage. null = no price for this model. Cached input is priced at the cached rate where one is listed. */
 export function textCostUsd(model: string | null | undefined, u: TextUsageLike): number | null {
+  // Claude bills cache reads/writes on top of input_tokens: priced from its raw usage by claudeCostUsd (never with this formula)
+  if (isClaudeModel(model)) return claudeCostUsd(model, { input_tokens: u.inputTokens, output_tokens: u.outputTokens });
   const p = textPrice(model);
   if (!p) return null;
   const cached = Math.min(u.cachedInputTokens ?? 0, u.inputTokens);

@@ -23,6 +23,7 @@ import type { ImageryBlock, TemplateCreativeRecord, TemplateQualityReport, Templ
 import type { ImageAllocation } from '../../../imagery/allocate';
 import type { VisualDirectionBrief } from '../../../templates/schema';
 import { currentDirection } from './hybrid-agents';
+import { allocateApprovedOnly } from './image-sourcing';
 import { OnEventTypes, guarded } from '../../run-context';
 import type { F4Env } from './env';
 
@@ -289,8 +290,10 @@ export class CreativeCoordinator {
     this.imagesReady = true;
     if (this.imagesTimer) ctx.clearTimer(this.imagesTimer);
     const plan = board.hybridPlan;
+    // sourcing failed or timed out: the pictures the user ALREADY approved are still used (allocated without any search or download)
+    const fallback = p.sourcing ? null : allocateApprovedOnly(env);
     if (plan) {
-      const bySlot = new Map((p.sourcing?.allocation.slots ?? []).map((s) => [s.slotId, s]));
+      const bySlot = new Map((p.sourcing?.allocation.slots ?? fallback?.slots ?? []).map((s) => [s.slotId, s]));
       for (const slot of plan.slots) {
         const a = bySlot.get(slot.slotId);
         slot.imageId = a?.imageId ?? null;
@@ -302,8 +305,10 @@ export class CreativeCoordinator {
     if (p.sourcing) {
       board.imagery = p.sourcing.imagery;
       if (p.sourcing.discovery) board.discovery = p.sourcing.discovery;
+    } else if (fallback) {
+      board.note(`${p.summary} The pictures you already approved were used without the licensed search (no new picture was added).`);
     } else {
-      // sourcing failed: no library picture is used by guesswork
+      // sourcing failed and nothing approved is usable: no picture is used by guesswork
       env.hybrid!.brandImages = [];
       board.note(`${p.summary} No picture was used by guesswork.`);
     }

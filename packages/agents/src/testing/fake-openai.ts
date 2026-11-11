@@ -21,7 +21,12 @@ export type FakeKind = 'analysis' | 'review' | 'synthesis' | 'test' | 'image';
 export interface FakeRequest {
   method: string;
   path: string;
+  /** Which API the request spoke: OpenAI Responses or the Claude Messages API (same fake server, same default answers). */
+  provider: 'openai' | 'anthropic';
+  /** The key the request carried (Bearer for OpenAI, x-api-key for Claude). */
   authorization: string;
+  /** Raw headers that matter for credential checks (a Claude request must carry x-api-key and NO Authorization header). */
+  headers: { authorization: string | null; xApiKey: string | null; anthropicVersion: string | null };
   body: Record<string, any> | null;
   agent: FakeAgent;
   kind: FakeKind;
@@ -100,6 +105,20 @@ export function userMessages(body: Record<string, any> | null): string[] {
 
 function countImages(body: Record<string, any> | null): number {
   return items(body).reduce((n, i) => n + (Array.isArray(i?.content) ? i.content.filter((c: any) => c?.type === 'input_image').length : 0), 0);
+}
+
+/**
+ * A Claude Messages request in the shape the rest of this fake reads (system first, then the turns as text parts, images as `input_image`),
+ * so the agent identification and every default answer are shared by both providers.
+ */
+function fromClaudeBody(body: Record<string, any> | null): Record<string, any> | null {
+  if (!body) return body;
+  const system = typeof body.system === 'string' ? body.system : Array.isArray(body.system) ? body.system.map((b: any) => b?.text ?? '').join('\n\n') : '';
+  const turns = (Array.isArray(body.messages) ? body.messages : []).map((m: any) => ({
+    role: m?.role,
+    content: (Array.isArray(m?.content) ? m.content : typeof m?.content === 'string' ? [{ type: 'text', text: m.content }] : []).map((c: any) => (c?.type === 'image' ? { type: 'input_image' } : { type: 'input_text', text: c?.type === 'text' ? c.text : '' })),
+  }));
+  return { ...body, input: [{ role: 'system', content: [{ type: 'input_text', text: system }] }, ...turns] };
 }
 
 // ---- parsing what the prompt carried -----------------------------------------------------------
@@ -275,6 +294,10 @@ export class FakeOpenAI {
   private server!: Server;
   private readonly sockets = new Set<import('node:net').Socket>();
   url = '';
+  /** Base URL for the Claude SDK (it appends /v1/messages itself). */
+  get anthropicUrl() {
+    return this.url.replace(/\/v1$/, '');
+  }
 
   constructor(private readonly options: FakeOpenAIOptions = {}) {}
 
@@ -299,8 +322,9 @@ export class FakeOpenAI {
     return this.requests.filter((r) => r.path.endsWith('/images/generations'));
   }
 
+  /** Text-model calls (OpenAI /responses and Claude /messages). */
   calls(agent?: FakeAgent, kind?: FakeKind) {
-    return this.requests.filter((r) => r.path.endsWith('/responses') && (!agent || r.agent === agent) && (!kind || r.kind === kind));
+    return this.requests.filter((r) => (r.path.endsWith('/responses') || r.path.endsWith('/messages')) && (!agent || r.agent === agent) && (!kind || r.kind === kind));
   }
 
   /** Back-compat helper. */
@@ -318,8 +342,11 @@ export class FakeOpenAI {
     } catch {
       body = null;
     }
-    const path = req.url ?? '';
-    const isResponses = path.endsWith('/responses');
+    const path = (req.url ?? '').split('?')[0];
+    const claude = path.endsWith('/messages') || (path.endsWith('/models') && (req.headers['x-api-key'] !== undefined || req.headers['anthropic-version'] !== undefined));
+    const claudeBody = claude ? body : null;
+    if (claude && path.endsWith('/messages')) body = fromClaudeBody(body);
+    const isResponses = path.endsWith('/responses') || path.endsWith('/messages');
     const isImage = path.endsWith('/images/generations');
     const agent: FakeAgent = isResponses ? identifyAgent(body) : isImage ? 'image' : 'other';
     const users = userMessages(body);
@@ -329,11 +356,15 @@ export class FakeOpenAI {
     const kind: FakeKind = isImage ? 'image' : !isResponses || agent === 'other' ? 'test' : creative ? (lastUserText.includes('<crosscheck_request>') ? 'review' : 'analysis') : userText.includes('<crosscheck_request>') ? 'review' : agent === 'synthesizer' || agent === 'auditor' || agent === 'strategist' ? 'synthesis' : 'analysis';
     const countKey = `${agent}:${kind}`;
     if (isResponses || isImage) this.counts.set(countKey, (this.counts.get(countKey) ?? 0) + 1);
+    const header = (k: string) => (typeof req.headers[k] === 'string' ? (req.headers[k] as string) : null);
     const record: FakeRequest = {
       method: req.method ?? '',
       path,
-      authorization: String(req.headers.authorization ?? ''),
-      body,
+      provider: claude ? 'anthropic' : 'openai',
+      // the Claude API accepts the key as `x-api-key` or as `Authorization: Bearer` (the official SDK sends the latter)
+      authorization: claude ? String(req.headers['x-api-key'] ?? req.headers.authorization ?? '') : String(req.headers.authorization ?? ''),
+      headers: { authorization: header('authorization'), xApiKey: header('x-api-key'), anthropicVersion: header('anthropic-version') },
+      body: claude ? claudeBody : body,
       agent,
       kind,
       attempt: this.counts.get(countKey) ?? 0,
@@ -350,7 +381,12 @@ export class FakeOpenAI {
 
     const key = record.authorization.replace(/^Bearer /, '');
     if (this.options.validKeys && !this.options.validKeys.includes(key)) {
+      if (claude) return send(res, 401, { type: 'error', error: { type: 'authentication_error', message: `invalid x-api-key ${key}` } });
       return send(res, 401, { error: { message: `Incorrect API key provided: ${key}.`, type: 'invalid_request_error', code: 'invalid_api_key' } });
+    }
+    if (claude && req.method === 'GET' && path.endsWith('/models')) {
+      const ids = this.options.models ?? ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
+      return send(res, 200, { data: ids.map((id) => ({ type: 'model', id, display_name: id, created_at: '2026-10-01T00:00:00Z' })), has_more: false, first_id: ids[0] ?? null, last_id: ids[ids.length - 1] ?? null });
     }
     if (req.method === 'GET' && path.endsWith('/models')) {
       const ids = this.options.models ?? ['gpt-test-mini', 'gpt-test-large', 'text-embedding-test'];
@@ -376,6 +412,9 @@ export class FakeOpenAI {
     }
     const text = reply.text ?? defaultAnswer(kind, agent, creative ? lastUserText : userText, record.channel);
     const usage = reply.usage ?? { input: 120, output: 60, reasoning: 0 };
+    if (claude) {
+      return send(res, 200, reply.json ?? { id: 'msg_fake', type: 'message', role: 'assistant', model: claudeBody?.model, content: [{ type: 'text', text }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: usage.input, output_tokens: usage.output, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }, reply.headers);
+    }
     send(
       res,
       200,

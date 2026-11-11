@@ -208,8 +208,12 @@ describe('NO AI HYBRID (real Mozaik agents; fake text API; no image model)', () 
     assert.ok(diffs[0] >= 0.3, `the two most similar creatives differ by only ${diffs[0].toFixed(2)} of 255 on average`);
     assert.ok(diffs.filter((d) => d < 6).length <= 12, `${diffs.filter((d) => d < 6).length} of 190 pairs look nearly the same`);
     assert.ok(diffs[Math.floor(diffs.length / 2)] > 40, 'the typical pair of creatives looks clearly different');
-    const pairs = h.selection!.items.map((i) => `${i.templateId}|${i.imageId}`);
-    assert.ok(new Set(pairs).size >= 16, 'the same template is rarely drawn on the same picture twice');
+    // V3: variety comes from layouts and formats, NOT from dropping the approved pictures. A picture may be reused by the same template in ANOTHER
+    // format; the exact same creative (template + picture + format) is never made twice, and most creatives really show an approved picture.
+    const triples = h.selection!.items.map((i) => `${i.templateId}|${i.imageId}|${i.format}`);
+    assert.equal(new Set(triples).size, triples.length, 'no identical creative (same template, picture and format)');
+    const drawn = h.creatives.filter((c) => c.sourceAssetIds.length > 0).length;
+    assert.ok(drawn >= 12, `most creatives show an approved picture (${drawn} of 20)`);
     assert.equal(new Set(h.selection!.items.map((i) => i.templateId)).size >= 5, true);
     const sizes = new Set(h.creatives.map((t) => `${t.width}x${t.height}`));
     for (const s of sizes) assert.ok(['1080x1080', '1080x1350', '1080x1920', '1200x300', '1920x800'].includes(s), s);

@@ -16,8 +16,24 @@ import { CryptoService } from '../common/crypto.service';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { AuthUser, CurrentUser } from '../auth/current-user.decorator';
 
-/** Providers whose keys can be stored for BYOK and used by AI agents later. */
-export const AI_PROVIDER_KEYS = ['openai', 'gemini'] as const;
+import { CLAUDE_SUBSCRIPTION_MODE, TEXT_AGENT_PROVIDERS } from '@launchpilot/agents';
+
+/** Providers whose keys can be stored for BYOK and used by AI agents later. `anthropic` = Claude through a Claude Console API key. */
+export const AI_PROVIDER_KEYS = ['openai', 'gemini', 'anthropic'] as const;
+
+/** Names a client might send for a Claude SUBSCRIPTION mode. It is not offered (see CLAUDE_SUBSCRIPTION_MODE) and is refused explicitly. */
+const SUBSCRIPTION_MODE_KEYS = /^(claude|anthropic)[-_ ]?(subscription|plan|pro|max|ultra|oauth|code|login)$/i;
+
+/**
+ * Claude keys: only a Claude Console API key (`sk-ant-api...`) is accepted. A Claude.ai / Claude Code OAuth token (`sk-ant-oat...`) is a
+ * subscription credential that a third-party app must not collect or use, and an Admin key (`sk-ant-admin...`) cannot call the Messages API.
+ */
+export function claudeKeyProblem(key: string): string | null {
+  if (/^sk-ant-oat/i.test(key)) return 'That is a Claude subscription sign-in token (from a Claude.ai or Claude Code login). LaunchPilot never accepts or stores subscription credentials. Create an API key in Claude Console (platform.claude.com > API keys) instead.';
+  if (/^sk-ant-admin/i.test(key)) return 'That is an Anthropic Admin API key, which cannot run Claude models. Create a regular API key in Claude Console.';
+  if (!/^sk-ant-api/i.test(key)) return 'That does not look like a Claude Console API key (they start with "sk-ant-api").';
+  return null;
+}
 
 class SetDefaultDto {
   @IsString() @MinLength(1) @MaxLength(40) providerKey: string;
@@ -62,6 +78,10 @@ export class ApiCredentialsService {
     if (key.length < 20 || /\s/.test(key)) {
       throw new BadRequestException('That does not look like a valid API key');
     }
+    if (providerKey === 'anthropic') {
+      const problem = claudeKeyProblem(key);
+      if (problem) throw new BadRequestException(problem);
+    }
     const data = {
       label: label?.trim() || `${providerKey} key`,
       maskedKey: this.crypto.mask(key),
@@ -103,6 +123,8 @@ export class ApiCredentialsService {
   }
 
   async setDefault(userId: string, providerKey: string) {
+    if (SUBSCRIPTION_MODE_KEYS.test(providerKey.trim())) throw new BadRequestException(`A Claude subscription mode is not available: ${CLAUDE_SUBSCRIPTION_MODE.reason}`);
+    if (!(AI_PROVIDER_KEYS as readonly string[]).includes(providerKey)) throw new BadRequestException(`${providerKey} is not an AI provider LaunchPilot supports.`);
     const cred = await this.prisma.apiCredential.findUnique({
       where: { userId_providerKey: { userId, providerKey } },
     });
@@ -151,6 +173,43 @@ export class ApiCredentialsService {
   }
 }
 
+/**
+ * Settings > AI providers: the ONE persistent configuration. The default provider (User.defaultAiProvider) and its chosen model
+ * (ApiCredential.model) are stored server-side and used by every new project, campaign, factory run, agent and continuation until the user
+ * changes them. Contains no secrets (masked keys only).
+ */
+@Controller('ai-providers')
+export class AiProvidersController {
+  constructor(private svc: ApiCredentialsService) {}
+
+  @Get()
+  async overview(@CurrentUser() u: AuthUser) {
+    const creds = await this.svc.list(u.id);
+    const def = creds.find((c) => c.isDefault)?.providerKey ?? null;
+    const view = (key: 'openai' | 'anthropic') => {
+      const c = creds.find((x) => x.providerKey === key);
+      return {
+        provider: key,
+        mode: 'api_key' as const,
+        configured: !!c,
+        maskedKey: c?.maskedKey ?? null,
+        model: c?.model ?? null,
+        verifiedModel: c?.verifiedModel ?? null,
+        ready: !!c?.ready,
+        isDefault: def === key,
+        status: !c ? 'not_configured' : !c.model ? 'no_model' : c.ready ? 'ready' : 'not_verified',
+      };
+    };
+    return {
+      defaultProvider: def,
+      textProvider: def && (TEXT_AGENT_PROVIDERS as readonly string[]).includes(def) ? def : null,
+      providers: { openai: view('openai'), anthropic: view('anthropic') },
+      claudeSubscription: CLAUDE_SUBSCRIPTION_MODE,
+      billing: 'Every model call is billed by the provider to YOUR key. LaunchPilot never switches providers or models on its own, and nothing is sent before you start a run (or press "Test connection").',
+    };
+  }
+}
+
 @Controller('api-credentials')
 export class ApiCredentialsController {
   constructor(private svc: ApiCredentialsService) {}
@@ -173,7 +232,7 @@ export class ApiCredentialsController {
 
 @Module({
   providers: [ApiCredentialsService],
-  controllers: [ApiCredentialsController],
+  controllers: [ApiCredentialsController, AiProvidersController],
   exports: [ApiCredentialsService],
 })
 export class ApiCredentialsModule {}

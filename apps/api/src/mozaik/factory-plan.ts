@@ -111,6 +111,10 @@ export interface FactorySettings {
 }
 
 export type PresetId = 'first_test' | 'demo' | 'full_production' | 'hybrid_production' | 'no_ai_hybrid';
+/** V3 default: REAL CONTENT PRODUCTION (internally no_ai_hybrid, kept for compatibility with saved campaigns). It never generates an AI image. */
+export const DEFAULT_PRESET: PresetId = 'no_ai_hybrid';
+/** Presets that may request AI images. Kept for backward compatibility and used ONLY when the request names them explicitly. */
+export const LEGACY_PRESETS: readonly PresetId[] = ['first_test', 'demo', 'full_production', 'hybrid_production'];
 
 /** The spending a preset aims at (US dollars, total over text and images). null = the preset has no target and asks for no budget. */
 export const PRESET_TARGET_USD: Record<PresetId, number | null> = { first_test: null, demo: null, full_production: 5, hybrid_production: null, no_ai_hybrid: null };
@@ -227,7 +231,7 @@ function refuseImages(patch: SettingsPatch) {
   if (Number(h.originals ?? 0) > 0) problems.push(`${h.originals} original AI image(s) were requested`);
   if (h.imagery?.generation === 'allowed') problems.push('image generation was switched on');
   if (patch.f4?.variations === true) problems.push('several original images per concept were requested');
-  if (problems.length) throw new ImageGenerationForbidden(`NO AI HYBRID never generates images, so this request was refused: ${problems.join('; ')}. Nothing was sent to OpenAI.`);
+  if (problems.length) throw new ImageGenerationForbidden(`NO AI HYBRID never generates images, so this request was refused: ${problems.join('; ')}. Nothing was sent to any AI provider.`);
 }
 
 export function mergeSettings(preset: PresetId, patch: SettingsPatch = {}): FactorySettings {

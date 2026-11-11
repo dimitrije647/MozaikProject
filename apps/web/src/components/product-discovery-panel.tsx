@@ -12,7 +12,7 @@ import { useToast } from '@/components/ui/toast';
 import { ReportView } from '@/components/report-view';
 import { AgentsTab, CrossChecksTab, EvidenceTab, OverviewTab } from '@/components/f1-views';
 import { usageFromEvents } from '@/lib/agent-progress';
-import { keys, useCancelRun, useOpenAiStatus, useProjectRuns, useReport, useReports, useRunAnalysis, useRunEvents, useStartDiscovery } from '@/lib/hooks';
+import { keys, useCancelRun, useOpenAiStatus, useTextProviderStatus, useProjectRuns, useReport, useReports, useRunAnalysis, useRunEvents, useStartDiscovery } from '@/lib/hooks';
 import type { RunStatus } from '@/lib/types';
 import { cn, formatDate } from '@/lib/utils';
 
@@ -36,7 +36,7 @@ const DEFAULT_REVIEWS = 4;
 export function ProductDiscoveryPanel({ projectId }: { projectId: string }) {
   const toast = useToast();
   const qc = useQueryClient();
-  const openai = useOpenAiStatus();
+  const openai = useTextProviderStatus();
   const runs = useProjectRuns(projectId);
   const latest = runs.data?.find((r) => r.mode === 'product_discovery');
   const running = latest?.status === 'RUNNING';
@@ -72,7 +72,7 @@ export function ProductDiscoveryPanel({ projectId }: { projectId: string }) {
 
   function analyze() {
     const ok = window.confirm(
-      `Analyze this idea with OpenAI model "${status?.model}"?\n\n` +
+      `Analyze this idea with ${status?.providerName ?? 'OpenAI'} model "${status?.model}"?\n\n` +
         `This uses YOUR OpenAI API credits. LaunchPilot will make at most ${maxCalls} model calls (a text-only idea needs about 5; each extra source adds one analysis), ` +
         `each capped at ${maxTokens} output tokens.\n\nThe limits are enforced locally and are not an OpenAI spending cap.`,
     );

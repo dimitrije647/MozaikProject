@@ -232,6 +232,72 @@ export const useTestOpenAi = () =>
 /** Makes ONE billed image request (lowest quality, smallest size). Only ever triggered by an explicit button press. */
 export const useTestImageModel = () => useApiMutation((imageModel: string) => post<ImageTestResult>('/integrations/openai/image-test', { imageModel }), []);
 
+// ---- Claude BYOK (Settings > AI providers): Claude Console API key only, never a subscription login ----
+
+export interface ClaudeSubscriptionMode {
+  available: false;
+  status: 'unsupported';
+  reason: string;
+  sources: string[];
+}
+export interface ClaudeStatus {
+  mode: 'api_key';
+  subscription: ClaudeSubscriptionMode;
+  isDefault: boolean;
+  configured: boolean;
+  maskedKey: string | null;
+  model: string | null;
+  verifiedModel: string | null;
+  verifiedAt: string | null;
+  ready: boolean;
+  priced: boolean;
+}
+export interface ClaudeModelOption {
+  id: string;
+  displayName: string | null;
+  createdAt: string | null;
+  priced: boolean;
+  inputPerM: number | null;
+  outputPerM: number | null;
+}
+
+interface ProviderView { provider: 'openai' | 'anthropic'; configured: boolean; maskedKey: string | null; model: string | null; verifiedModel: string | null; ready: boolean; isDefault: boolean; status: string }
+export interface AiProvidersOverview {
+  defaultProvider: string | null;
+  textProvider: 'openai' | 'anthropic' | null;
+  providers: { openai: ProviderView; anthropic: ProviderView };
+  claudeSubscription: ClaudeSubscriptionMode;
+  billing: string;
+}
+export const useAiProviders = () => useQuery({ queryKey: ['ai-providers'], queryFn: () => get<AiProvidersOverview>('/ai-providers') });
+
+/**
+ * THE text provider the agents will use (the saved default: OpenAI or Claude), in the shape the phase panels read. A user whose default is
+ * Claude sees Claude's key/model/readiness here, never OpenAI's.
+ */
+export function useTextProviderStatus() {
+  const q = useAiProviders();
+  const p = q.data ? (q.data.textProvider === 'anthropic' ? q.data.providers.anthropic : q.data.providers.openai) : undefined;
+  return { ...q, data: p ? { ...p, providerName: p.provider === 'anthropic' ? 'Claude' : 'OpenAI' } : undefined };
+}
+
+export const useClaudeStatus = () => useQuery({ queryKey: ['anthropic'], queryFn: () => get<ClaudeStatus>('/integrations/anthropic/status') });
+
+/** Lazy and free (GET /v1/models): only fetched when the user presses "Load my models". */
+export const useClaudeModels = () =>
+  useQuery({
+    queryKey: ['anthropic-models'],
+    queryFn: () => get<{ selected: string | null; priceBookVerifiedAt: string; pricedModels: string[]; models: ClaudeModelOption[] }>('/integrations/anthropic/models'),
+    enabled: false,
+    retry: false,
+    staleTime: Infinity,
+  });
+
+export const useSaveClaudeModel = () => useApiMutation((model: string) => put<ClaudeStatus>('/integrations/anthropic/model', { model }), [['anthropic'], keys.credentials, keys.myIntegrations]);
+
+/** Makes ONE tiny paid Claude call. Only ever triggered by an explicit button press. */
+export const useTestClaude = () => useApiMutation((model?: string) => post<ConnectionTestResult>('/integrations/anthropic/test', model ? { model } : {}), [['anthropic'], keys.credentials]);
+
 // ---- Product Discovery ----
 
 export const useStartDiscovery = (projectId: string) =>

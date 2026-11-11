@@ -17,6 +17,7 @@ import { HealthModule } from './health/health.module';
 import { StorageModule } from './storage/storage.module';
 import { MozaikModule } from './mozaik/mozaik.module';
 import { OpenAiModule } from './openai/openai.module';
+import { AnthropicModule } from './anthropic/anthropic.module';
 import { PinterestModule } from './pinterest/pinterest.module';
 
 @Module({
@@ -36,6 +37,7 @@ import { PinterestModule } from './pinterest/pinterest.module';
     WorkspaceNotesModule,
     MozaikModule,
     OpenAiModule,
+    AnthropicModule,
     PinterestModule,
     HealthModule,
   ],

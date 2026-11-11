@@ -63,7 +63,7 @@ export class FactoryCreativeDto {
  * every limit is enforced by LaunchPilot per phase (not an OpenAI spending cap).
  */
 export class StartFactoryDto {
-  /** first_test = lowest cost (default); demo = richer output, still bounded; full_production = 20 original AI images; hybrid_production = a few original AI images plus template creatives rendered locally. */
+  /** no_ai_hybrid = REAL CONTENT PRODUCTION, the V3 default (zero AI images). LEGACY (AI images, only when named): first_test = lowest cost; demo = richer output, still bounded; full_production = 20 original AI images; hybrid_production = a few original AI images plus template creatives rendered locally. */
   @IsOptional() @IsIn(['first_test', 'demo', 'full_production', 'hybrid_production', 'no_ai_hybrid']) preset?: 'first_test' | 'demo' | 'full_production' | 'hybrid_production' | 'no_ai_hybrid';
   /** continue = reuse a compatible chain of saved results (default); fresh = run every phase again. */
   @IsOptional() @IsIn(['continue', 'fresh']) mode?: 'continue' | 'fresh';

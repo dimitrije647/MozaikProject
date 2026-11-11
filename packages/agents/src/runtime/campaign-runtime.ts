@@ -24,7 +24,7 @@ import type { CampaignPackage } from '../creative/schemas';
 import type { CampaignStrategyReport } from '../strategy/schemas';
 import type { MarketingAuditReport } from '../audit/schemas';
 import { SmokeProgram, type SmokeTestOptions } from './programs/smoke-program';
-import type { InferenceCredentials } from './providers';
+import { TEXT_AGENT_PROVIDERS, type InferenceCredentials } from './providers';
 import { OnAnyEvent, OnEventTypes, guarded, type RunContext, type RunProgram } from './run-context';
 import { enforceTelemetryPolicy } from './telemetry';
 
@@ -355,14 +355,14 @@ export class MozaikCampaignRuntime implements CampaignRuntime {
     if (mode === 'smoke_test') return new SmokeProgram(parts.options, parts.credentials);
     if (mode === 'product_discovery') {
       if (!parts.credentials) throw new RuntimeInitError('Product Discovery needs the user\'s OpenAI credentials');
-      if (parts.credentials.provider !== 'openai') throw new RuntimeInitError('Product Discovery currently supports OpenAI only');
+      if (!TEXT_AGENT_PROVIDERS.includes(parts.credentials.provider)) throw new RuntimeInitError('Product Discovery runs on OpenAI or Claude only');
       if (!parts.discovery?.model?.trim()) throw new RuntimeInitError('Product Discovery needs an explicit model');
       if (!parts.onReport) throw new RuntimeInitError('Product Discovery needs a report sink (onReport)');
       return new F1Program(parts.credentials, parts.discovery, parts.onReport);
     }
     if (mode === 'marketing_audit') {
       if (!parts.credentials) throw new RuntimeInitError("Marketing Audit needs the user's OpenAI credentials");
-      if (parts.credentials.provider !== 'openai') throw new RuntimeInitError('Marketing Audit currently supports OpenAI only');
+      if (!TEXT_AGENT_PROVIDERS.includes(parts.credentials.provider)) throw new RuntimeInitError('Marketing Audit runs on OpenAI or Claude only');
       if (!parts.audit?.model?.trim()) throw new RuntimeInitError('Marketing Audit needs an explicit model');
       if (!parts.audit.f1) throw new RuntimeInitError('Marketing Audit needs a completed F1 report');
       if (!parts.onAudit) throw new RuntimeInitError('Marketing Audit needs a report sink (onAudit)');
@@ -370,7 +370,7 @@ export class MozaikCampaignRuntime implements CampaignRuntime {
     }
     if (mode === 'market_strategy') {
       if (!parts.credentials) throw new RuntimeInitError("Market Strategy needs the user's OpenAI credentials");
-      if (parts.credentials.provider !== 'openai') throw new RuntimeInitError('Market Strategy currently supports OpenAI only');
+      if (!TEXT_AGENT_PROVIDERS.includes(parts.credentials.provider)) throw new RuntimeInitError('Market Strategy runs on OpenAI or Claude only');
       if (!parts.strategy?.model?.trim()) throw new RuntimeInitError('Market Strategy needs an explicit model');
       if (!parts.strategy.f1 || !parts.strategy.f2) throw new RuntimeInitError('Market Strategy needs a completed F1 report and F2 audit');
       if (parts.strategy.f2.f1ReportId !== parts.strategy.f1.reportId) throw new RuntimeInitError('The F2 audit was not built on the selected F1 report');
@@ -379,7 +379,7 @@ export class MozaikCampaignRuntime implements CampaignRuntime {
     }
     if (mode === 'creative_production') {
       if (!parts.credentials) throw new RuntimeInitError("Creative Production needs the user's OpenAI credentials");
-      if (parts.credentials.provider !== 'openai') throw new RuntimeInitError('Creative Production currently supports OpenAI only');
+      if (!TEXT_AGENT_PROVIDERS.includes(parts.credentials.provider)) throw new RuntimeInitError('Creative Production runs on OpenAI or Claude only');
       const c = parts.creative;
       if (!c?.model?.trim()) throw new RuntimeInitError('Creative Production needs an explicit text model');
       if (!c.f1 || !c.f2 || !c.f3) throw new RuntimeInitError('Creative Production needs the completed F1 report, F2 audit and F3 strategy');

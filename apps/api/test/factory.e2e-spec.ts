@@ -138,8 +138,10 @@ describe('Factory Orchestrator (one-click F1 -> F2 -> F3 -> F4)', () => {
     const f3 = upTo >= 3 ? await direct(u, projectId, 'market-strategy', { maxScouts: 2 }) : null;
     return { f1ReportId: f1.reportId as string, f2AuditId: f2?.auditId as string, f3StrategyId: f3?.strategyId as string };
   };
-  const preflight = (u: TestUser, projectId: string, body: object = {}) => u.agent.post(`/projects/${projectId}/factory/preflight`).send(body);
-  const startF = (u: TestUser, projectId: string, body: object = {}) => u.agent.post(`/projects/${projectId}/factory`).send(body);
+  // these scenarios exercise the LEGACY first-test preset (one AI image); since V3 it is no longer the default, so it is named explicitly
+  const legacy = (body: object) => ({ preset: 'first_test', ...body });
+  const preflight = (u: TestUser, projectId: string, body: object = {}) => u.agent.post(`/projects/${projectId}/factory/preflight`).send(legacy(body));
+  const startF = (u: TestUser, projectId: string, body: object = {}) => u.agent.post(`/projects/${projectId}/factory`).send(legacy(body));
   const getF = async (u: TestUser, id: string) => (await u.agent.get(`/factory-runs/${id}`).expect(200)).body;
   const waitF = async (u: TestUser, id: string, ms = 150_000) => {
     const end = Date.now() + ms;
@@ -183,7 +185,8 @@ describe('Factory Orchestrator (one-click F1 -> F2 -> F3 -> F4)', () => {
   it('PREFLIGHT on a fresh project: runs all four phases with the conservative first-test defaults, shows exact limits, and spends nothing', async () => {
     const { user, projectId } = await readyUser('fac-pre');
     const presets = (await user.agent.get('/factory/presets').expect(200)).body;
-    expect(presets.default).toBe('first_test');
+    expect(presets.default).toBe('no_ai_hybrid'); // V3 default: Real Content Production (zero AI images)
+    expect(presets.legacy).toContain('first_test');
     expect(presets.presets.demo.f4.maxRegenerations).toBe(0);
     const p = (await preflight(user, projectId).expect(200)).body;
     expect(p).toMatchObject({ ok: true, blockers: [], nothingToRun: false, mode: 'continue', preset: 'first_test', project: { name: 'Deep Diving School' } });
@@ -751,7 +754,7 @@ describe('Factory Orchestrator (one-click F1 -> F2 -> F3 -> F4)', () => {
     await useFake({ reply: (r) => (F1_AGENTS.includes(r.agent) ? { hang: true } : undefined) });
     const app3 = await createApp(); // a separate "process" that is then shut down
     const agent3 = await loginUser(app3, user.email);
-    const started = (await agent3.post(`/projects/${projectId}/factory`).send({}).expect(201)).body;
+    const started = (await agent3.post(`/projects/${projectId}/factory`).send({ preset: 'first_test' }).expect(201)).body;
     await waitUntil(async () => textCalls().length > 0 && !!(await db.factoryRun.findUnique({ where: { id: started.id } }))?.currentPhase);
     await app3.close();
     const f = await db.factoryRun.findUniqueOrThrow({ where: { id: started.id } });

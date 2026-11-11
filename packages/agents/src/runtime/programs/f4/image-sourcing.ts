@@ -25,6 +25,11 @@ import type { BrandImage, F4Env, LibraryImageInfo } from './env';
 export const AUTO_STOCK_MAX = 8;
 const SEARCH_TIMEOUT_MS = 20_000;
 const ACQUIRE_TIMEOUT_MS = 25_000;
+/**
+ * The WHOLE automatic stock top-up (search + every download) ends within this budget, well inside the coordinator's sourcing timer (100 s):
+ * a slow provider must never make the run time out and lose the approved library it already had.
+ */
+export const STOCK_TOTAL_BUDGET_MS = 60_000;
 
 export interface SourcingOutcome {
   imagery: ImageryBlock;
@@ -39,6 +44,28 @@ export interface SourcingOutcome {
 const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T | null> => Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
 
 const defaultInfo = (img: BrandImage): LibraryImageInfo => ({ rights: uploadRights(), analysis: null, text: textOfImage({ fileName: img.name }), width: null, height: null, pageUrl: null, via: 'library' });
+
+/**
+ * The fallback when sourcing did not answer in time or failed: the APPROVED library only (no search, no download, no analysis), allocated
+ * deterministically. Pictures the user already approved are never thrown away because a stock provider was slow. The rights gate runs here and
+ * again when each creative is drawn.
+ */
+export function allocateApprovedOnly(env: F4Env): ImageAllocation | null {
+  const hy = env.hybrid;
+  const plan = env.board.hybridPlan;
+  if (!hy || !plan) return null;
+  const eligible = hy.brandImages.filter((img) => exportEligibility((img.library ?? defaultInfo(img)).rights).eligible);
+  if (!eligible.length) return null;
+  return allocateImages({
+    concepts: env.board.concepts.map((c) => ({ id: c.id, words: wordsOf(`${c.visualIdea} ${c.keyMessage} ${c.name}`) })),
+    slots: plan.slots.map((s) => ({ slotId: s.slotId, conceptId: s.conceptId, index: s.index, formatClass: s.formatClass ?? formatClassOf(s.width, s.height) })),
+    images: eligible.map((img, i) => {
+      const info = img.library ?? defaultInfo(img);
+      return { id: img.id, score: 1 - i / (eligible.length + 1), text: info.text, width: info.analysis?.width ?? info.width, height: info.analysis?.height ?? info.height, analysis: info.analysis };
+    }),
+    maxPerConcept: env.settings.hybrid?.imagery.maxSourcesPerConcept ?? 3,
+  });
+}
 
 export async function sourceImages(env: F4Env, o: { refused: () => number }): Promise<SourcingOutcome> {
   const hs = env.settings.hybrid!;
@@ -93,6 +120,7 @@ export async function sourceImages(env: F4Env, o: { refused: () => number }): Pr
     if (unique.length >= desired) notes.push(`Automatic stock mode is on, but the library already holds ${unique.length} usable picture(s) (${desired} are enough for this campaign), so nothing was added.`);
     else if (!hy.discovery || !hy.acquire) notes.push('Automatic stock mode is on, but no licensed image provider is configured on this server, so no picture was added. Add PIXABAY_API_KEY (or enable Openverse) in the API environment, or upload your own pictures.');
     else {
+      const deadline = Date.now() + STOCK_TOTAL_BUDGET_MS;
       const intentCtx: IntentContext = {
         business: env.visualBrief.business || env.input.projectName,
         offering: env.visualBrief.offering,
@@ -140,9 +168,14 @@ export async function sourceImages(env: F4Env, o: { refused: () => number }): Pr
         }
         for (const c of pick) {
           if (unique.length >= desired) break;
+          const left = deadline - Date.now();
+          if (left < 2_000) {
+            notes.push('The automatic stock top-up reached its time budget; the pictures already in the library are used and nothing else was waited for.');
+            break;
+          }
           let got: Awaited<ReturnType<NonNullable<typeof hy.acquire>>> | null = null;
           try {
-            got = await withTimeout(hy.acquire!(c), ACQUIRE_TIMEOUT_MS);
+            got = await withTimeout(hy.acquire!(c), Math.min(ACQUIRE_TIMEOUT_MS, left));
           } catch {
             got = null;
           }

@@ -138,7 +138,9 @@ export function hybridLayoutHandlers(env: F4Env, self: PhaseAgent, name: string)
           credits.push(rightsSummary(info));
           return { data: b.data, analysisFocus: b.library?.analysis?.focus ?? null, id: b.id };
         };
-        if (!o.fallback) {
+        // a picture is a SOURCE of this creative only if the template really draws it: a typography-only template records none (no false
+        // "used by", provenance or credit entries)
+        if (!o.fallback && tpl.layers.some((l) => l.type === 'image' && l.slot !== 'secondary')) {
           const h = take(it.imageId);
           if (h && 'error' in h) return { error: h.error };
           if (h) {
@@ -147,6 +149,8 @@ export function hybridLayoutHandlers(env: F4Env, self: PhaseAgent, name: string)
             sourceIds.push(`brand:${h.id}`);
             heroFocus = it.focus ? [it.focus[0], it.focus[1]] : (h.analysisFocus ?? undefined);
           }
+        }
+        if (!o.fallback) {
           if (tpl.layers.some((l) => l.type === 'image' && l.slot === 'secondary')) {
             const sec = take(it.secondaryImageId);
             if (sec && 'error' in sec) return { error: sec.error };
@@ -208,6 +212,9 @@ export function hybridLayoutHandlers(env: F4Env, self: PhaseAgent, name: string)
       }
       if (env.logo && !flags.includes('logo_missing_name_used') && !flags.includes('logo_unreadable') && r.tpl.layers.some((l) => l.type === 'logo')) flags.push('logo_applied');
       if (dropSupport) flags.push('support_dropped');
+      // honest counting: a creative is photographic only when a real picture was drawn into it (never an empty placeholder)
+      if (r.sourceIds.length) flags.push('photo_drawn');
+      else if (settings.noAiImages) flags.push('typography_first');
       // the approved logo: every creative says whether it carries it and, when it does not, why (a logo is never forced where it cannot be drawn)
       const logoOutcome = env.brand?.logo
         ? flags.includes('logo_applied')

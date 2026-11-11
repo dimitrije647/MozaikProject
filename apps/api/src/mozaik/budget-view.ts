@@ -112,4 +112,3 @@ export function derivedBudgetView(o: { approvedUsd: number | null; textUsd: numb
     legacy: o.textPoolUsd !== null || o.imagePoolUsd !== null ? { textPoolUsd: o.textPoolUsd, imagePoolUsd: o.imagePoolUsd, note: 'This run was made with separate text and image budgets. Those amounts are kept as history; they are not a spending permission for anything new.' } : null,
   };
 }
-

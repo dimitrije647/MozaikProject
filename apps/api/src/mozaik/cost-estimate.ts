@@ -1,6 +1,9 @@
 import {
   IMAGE_MODEL_INFO,
   PRICE_BOOK_VERIFIED_AT,
+  CLAUDE_PRICE_BOOK_VERIFIED_AT,
+  CLAUDE_PRICE_SOURCE,
+  isClaudeModel,
   PRICE_SOURCES,
   cheaperImageModels,
   imageCostEstimate,
@@ -86,7 +89,7 @@ export interface BudgetOption {
 export interface CostEstimate {
   currency: 'USD';
   priceBookVerifiedAt: string;
-  sources: typeof PRICE_SOURCES;
+  sources: { [K in keyof typeof PRICE_SOURCES]: string };
   /** true when every request that will be made can be priced before it is sent. */
   available: boolean;
   text: { model: string | null; priced: boolean; maxOutputTokensLimit: { limit: number; verified: boolean }; phases: PhaseCost[]; typicalUsd: number | null; maxUsd: number | null };
@@ -119,7 +122,9 @@ export function estimateCost(i: CostInput): CostEstimate {
     if (p.runs) assumptions.push(measured ? `${p.phase}: ${Math.round(inTok)} input / ${Math.round(outTok)} output tokens per call, measured from ${prof!.samples} earlier run(s) of yours.` : `${p.phase}: ${inTok} input / ${outTok} output tokens per call (assumption: you have no earlier run of this phase).`);
     const typical = p.runs ? textCostUsd(i.textModel, { inputTokens: inTok * p.typicalCalls, outputTokens: outTok * p.typicalCalls }) : 0;
     // worst case: every call allowed, 1.5x the usual input and the FULL output cap
-    const max = p.runs ? textCostUsd(i.textModel, { inputTokens: inTok * 1.5 * p.capCalls, outputTokens: p.outputCap * p.capCalls }) : 0;
+    // Claude: max_tokens also carries the adaptive-thinking headroom (medium effort, 4096) that the run reserves, so the worst case includes it
+    const capPerCall = isClaudeModel(i.textModel) ? p.outputCap + 4096 : p.outputCap;
+    const max = p.runs ? textCostUsd(i.textModel, { inputTokens: inTok * 1.5 * p.capCalls, outputTokens: capPerCall * p.capCalls }) : 0;
     return { phase: p.phase, runs: p.runs, calls: { typical: p.typicalCalls, cap: p.capCalls }, inputTokensPerCall: Math.round(inTok), outputTokensPerCall: Math.round(outTok), outputCap: p.outputCap, basis: measured ? 'measured' : 'assumed', typicalUsd: typical === null ? null : r4(typical), maxUsd: max === null ? null : r4(max) };
   });
   const sum = (f: (p: PhaseCost) => number | null) => (phases.some((p) => p.runs && f(p) === null) ? null : r4(phases.reduce((a, p) => a + (f(p) ?? 0), 0)));
@@ -223,8 +228,8 @@ export function estimateCost(i: CostInput): CostEstimate {
 
   return {
     currency: 'USD',
-    priceBookVerifiedAt: PRICE_BOOK_VERIFIED_AT,
-    sources: PRICE_SOURCES,
+    priceBookVerifiedAt: isClaudeModel(i.textModel) ? CLAUDE_PRICE_BOOK_VERIFIED_AT : PRICE_BOOK_VERIFIED_AT,
+    sources: isClaudeModel(i.textModel) ? { ...PRICE_SOURCES, pricing: CLAUDE_PRICE_SOURCE } : PRICE_SOURCES,
     available: priced && (imgKnown || !i.imageModel || count === 0),
     text: { model: i.textModel, priced, maxOutputTokensLimit: maxOutputTokensFor(i.textModel), phases, typicalUsd: textTypical, maxUsd: textMax },
     images,

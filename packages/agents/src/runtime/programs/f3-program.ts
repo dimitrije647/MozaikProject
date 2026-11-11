@@ -4,7 +4,6 @@ import { SpendBudget, scopeFor } from '../../ai/budget';
 import { resolveGeneration, synthesisTaskTimeoutMs, type GenerationTimeout } from '../../ai/timeouts';
 import { DEFAULT_BUDGET, InferenceGateway, type InferenceBudget, type UsageSnapshot } from '../../ai/gateway';
 import { capOutputTokens } from '../../ai/pricing';
-import { OpenAIClient } from '../../ai/openai-http';
 import type { F1Context } from '../../audit/context';
 import { SourceStore, type CrosscheckRecord, type ParticipantStatus, type SourceRecord } from '../../discovery/f1/board';
 import { reviewMessage } from '../../discovery/f1/prompts';
@@ -22,7 +21,7 @@ import { createWebExtractFromEnv } from '../../tools/web-extract';
 import { WebFetchTool } from '../../tools/web-fetch';
 import { createWebSearchFromEnv } from '../../tools/web-search';
 import { ParticipantRegistry } from '../participant-registry';
-import type { InferenceCredentials } from '../providers';
+import { createTextTransport, type InferenceCredentials } from '../providers';
 import { OnEventTypes, guarded, type RunContext, type RunProgram } from '../run-context';
 import { PhaseAgent } from './f1/agent';
 import { StrategyCoordinator } from './f3/coordinator';
@@ -80,7 +79,7 @@ export interface StrategyRunConfig {
 export interface StrategyReportMeta {
   schemaVersion: number;
   model: string;
-  provider: 'openai';
+  provider: 'openai' | 'anthropic';
   generatedAt: string;
   partial: boolean;
   usage: UsageSnapshot;
@@ -155,7 +154,7 @@ export class F3Program implements RunProgram {
       maxRetries: clamp(config.maxRetries, 0, 3, DEFAULT_BUDGET.maxRetries),
       retryBaseDelayMs: clamp(config.retryBaseDelayMs, 1, 30_000, DEFAULT_BUDGET.retryBaseDelayMs),
     };
-    this.gateway = new InferenceGateway(new OpenAIClient({ apiKey: credentials.apiKey, baseUrl: config.baseUrl }), budget);
+    this.gateway = new InferenceGateway(createTextTransport(credentials, { baseUrl: config.baseUrl }).transport, budget);
     this.settings = {
       model: config.model,
       analystTokens,
@@ -426,7 +425,7 @@ export class F3Program implements RunProgram {
               const meta: StrategyReportMeta = {
                 schemaVersion: STRATEGY_REPORT_VERSION,
                 model: settings.model,
-                provider: 'openai',
+                provider: env.gateway.provider,
                 generatedAt: new Date().toISOString(),
                 partial,
                 usage,

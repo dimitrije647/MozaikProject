@@ -44,6 +44,38 @@ Postgres is mapped to host port **5433** so it does not clash with a local Postg
 `@launchpilot/agents` compiles to CommonJS in `packages/agents/dist` (the API imports it). Rebuild it after changing
 it: `pnpm --filter @launchpilot/agents build`. The old hello-world still runs with `pnpm --filter @launchpilot/agents hello`.
 
+## V3: Claude provider and Real Content Production
+
+**AI providers (Settings → AI providers).** The campaign agents run on ONE provider, the one you mark as default: **OpenAI** or
+**Claude** (Anthropic). The default provider (`User.defaultAiProvider`) and its model (`ApiCredential.model`) are stored on the server and used
+by every new project, campaign, factory run, agent and continuation until you change them. A run never mixes providers and never switches
+on its own: a missing key or model, or a model of the other provider, is refused before anything is sent. Keys are encrypted per user and
+never returned to the browser. `GET /ai-providers` returns the masked overview; Claude has `GET /integrations/anthropic/status|models`,
+`PUT /integrations/anthropic/model` and `POST /integrations/anthropic/test` (one tiny billed call, only on a button press).
+
+**Claude = Claude Console API key only.** LaunchPilot calls the Claude API through the official `@anthropic-ai/sdk` with the user's own
+`sk-ant-api…` key (`packages/agents/src/ai/anthropic-http.ts`). A Claude.ai / Claude Code **subscription login is not supported** and is
+shown as unavailable: Anthropic does not permit third-party apps to offer Claude.ai login or to route requests through Free/Pro/Max/Ultra
+plan credentials, and developers may not collect or intermediate Claude.ai credentials or session tokens
+([legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)). LaunchPilot therefore never reads Claude Code credential
+files, OAuth tokens or cookies, never starts a Claude Code process, and refuses a pasted `sk-ant-oat…` subscription token. If you have a
+**Max, Ultra or Team** plan, its monthly API credits can be linked to a Claude Console organization and are then used by an ordinary API key
+([API credits for subscribers](https://platform.claude.com/docs/en/about-claude/api-credits-for-subscribers)); when they run out, API
+requests stop (they are never charged to the plan). To cap spending, give LaunchPilot its own Console workspace with a spend limit.
+
+Claude costs are computed from the **Claude** price book (`pricing.ts`, verified on the Anthropic pricing page; never an OpenAI price).
+Current Claude models think adaptively and that counts against `max_tokens`, so LaunchPilot adds a thinking headroom (medium effort: +4,096
+tokens) and reserves the full value in the campaign budget. Claude writes text only: an AI-image campaign on Claude is refused.
+
+**Real Content Production is the default (`no_ai_hybrid`).** A campaign makes **zero AI image requests**: 5 concepts × 4 = 20 creatives
+rendered locally from the chosen template collection, the approved palette and logo, and your approved pictures (uploads, attested website
+and GitHub pictures, licensed stock with credits). The guarantee is enforced in the factory plan, the F4 program, the Visual Creator and the
+OpenAI client (`forbidImages`). The AI-image presets (First test, Demo, Full Production, Hybrid Production) remain available as **Legacy**
+and run only when chosen explicitly. V3 also fixes the path from approved picture to creative: the Template Selector draws a slot that has
+a picture with a photo template whenever one fits (typography only when none fits or the exact creative already exists, with the reason
+recorded); a picture counts as a source only when it is really drawn; a slow stock provider can no longer discard the approved library; an
+SVG logo no longer fails every creative (the brand name is drawn and flagged); GIF/AVIF website pictures are converted to PNG at import.
+
 ## Mozaik / NestJS integration
 
 ```
@@ -127,7 +159,7 @@ execution" atomic under concurrent requests (Prisma cannot express partial index
 | Crash / hard kill / restart | on boot, leftover `RUNNING` rows become `INTERRUPTED` with a `factory.failed` event. Runs are **never** falsely resumed |
 | Event history could not be saved | run is `FAILED`, never `COMPLETED` |
 
-### BYOK isolation (OpenAI and Gemini only)
+### BYOK isolation (OpenAI, Claude API key and Gemini)
 
 - Keys stay in the existing encrypted `ApiCredential` table (AES-256-GCM). Responses return only masked values.
 - `MozaikService.prepareInference(userId)` is the single place a key is decrypted for a run. It is keyed by `userId`,

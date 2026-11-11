@@ -72,6 +72,8 @@ export function buildHybridBlock(o: { settings: HybridSettings; libraryVersion: 
     ? {
         ...board.imagery,
         refusedAttempts: o.refusedImageRequests ?? board.imagery.refusedAttempts,
+        // "used by" = the creatives that really DREW the picture (from their recorded sources), not the slots the allocation planned for it
+        library: board.imagery.library.map((l) => ({ ...l, usedBySlots: board.templateCreatives.filter((c) => (c.status === 'rendered' || c.status === 'fallback_rendered') && c.sourceAssetIds.includes(`brand:${l.id}`)).map((c) => c.slotId) })),
         blockedSlots: board.templateCreatives.filter((c) => c.status === 'skipped' && c.flags.includes('blocked')).map((c) => ({ slotId: c.slotId, reason: c.reason ?? 'Blocked.' })),
       }
     : null;

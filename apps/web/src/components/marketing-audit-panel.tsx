@@ -13,7 +13,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/form';
 import { useToast } from '@/components/ui/toast';
 import { usageFromEvents } from '@/lib/agent-progress';
-import { keys, useAudit, useAuditAnalysis, useAudits, useCancelRun, useOpenAiStatus, useProjectRuns, useReports, useRunEvents, useStartAudit } from '@/lib/hooks';
+import { keys, useAudit, useAuditAnalysis, useAudits, useCancelRun, useOpenAiStatus, useTextProviderStatus, useProjectRuns, useReports, useRunEvents, useStartAudit } from '@/lib/hooks';
 import type { RunStatus, SocialDetailInput } from '@/lib/types';
 import { cn, formatDate } from '@/lib/utils';
 
@@ -38,7 +38,7 @@ const DEFAULT_REVIEWS = 4;
 export function MarketingAuditPanel({ projectId }: { projectId: string }) {
   const toast = useToast();
   const qc = useQueryClient();
-  const openai = useOpenAiStatus();
+  const openai = useTextProviderStatus();
   const runs = useProjectRuns(projectId);
   const f1Reports = useReports(projectId);
   const audits = useAudits(projectId);
@@ -82,7 +82,7 @@ export function MarketingAuditPanel({ projectId }: { projectId: string }) {
 
   function begin() {
     const ok = window.confirm(
-      `Run the Marketing Audit with OpenAI model "${status?.model}"?\n\nThis uses YOUR OpenAI API credits: at most ${maxCalls} model calls (a typical audit needs about 8-10; agents without input make none), each capped at ${maxTokens} output tokens, up to ${maxReviews} cross-check reviews.\n\nIt also fetches your website and, if keys are configured, calls PageSpeed Insights / YouTube. The limits are enforced locally and are not an OpenAI spending cap.`,
+      `Run the Marketing Audit with ${status?.providerName ?? 'OpenAI'} model "${status?.model}"?\n\nThis uses YOUR OpenAI API credits: at most ${maxCalls} model calls (a typical audit needs about 8-10; agents without input make none), each capped at ${maxTokens} output tokens, up to ${maxReviews} cross-check reviews.\n\nIt also fetches your website and, if keys are configured, calls PageSpeed Insights / YouTube. The limits are enforced locally and are not an OpenAI spending cap.`,
     );
     if (!ok) return;
     setSelectedRunId(null);

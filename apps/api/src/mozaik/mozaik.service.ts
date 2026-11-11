@@ -11,8 +11,11 @@ import {
 import { Prisma, RunStatus, type CampaignRun, type Project, type ProductIntake } from '@prisma/client';
 import {
   buildDiscoveryInput,
+  isClaudeModel,
   redact,
+  resolveAnthropicBaseUrl,
   resolveOpenAIBaseUrl,
+  TEXT_AGENT_PROVIDERS,
   safeErrorMessage,
   SpendBudget,
   type AiProvider,
@@ -310,15 +313,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
   async startProductDiscovery(userId: string, projectId: string, dto: StartDiscoveryDto = {}, testHooks: Partial<DiscoveryRunConfig> = {}, opts: { factoryRunId?: string; spendCapUsd?: number | null; ledger?: SpendBudget; depth?: boolean } = {}) {
     const project = await this.projects.assertOwned(userId, projectId);
 
-    const cred = await this.credentials.getDecryptedCredential(userId, 'openai');
-    if (!cred) {
-      throw new UnprocessableEntityException('Product Discovery needs your OpenAI API key. Add it under Settings > AI providers.');
-    }
-    const model = dto.model ?? cred.model;
-    if (!model) {
-      throw new UnprocessableEntityException('Choose an OpenAI model first (Settings > AI providers). LaunchPilot never picks one for you.');
-    }
-    const credentials: InferenceCredentials = { provider: 'openai', apiKey: cred.apiKey };
+    const { credentials, model, baseUrl } = await this.textProviderFor(userId, dto.model, 'Product Discovery');
 
     const [intake, socials, assets, notes] = await Promise.all([
       this.prisma.productIntake.findUnique({ where: { projectId } }),
@@ -334,7 +329,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
       userId,
       projectId,
       mode: 'product_discovery',
-      provider: 'openai',
+      provider: credentials.provider,
       start: (run, writer) =>
         this.runtime.startRun({
           runId: run.id,
@@ -354,7 +349,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
             spendCapUsd: opts.spendCapUsd ?? null,
             ledger: opts.ledger,
             depth: opts.depth === true,
-            baseUrl: resolveOpenAIBaseUrl(),
+            baseUrl,
             ...testHooks,
           },
           onEvent: writer.push,
@@ -377,13 +372,27 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  /** Resolves the user's OpenAI key and explicit model (never defaulted). */
-  private async openAiFor(userId: string, modelOverride: string | undefined, what: string) {
-    const cred = await this.credentials.getDecryptedCredential(userId, 'openai');
-    if (!cred) throw new UnprocessableEntityException(`${what} needs your OpenAI API key. Add it under Settings > AI providers.`);
+  /**
+   * THE text provider of a run: the user's persisted default provider (Settings > AI providers: OpenAI or Claude), its key and its explicitly
+   * chosen model. Every phase, the factory and every continuation resolve through here, so a run never mixes providers and nothing is switched
+   * silently: a missing key/model or a model of the other provider is refused BEFORE anything is sent.
+   */
+  async textProviderFor(userId: string, modelOverride: string | undefined, what: string) {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { defaultAiProvider: true } });
+    const provider = (user.defaultAiProvider ?? 'openai') as AiProvider;
+    if (!(TEXT_AGENT_PROVIDERS as readonly string[]).includes(provider)) {
+      throw new UnprocessableEntityException(`${what} runs on OpenAI or Claude, but your default AI provider is ${provider}. Choose OpenAI or Claude as the default under Settings > AI providers.`);
+    }
+    const name = provider === 'anthropic' ? 'Claude' : 'OpenAI';
+    const cred = await this.credentials.getDecryptedCredential(userId, provider);
+    if (!cred) throw new UnprocessableEntityException(`${what} needs your ${name} API key. Add it under Settings > AI providers.`);
     const model = modelOverride ?? cred.model;
-    if (!model) throw new UnprocessableEntityException('Choose an OpenAI model first (Settings > AI providers). LaunchPilot never picks one for you.');
-    return { credentials: { provider: 'openai', apiKey: cred.apiKey } as InferenceCredentials, model };
+    if (!model) throw new UnprocessableEntityException(`Choose ${provider === 'anthropic' ? 'a Claude' : 'an OpenAI'} model first (Settings > AI providers). LaunchPilot never picks one for you.`);
+    if ((provider === 'anthropic') !== isClaudeModel(model)) {
+      throw new UnprocessableEntityException(`The model "${model}" is not ${provider === 'anthropic' ? 'a Claude' : 'an OpenAI'} model, and LaunchPilot never switches providers on its own. Pick a ${name} model, or change the default provider under Settings > AI providers.`);
+    }
+    const credentials: InferenceCredentials = { provider, apiKey: cred.apiKey };
+    return { credentials, model, provider, baseUrl: provider === 'anthropic' ? resolveAnthropicBaseUrl() : resolveOpenAIBaseUrl() };
   }
 
   /**
@@ -403,7 +412,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     if (!f1Check.ok) throw chainException('Marketing Audit', f1Check);
     const f1 = f1Check.contexts.f1!;
 
-    const { credentials, model } = await this.openAiFor(userId, dto.model, 'Marketing Audit');
+    const { credentials, model, baseUrl } = await this.textProviderFor(userId, dto.model, 'Marketing Audit');
     const [intake, socials, assets, notes] = await Promise.all([
       this.prisma.productIntake.findUnique({ where: { projectId } }),
       this.prisma.socialProfile.findMany({ where: { projectId } }),
@@ -426,7 +435,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
       userId,
       projectId,
       mode: 'marketing_audit',
-      provider: 'openai',
+      provider: credentials.provider,
       start: (run, writer) =>
         this.runtime.startRun({
           runId: run.id,
@@ -435,7 +444,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
           mode: 'marketing_audit',
           manifest: this.buildManifest(project, intake),
           credentials,
-          audit: { f1, input, model, documents, images, maxModelCalls: dto.maxModelCalls, maxOutputTokens: dto.maxOutputTokens, maxReviews: dto.maxReviews, spendCapUsd: opts.spendCapUsd ?? null, ledger: opts.ledger, depth: opts.depth === true, baseUrl: resolveOpenAIBaseUrl(), ...testHooks },
+          audit: { f1, input, model, documents, images, maxModelCalls: dto.maxModelCalls, maxOutputTokens: dto.maxOutputTokens, maxReviews: dto.maxReviews, spendCapUsd: opts.spendCapUsd ?? null, ledger: opts.ledger, depth: opts.depth === true, baseUrl, ...testHooks },
           onEvent: writer.push,
           // Saved BEFORE the run is marked COMPLETED (the runtime waits for this promise).
           onAudit: async (report: MarketingAuditReport, meta: AuditReportMeta) => {
@@ -533,7 +542,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     const f1 = check.contexts.f1!;
     const f2 = check.contexts.f2!;
 
-    const { credentials, model } = await this.openAiFor(userId, dto.model, 'Market Strategy');
+    const { credentials, model, baseUrl } = await this.textProviderFor(userId, dto.model, 'Market Strategy');
     const [intake, socials] = await Promise.all([this.prisma.productIntake.findUnique({ where: { projectId } }), this.prisma.socialProfile.findMany({ where: { projectId } })]);
     const base = buildDiscoveryInput({ project, intake, socialProfiles: socials, assets: [], notes: [] });
     const input = {
@@ -556,7 +565,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
       userId,
       projectId,
       mode: 'market_strategy',
-      provider: 'openai',
+      provider: credentials.provider,
       start: (run, writer) =>
         this.runtime.startRun({
           runId: run.id,
@@ -565,7 +574,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
           mode: 'market_strategy',
           manifest: this.buildManifest(project, intake),
           credentials,
-          strategy: { f1, f2, input, model, maxModelCalls: dto.maxModelCalls, maxScouts: dto.maxScouts, maxReviews: dto.maxReviews, maxOutputTokens: dto.maxOutputTokens, spendCapUsd: opts.spendCapUsd ?? null, ledger: opts.ledger, depth: opts.depth === true, baseUrl: resolveOpenAIBaseUrl(), ...testHooks },
+          strategy: { f1, f2, input, model, maxModelCalls: dto.maxModelCalls, maxScouts: dto.maxScouts, maxReviews: dto.maxReviews, maxOutputTokens: dto.maxOutputTokens, spendCapUsd: opts.spendCapUsd ?? null, ledger: opts.ledger, depth: opts.depth === true, baseUrl, ...testHooks },
           onEvent: writer.push,
           // Saved BEFORE the run is marked COMPLETED (the runtime waits for this promise).
           onStrategy: async (report: CampaignStrategyReport, meta: StrategyReportMeta) => {
@@ -771,7 +780,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     const f2 = chain.contexts.f2!;
     const f3 = chain.contexts.f3!;
 
-    const { credentials, model } = await this.openAiFor(userId, dto.model, 'Creative Production');
+    const { credentials, model, baseUrl } = await this.textProviderFor(userId, dto.model, 'Creative Production');
     // NO AI HYBRID: refused (never silently changed) when anything asks for an image; no image model is looked up, so no image model is ever chosen
     const noAi = isNoAi(dto.hybrid as never);
     if (noAi) {
@@ -782,6 +791,10 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
       if (dto.variations === true) asks.push('several original images per concept were requested');
       if (Number((dto.hybrid as { originals?: unknown } | undefined)?.originals ?? 0) > 0) asks.push('original AI images were requested');
       if (asks.length) throw new UnprocessableEntityException(`NO AI HYBRID never generates images, so this request was refused: ${asks.join('; ')}. Nothing was sent to OpenAI.`);
+    }
+    // Claude writes text only: an AI-image campaign on Claude is refused here, never quietly sent to OpenAI
+    if (credentials.provider !== 'openai' && !noAi && (dto.imageModel?.trim() || (dto.maxImages ?? 0) > 0 || dto.variations === true)) {
+      throw new UnprocessableEntityException('Claude generates no images, and LaunchPilot never switches providers on its own. Use Real Content Production (no AI images) with Claude, or make OpenAI the default provider for an AI-image campaign.');
     }
     // "auto" picks a current GPT Image model from the key's own list; a retired or unlisted model is refused BEFORE anything is spent
     const requestedImageModel = noAi ? null : dto.imageModel?.trim() || null;
@@ -836,7 +849,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     const allocation = hybridForecast ? hybridForecast.allocation : variations ? forecastAllocation({ target: settings.maxImages, conceptCount: concepts, channels: input.channels, fixedSize: settings.imageSize, layoutsPerOriginal: settings.layoutsPerOriginal }) : null;
     const planChunk = Math.max(3, Math.min(24, Math.floor(capOutputTokens(model, 9000).tokens / 450)));
     const estimate = estimateCreativeRun({ concepts, landing: input.landing, imageGeneration: !!imageModel, maxImages: settings.maxImages, maxRegenerations: settings.maxRegenerations, maxLayoutsPerConcept: settings.maxLayoutsPerConcept, maxRepairRounds: settings.maxRepairRounds, visionReviews: settings.visionReviews, maxModelCalls: settings.maxModelCalls, channels: input.channels.length, depth: settings.depth, variations: allocation ? { target: allocation.allocated, expectedLayouts: allocation.expectedLayouts, planChunk } : undefined, extraCalls: settings.hybrid ? (settings.hybrid.directionRefine ? 1 : 0) + (settings.hybrid.selection === 'assisted' ? 1 : 0) : 0 });
-    return { project, intake, f1, f2, f3, credentials, input, settings, estimate, allocation, palette, fromBrand, logo, brandCtx, logoName: logoAsset?.originalName ?? null, imageModelCheck, strategyRow, hybridIn, hybridForecast };
+    return { project, intake, f1, f2, f3, credentials, baseUrl, input, settings, estimate, allocation, palette, fromBrand, logo, brandCtx, logoName: logoAsset?.originalName ?? null, imageModelCheck, strategyRow, hybridIn, hybridForecast };
   }
 
   /** GET /models (free, no inference): the model ids the user's key lists. null = could not tell (outage), never "no models". */
@@ -877,7 +890,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
    */
   async startCreativeProduction(userId: string, projectId: string, dto: StartCreativeDto = {}, testHooks: Partial<CreativeRunConfig> = {}, opts: { factoryRunId?: string; spendCapUsd?: number | null; ledger?: SpendBudget; depth?: boolean; continueFrom?: { row: { id: string; f3StrategyId: string }; pkg: CampaignPackage } } = {}) {
     const r = await this.resolveCreative(userId, projectId, dto);
-    const { f1, f2, f3, input, settings } = r;
+    const { f1, f2, f3, input, settings, credentials, baseUrl } = r;
     const spendCapUsd = opts.spendCapUsd ?? settings.approvedBudgetUsd;
     // several originals per concept are many paid requests: they never start without an approved spending limit
     // ... and an image model whose price is not published means the cost is unknown until the first image: the user must say they know
@@ -891,7 +904,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
       userId,
       projectId,
       mode: 'creative_production',
-      provider: 'openai',
+      provider: credentials.provider,
       start: async (run, writer) => {
         // The campaign row exists from the start so the assets the agents store while running already belong to it.
         const campaign = await this.prisma.creativeCampaign.create({
@@ -953,7 +966,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
             logo: r.logo,
             ...(r.brandCtx ? { brand: r.brandCtx } : {}),
             assets,
-            baseUrl: resolveOpenAIBaseUrl(),
+            baseUrl,
             ...testHooks,
           },
           onEvent: writer.push,

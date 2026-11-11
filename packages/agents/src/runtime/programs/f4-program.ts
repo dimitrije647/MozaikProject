@@ -1,8 +1,7 @@
 import type { InferenceRunnerConfig, Participant, SituationHandler } from '@mozaik-ai/core';
 import { SpendBudget, scopeFor } from '../../ai/budget';
 import { DEFAULT_BUDGET, InferenceGateway, type InferenceBudget, type UsageSnapshot } from '../../ai/gateway';
-import { PRICE_BOOK_VERIFIED_AT, capOutputTokens, imageCostEstimate, textCostUsd, textPrice } from '../../ai/pricing';
-import { OpenAIClient } from '../../ai/openai-http';
+import { CLAUDE_PRICE_BOOK_VERIFIED_AT, PRICE_BOOK_VERIFIED_AT, capOutputTokens, imageCostEstimate, textCostUsd, textPrice } from '../../ai/pricing';
 import { DEFAULT_IMAGE_LIMITS, ImageGenerator, type ImageQuality, type ImageSize, type ImageUsageSnapshot } from '../../ai/openai-images';
 import type { F1Context } from '../../audit/context';
 import { SourceStore, type CrosscheckRecord, type ParticipantStatus, type SourceRecord } from '../../discovery/f1/board';
@@ -27,7 +26,7 @@ import type { VisualDiscoveryPort } from '../../imagery/discovery';
 import { isNoAi } from '../../hybrid/settings';
 import { LIBRARY_VERSION, TEMPLATE_LIBRARY } from '../../templates/library';
 import { ParticipantRegistry } from '../participant-registry';
-import type { InferenceCredentials } from '../providers';
+import { createTextTransport, type InferenceCredentials } from '../providers';
 import { OnEventTypes, guarded, type RunContext, type RunProgram } from '../run-context';
 import { buildCopywriter, buildFixer, buildLanding, buildLayout, buildReviewer, buildVisual } from './f4/agents';
 import { CreativeCoordinator } from './f4/coordinator';
@@ -118,7 +117,7 @@ export interface CreativeReportMeta {
   schemaVersion: number;
   model: string;
   imageModel: string | null;
-  provider: 'openai';
+  provider: 'openai' | 'anthropic';
   generatedAt: string;
   partial: boolean;
   usage: UsageSnapshot;
@@ -220,6 +219,10 @@ export class F4Program implements RunProgram {
       if ((config.hybrid?.settings.originals ?? 0) > 0) problems.push('original AI images were planned');
       if (problems.length) throw new Error(`NO AI HYBRID never generates images, so this run was refused before anything was sent: ${problems.join('; ')}.`);
     }
+    // Claude writes text only. A Claude campaign that asks for AI images is refused here: it is never quietly sent to OpenAI instead.
+    if (credentials.provider !== 'openai' && !noAi && (config.imageModel?.trim() || (config.maxImages ?? 0) > 0 || config.tools?.images || config.seed)) {
+      throw new Error('Claude generates no images, and LaunchPilot never switches providers on its own: use Real Content Production (no AI images) with Claude, or choose OpenAI for an AI-image campaign.');
+    }
     const imageGenerationOn = !noAi && !!config.imageModel?.trim();
     const variations = (config.variations === true || !!config.seed) && imageGenerationOn;
     // picture planning of several images per request needs a larger answer than one concept's copy
@@ -236,11 +239,11 @@ export class F4Program implements RunProgram {
       retryBaseDelayMs: clamp(config.retryBaseDelayMs, 1, 30_000, DEFAULT_BUDGET.retryBaseDelayMs),
     };
     // in NO AI HYBRID the client itself refuses image requests (second layer under the orchestration check above)
-    const client = new OpenAIClient({ apiKey: credentials.apiKey, baseUrl: config.baseUrl, forbidImages: noAi, onImageRefused: () => {
+    const { transport, openai: client } = createTextTransport(credentials, { baseUrl: config.baseUrl, forbidImages: noAi, onImageRefused: () => {
       this.imageRefusals.count++;
       this.reportRefusal?.();
     } });
-    this.gateway = new InferenceGateway(client, budget);
+    this.gateway = new InferenceGateway(transport, budget);
     const formats = formatsForChannels(config.input.channels, clamp(config.maxLayoutsPerConcept, 1, 6, 4));
     const imageGeneration = !noAi && !!config.imageModel?.trim();
     const maxRegenerations = clamp(config.maxRegenerations, 0, 5, 0);
@@ -294,7 +297,7 @@ export class F4Program implements RunProgram {
       ? null
       : config.tools?.images !== undefined
         ? config.tools.images
-        : imageGeneration
+        : imageGeneration && client
           ? new ImageGenerator(client, {
               maxImages: imageTarget,
               spend,
@@ -489,9 +492,12 @@ export class F4Program implements RunProgram {
   private costReport(usage: UsageSnapshot, img: ImageUsageSnapshot | null): CostReport {
     const sp = usage.spend;
     const priced = textPrice(this.config.model) !== null;
+    const claude = this.gateway.provider === 'anthropic';
+    const vendor = claude ? 'Anthropic' : 'OpenAI';
+    const book = claude ? CLAUDE_PRICE_BOOK_VERIFIED_AT : PRICE_BOOK_VERIFIED_AT;
     return {
       currency: 'USD',
-      priceBookVerifiedAt: PRICE_BOOK_VERIFIED_AT,
+      priceBookVerifiedAt: book,
       approvedUsd: sp?.approvedUsd ?? null,
       spentUsd: sp?.spentUsd ?? 0,
       uncertainUsd: sp?.uncertainUsd ?? 0,
@@ -499,7 +505,7 @@ export class F4Program implements RunProgram {
       imageUsd: this.settings.noAiImages ? 0 : (img?.costUsd ?? (sp && sp.image.requests ? sp.image.spentUsd : null)),
       unpricedRequests: sp?.unpriced ?? 0,
       blockedRequests: (sp?.blocked ?? 0),
-      note: `Computed from the usage OpenAI reported, at the published prices of ${PRICE_BOOK_VERIFIED_AT}${priced ? '' : `; there is no verified price for ${this.config.model}, so its text cost is not included`}. An application-side figure, not an OpenAI invoice: a request that timed out may still be billed (counted as uncertain).`,
+      note: `Computed from the usage ${vendor} reported, at the published ${vendor} API prices of ${book}${priced ? '' : `; there is no verified price for ${this.config.model}, so its text cost is not included`}. An application-side figure, not an ${vendor} invoice: a request that timed out may still be billed (counted as uncertain).`,
     };
   }
 
@@ -604,7 +610,7 @@ export class F4Program implements RunProgram {
       schemaVersion: CAMPAIGN_SCHEMA_VERSION,
       model: settings.model,
       imageModel: settings.imageModel,
-      provider: 'openai',
+      provider: this.gateway.provider,
       generatedAt: pkg.createdAt,
       partial: failedAgents.length > 0,
       usage,
