@@ -10,7 +10,6 @@ import { acquireLicensedImage, creditsText } from './acquire';
 import { BraveReferenceAdapter, OpenverseAdapter, PexelsAdapter, PixabayAdapter, createImageAdaptersFromEnv, ImageSearchError, type ImageSearchAdapter } from './adapters';
 import { buildSearchIntents, discoverImages, keywordsOf } from './discovery';
 import { openverseVerdict, pixabayVerdict } from './license';
-import { planImageSources } from './planner';
 import { assetOriginOf, isExportable, IMAGE_SOURCE_KINDS, type ImageCandidate } from './types';
 
 // ---- mocked providers ----------------------------------------------------------------------------------------------------------------------------
@@ -290,55 +289,6 @@ describe('acquiring licensed pictures', () => {
 });
 
 // ---- the plan ------------------------------------------------------------------------------------------------------------------------------------------
-
-describe('source selection planner', () => {
-  const base = { originalsRequested: 5, imageModelOn: true, concepts: 5, userImages: 0, licensedImages: 0, licensedCandidates: 0, imageUsd: 0.07 };
-
-  it('never changes the number of AI images asked for: prefer-AI and balanced keep it, existing pictures fill the concepts without one', () => {
-    for (const mode of ['prefer_ai', 'balanced'] as const) {
-      const p = planImageSources({ ...base, mode, userImages: 2 });
-      assert.equal(p.paidImageRequests, 5);
-      assert.equal(p.totals.AI_GENERATED, 5);
-    }
-    const p = planImageSources({ ...base, mode: 'balanced', originalsRequested: 3, userImages: 2 });
-    assert.deepEqual([p.totals.AI_GENERATED, p.totals.USER_PROVIDED, p.totals.NONE], [3, 2, 0]);
-    assert.equal(p.paidImageRequests, 3);
-  });
-
-  it('prefer-existing OFFERS fewer AI images and what it would save; it never applies the offer itself', () => {
-    const p = planImageSources({ ...base, mode: 'prefer_existing', userImages: 3, licensedImages: 1 });
-    assert.equal(p.paidImageRequests, 5, 'the request count is still the user\'s');
-    assert.equal(p.suggestions.length, 1);
-    assert.deepEqual([p.suggestions[0].set.originals, p.suggestions[0].fewerRequests, p.suggestions[0].savesUsd], [1, 4, 0.28]);
-    assert.equal(planImageSources({ ...base, mode: 'prefer_ai', userImages: 3 }).suggestions.length, 0);
-  });
-
-  it('zero AI images in prefer-existing mode is reported accurately', () => {
-    // two pictures of your own are shared by all five concepts (the renderer cycles through them)
-    const some = planImageSources({ ...base, mode: 'prefer_existing', originalsRequested: 0, userImages: 2 });
-    assert.equal(some.paidImageRequests, 0);
-    assert.deepEqual([some.totals.USER_PROVIDED, some.totals.NONE], [5, 0]);
-    assert.ok(some.warnings.some((w) => /every concept uses a picture you provided or licensed/.test(w)));
-    // with no picture at all every concept falls back to typographic templates, and the plan says so
-    const none = planImageSources({ ...base, mode: 'prefer_existing', originalsRequested: 0 });
-    assert.equal(none.paidImageRequests, 0);
-    assert.deepEqual([none.totals.USER_PROVIDED, none.totals.NONE], [0, 5]);
-    assert.ok(none.warnings.some((w) => /5 of 5 concepts have no existing picture/.test(w)));
-    assert.match(none.summary, /0 paid image requests/);
-  });
-
-  it('licensed candidates that were only found are not counted as sources until they are added', () => {
-    const p = planImageSources({ ...base, mode: 'prefer_existing', licensedCandidates: 6 });
-    assert.equal(p.totals.LICENSED_STOCK, 0);
-    assert.ok(p.warnings.some((w) => /6 licensed candidates were found/.test(w) && /5 original AI images will be made as requested/.test(w)));
-  });
-
-  it('no image model means no AI request, and the plan says why', () => {
-    const p = planImageSources({ ...base, mode: 'prefer_ai', imageModelOn: false });
-    assert.equal(p.paidImageRequests, 0);
-    assert.ok(p.warnings.some((w) => /no image model is selected/.test(w)));
-  });
-});
 
 // ---- policy checks over the source code -------------------------------------------------------------------------------------------------------------
 

@@ -21,3 +21,9 @@ export function initials(name: string) {
     .join('')
     .toUpperCase();
 }
+
+/** A dollar figure; null/undefined = unknown (no verified price), never shown as $0. */
+export function fmtUsd(n: number | null | undefined): string {
+  if (n === null || n === undefined) return 'unavailable';
+  return `$${n.toFixed(n !== 0 && Math.abs(n) < 0.1 ? 3 : 2)}`;
+}

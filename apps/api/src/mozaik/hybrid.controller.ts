@@ -1,7 +1,5 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Query, Res, StreamableFile } from '@nestjs/common';
+import { Controller, Get, Param, Query, Res, StreamableFile } from '@nestjs/common';
 import type { Response } from 'express';
-import { AuthUser, CurrentUser } from '../auth/current-user.decorator';
-import { StartFactoryDto } from './dto/factory.dto';
 import { HybridService } from './hybrid.service';
 
 /**
@@ -33,12 +31,5 @@ export class HybridController {
   @Get('styles')
   styles() {
     return this.hybrid.listStyles();
-  }
-
-  /** The Hybrid plan with real local renders of the chosen templates. Free: no OpenAI request, nothing stored. */
-  @Post('projects/:projectId/hybrid/preview')
-  @HttpCode(200)
-  preview(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string, @Body() dto: StartFactoryDto) {
-    return this.hybrid.preview(u.id, projectId, dto);
   }
 }

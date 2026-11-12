@@ -63,7 +63,7 @@ export function StrategyReportView({ data }: { data: StrategyFull }) {
           Partial strategy: {m.participants.filter((p) => p.state === 'failed' || p.state === 'timed_out').map((p) => p.agent).join(', ')} did not finish. Their areas are incomplete, not guessed.
         </p>
       )}
-      {r.existingMarketing.stale && (
+      {r.existingMarketing?.stale && (
         <p role="status" className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           The Marketing Audit this strategy rests on is {r.existingMarketing.ageDays} days old and may not reflect today's website and profiles.
@@ -76,7 +76,7 @@ export function StrategyReportView({ data }: { data: StrategyFull }) {
         <h3 className="mt-2 text-3xl text-cream-100">{r.productContext.name}</h3>
         <p className="mt-3 text-[15px] leading-relaxed text-cream-100/90">{r.executiveSummary}</p>
         <p className="mt-3 text-xs text-cream-100/70">
-          Strategy only: no advertisements, copy or images. Built on F1 <span className="font-mono">{r.productContext.f1ReportId}</span> and F2 <span className="font-mono">{r.existingMarketing.f2AuditId}</span>. No result is promised.
+          Strategy only: no advertisements, copy or images. Built on the business research <span className="font-mono">{r.productContext.f1ReportId}</span>{r.existingMarketing ? <> and the (historical) Marketing Audit <span className="font-mono">{r.existingMarketing.f2AuditId}</span></> : null}. No result is promised.
         </p>
       </section>
 
@@ -91,15 +91,17 @@ export function StrategyReportView({ data }: { data: StrategyFull }) {
           <p className="mt-2 text-xs text-muted">F1 confidence {Math.round(r.productContext.f1Confidence * 100)}%</p>
         </Section>
 
+        {r.existingMarketing && (
         <Section title="3 · Existing marketing situation (from the audit)" icon={FileSearch}>
-          <Bullets items={r.existingMarketing.notes} empty="" />
+          <Bullets items={r.existingMarketing!.notes} empty="" />
           <ul className="mt-2 space-y-1.5 text-sm">
-            {r.existingMarketing.mainProblems.map((p, i) => (
+            {r.existingMarketing!.mainProblems.map((p, i) => (
               <li key={i} className="flex items-start gap-2"><EvidenceBadge status={p.status} /><span>{p.title} <span className="text-xs text-muted">({p.severity}, {p.area})</span></span></li>
             ))}
-            {r.existingMarketing.mainProblems.length === 0 && <li className="text-muted">The audit documented no main problems.</li>}
+            {r.existingMarketing!.mainProblems.length === 0 && <li className="text-muted">The audit documented no main problems.</li>}
           </ul>
         </Section>
+        )}
 
         <Section title="4 · Audience research" icon={Users}>
           {r.audienceResearch.length === 0 ? (

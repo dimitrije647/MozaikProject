@@ -48,7 +48,7 @@ export class PipelineService {
       this.prisma.campaignRun.findMany({ where: { ...where, mode: { in: modes } }, orderBy: { startedAt: 'desc' }, select: { id: true, projectId: true, mode: true, status: true, startedAt: true, completedAt: true, errorMessage: true } }),
       this.prisma.productDiscoveryReport.findMany({ where: { ...where, run: { status: RunStatus.COMPLETED } }, orderBy: { createdAt: 'desc' }, select: { id: true, projectId: true, runId: true, createdAt: true, model: true, schemaVersion: true } }),
       this.prisma.marketingAuditReport.findMany({ where: { ...where, run: { status: RunStatus.COMPLETED } }, orderBy: { createdAt: 'desc' }, select: { id: true, projectId: true, runId: true, createdAt: true, model: true, f1ReportId: true } }),
-      this.prisma.marketingStrategyReport.findMany({ where: { ...where, run: { status: RunStatus.COMPLETED } }, orderBy: { createdAt: 'desc' }, select: { id: true, projectId: true, runId: true, createdAt: true, model: true, f2AuditId: true } }),
+      this.prisma.marketingStrategyReport.findMany({ where: { ...where, run: { status: RunStatus.COMPLETED } }, orderBy: { createdAt: 'desc' }, select: { id: true, projectId: true, runId: true, createdAt: true, model: true, f1ReportId: true } }),
       this.prisma.creativeCampaign.findMany({ where: { ...where, status: 'completed' }, orderBy: { createdAt: 'desc' }, select: { id: true, projectId: true, runId: true, createdAt: true, model: true, f3StrategyId: true, approvalStatus: true, campaignName: true } }),
     ]);
     const runs: RunFact[] = runRows.map((r) => ({ ...r, status: r.status as RunFact['status'] }));
@@ -91,8 +91,8 @@ export class PipelineService {
     for (const r of n3.values()) {
       const c = content.get(r.id);
       put(r.projectId, 'strategy', {
-        ...base(r), upstreamId: r.f2AuditId, usable: true, partial: c ? Boolean(c.report?.partial) : null, summary: clip(c?.report?.executiveSummary),  approvalStatus: null,
-        stats: c ? [{ label: 'Channel Scouts', value: (c.meta?.scoutDecisions ?? []).filter((d: Obj) => d.selected).length }, { label: 'Findings', value: count(c.meta?.findings) }, { label: 'Tokens', value: tokens(c.meta ?? {}) }] : [],
+        ...base(r), upstreamId: r.f1ReportId, usable: true, partial: c ? Boolean(c.report?.partial) : null, summary: clip(c?.report?.executiveSummary),  approvalStatus: null,
+        stats: c ? [{ label: 'Findings', value: count(c.meta?.findings) }, { label: 'Tokens', value: tokens(c.meta ?? {}) }] : [],
       });
     }
     for (const r of n4.values()) {

@@ -3,7 +3,6 @@ export * from './license';
 export * from './adapters';
 export * from './discovery';
 export * from './acquire';
-export * from './planner';
 export * from './rights';
 export * from './analysis';
 export * from './scoring';

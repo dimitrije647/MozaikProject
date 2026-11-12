@@ -24,16 +24,10 @@ export interface OpenAIClientOptions {
   baseUrl?: string;
   /** Injectable for tests. */
   fetch?: typeof fetch;
-  /**
-   * NO AI HYBRID: this client can never create an image. `createImage` throws before any request is built, whoever calls it. The refusal is
-   * reported to `onImageRefused` (a safe, secret-free callback) so the run can record that an attempt was made and stopped.
-   */
-  forbidImages?: boolean;
-  onImageRefused?: () => void;
 }
 
 /**
- * Minimal OpenAI HTTP client (Responses API + model list). The API key sits in a true private
+ * Minimal OpenAI HTTP client (Responses API + model list; LaunchPilot has no image-generation request at all). The API key sits in a true private
  * field, so it cannot leak through JSON.stringify, util.inspect or object spreading, and it is
  * only ever sent as the Authorization header of requests to the configured base URL.
  */
@@ -41,39 +35,16 @@ export class OpenAIClient {
   readonly #apiKey: string;
   readonly #baseUrl: string;
   readonly #fetch: typeof fetch;
-  readonly #forbidImages: boolean;
-  readonly #onImageRefused: (() => void) | undefined;
 
   constructor(options: OpenAIClientOptions) {
     this.#apiKey = options.apiKey;
     this.#baseUrl = (options.baseUrl ?? resolveOpenAIBaseUrl()).replace(/\/$/, '');
     this.#fetch = options.fetch ?? fetch;
-    this.#forbidImages = options.forbidImages === true;
-    this.#onImageRefused = options.onImageRefused;
-  }
-
-  /** True when this client refuses every image request (NO AI HYBRID). */
-  get imagesForbidden(): boolean {
-    return this.#forbidImages;
   }
 
   /** POST /responses. Throws ProviderError (safe message only) on any failure. */
   async createResponse(body: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     return this.#request('POST', '/responses', body, signal);
-  }
-
-  /** POST /images/generations (GPT Image models). Throws ProviderError (safe message only) on any failure. */
-  async createImage(body: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    if (this.#forbidImages) {
-      // refused HERE, before a request exists: nothing is sent, nothing can be billed
-      try {
-        this.#onImageRefused?.();
-      } catch {
-        /* a reporting failure never turns a refusal into a request */
-      }
-      throw new ProviderError('image_generation_forbidden');
-    }
-    return this.#request('POST', '/images/generations', body, signal);
   }
 
   /** GET /models: free, lists the model ids this key can see. */

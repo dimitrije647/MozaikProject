@@ -6,48 +6,36 @@ import type { BrandBlock, HybridBlock, HybridCounts } from './records';
 import type { HybridSettings } from './settings';
 
 /**
- * The honest tally of a Hybrid Production run. "Delivered" counts only what really exists: an original AI image that the provider returned,
- * and a template creative that was rendered to a file. A failed request, a skipped slot and a stand-in are never counted as delivered.
+ * The honest tally of the template creatives. "Delivered" counts only what really exists: a template creative rendered to a file. A failed or
+ * blocked creative is never counted as delivered. No AI image exists in a V4 campaign: the originals block is all zeros and image cost is $0.
  */
-export function hybridCounts(o: { board: Pick<CreativeBoard, 'allocation' | 'variations' | 'hybridPlan' | 'templateCreatives'>; imageRequests: number; text: { calls: number; inputTokens: number; outputTokens: number }; cost: CostReport | null; /** NO AI HYBRID: the image cost is exactly zero, not unknown */ noAi?: boolean }): HybridCounts {
+export function hybridCounts(o: { board: Pick<CreativeBoard, 'hybridPlan' | 'templateCreatives'>; text: { calls: number; inputTokens: number; outputTokens: number }; cost: CostReport | null }): HybridCounts {
   const { board } = o;
-  const vars = board.variations;
-  const originalsPlanned = board.allocation?.allocated ?? vars.length;
-  const generated = vars.filter((v) => v.status === 'generated').length;
-  const failed = vars.filter((v) => v.status === 'failed').length;
-  const blocked = vars.filter((v) => v.status === 'blocked_by_budget').length;
-  const skipped = Math.max(0, originalsPlanned - generated - failed - blocked);
-  const plannedTemplates = board.hybridPlan?.slots.length ?? board.templateCreatives.length;
+  const planned = board.hybridPlan?.slots.length ?? board.templateCreatives.length;
   const rendered = board.templateCreatives.filter((c) => c.status === 'rendered').length;
   const fallbackRendered = board.templateCreatives.filter((c) => c.status === 'fallback_rendered').length;
-  const failedRenders = board.templateCreatives.filter((c) => c.status === 'failed').length;
-  const skippedRenders = Math.max(0, plannedTemplates - rendered - fallbackRendered - failedRenders);
+  const failed = board.templateCreatives.filter((c) => c.status === 'failed').length;
+  const skipped = Math.max(0, planned - rendered - fallbackRendered - failed);
   return {
-    originals: { planned: originalsPlanned, requested: o.imageRequests, generated, failed, skipped, blockedByBudget: blocked },
-    templates: { planned: plannedTemplates, rendered, fallbackRendered, failed: failedRenders, skipped: skippedRenders },
-    total: { planned: originalsPlanned + plannedTemplates, delivered: generated + rendered + fallbackRendered },
+    originals: { planned: 0, requested: 0, generated: 0, failed: 0, skipped: 0, blockedByBudget: 0 },
+    templates: { planned, rendered, fallbackRendered, failed, skipped },
+    total: { planned, delivered: rendered + fallbackRendered },
     text: o.text,
     spending: {
       approvedUsd: o.cost?.approvedUsd ?? null,
       spentUsd: o.cost?.spentUsd ?? 0,
       textUsd: o.cost?.textUsd ?? 0,
-      imageUsd: o.noAi ? 0 : (o.cost?.imageUsd ?? null),
-      note: o.noAi
-        ? 'NO AI HYBRID: no image-generation request was made, so image cost is exactly $0. Only text-model calls (and any paid search you approved) cost money. Template creatives are rendered locally and are never AI images.'
-        : 'Only original image requests and text-model calls are paid. Template creatives are rendered locally and cost nothing; they are counted separately and never as AI images.',
+      imageUsd: 0,
+      note: 'No image-generation request was made, so image cost is exactly $0. Only text-model calls (and any paid search you approved) cost money. Every creative is rendered locally from a template.',
     },
   };
 }
 
-export function hybridNotes(counts: HybridCounts, board: Pick<CreativeBoard, 'selection' | 'templateQuality' | 'directionRefined'>): string[] {
+export function hybridNotes(counts: HybridCounts, board: Pick<CreativeBoard, 'selection' | 'templateQuality'>): string[] {
   const n: string[] = [];
-  const o = counts.originals;
   const t = counts.templates;
-  if (o.generated < o.planned) n.push(`${o.generated} of the ${o.planned} planned original AI images exist (${o.failed} failed, ${o.blockedByBudget} stopped by a budget, ${o.skipped} not requested).`);
-  if (t.rendered + t.fallbackRendered < t.planned) n.push(`${t.rendered + t.fallbackRendered} of the ${t.planned} planned template creatives exist (${t.failed} failed to render, ${t.skipped} not rendered).`);
-  if (t.fallbackRendered) n.push(`${t.fallbackRendered} template creative(s) use a picture-free template because their original image does not exist; they are labelled FALLBACK, not AI images.`);
+  if (t.rendered + t.fallbackRendered < t.planned) n.push(`${t.rendered + t.fallbackRendered} of the ${t.planned} planned creatives exist (${t.failed} failed to render, ${t.skipped} blocked or not rendered).`);
   for (const w of board.selection?.warnings ?? []) n.push(w);
-  if (!board.directionRefined) n.push('The visual direction comes from the style library, the brand and the strategy without model refinement.');
   if (board.templateQuality && !board.templateQuality.complete) n.push(`Template quality check: ${board.templateQuality.summary}`);
   return n.slice(0, 20);
 }
@@ -65,13 +53,12 @@ export function brandBlockOf(brand: BrandContext | null | undefined, creatives: 
   };
 }
 
-export function buildHybridBlock(o: { settings: HybridSettings; libraryVersion: string; board: CreativeBoard; counts: HybridCounts; refusedImageRequests?: number; brand?: BrandContext | null }): HybridBlock {
+export function buildHybridBlock(o: { settings: HybridSettings; libraryVersion: string; board: CreativeBoard; counts: HybridCounts; brand?: BrandContext | null }): HybridBlock {
   const { board } = o;
   const brand = brandBlockOf(o.brand, board.templateCreatives);
   const imagery = board.imagery
     ? {
         ...board.imagery,
-        refusedAttempts: o.refusedImageRequests ?? board.imagery.refusedAttempts,
         // "used by" = the creatives that really DREW the picture (from their recorded sources), not the slots the allocation planned for it
         library: board.imagery.library.map((l) => ({ ...l, usedBySlots: board.templateCreatives.filter((c) => (c.status === 'rendered' || c.status === 'fallback_rendered') && c.sourceAssetIds.includes(`brand:${l.id}`)).map((c) => c.slotId) })),
         blockedSlots: board.templateCreatives.filter((c) => c.status === 'skipped' && c.flags.includes('blocked')).map((c) => ({ slotId: c.slotId, reason: c.reason ?? 'Blocked.' })),

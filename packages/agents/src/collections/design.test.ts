@@ -4,7 +4,6 @@ import sharp from 'sharp';
 import { CREATIVE_FORMATS } from '../creative/formats';
 import { directionFor } from '../hybrid/direction';
 import { checkDesignFit, designFormatIds } from '../hybrid/design-plan';
-import { planHybrid } from '../hybrid/plan';
 import { mergeHybrid } from '../hybrid/settings';
 import { renderTemplatePreview } from '../templates/preview';
 import { renderTemplate } from '../templates/render';
@@ -157,21 +156,6 @@ describe('output formats of the design', () => {
     assert.deepEqual(formatIdsOf(['instagram_post', 'website_banner']), ['instagram_square', 'instagram_portrait', 'web_banner', 'landing_hero']);
     assert.deepEqual(formatKeysFromProject(['instagram_post', 'flyer', 'carrier_pigeon']), ['instagram_post', 'flyer']);
     assert.deepEqual(formatKeysFromProject(null), []);
-  });
-
-  it('the template creatives rotate through exactly the chosen formats, each concept starting at another one', () => {
-    const concepts = Array.from({ length: 5 }, (_, i) => ({ id: `K${i + 1}`, name: `Concept ${i + 1}`, channels: ['instagram', 'facebook'] as never }));
-    const ids = ['story', 'web_banner', 'flyer'];
-    const plan = planHybrid({ concepts, originals: 5, templateCreatives: 15, channelPriority: ['instagram'], fixedSize: null, brandImages: 0, basis: 'forecast', formatIds: ids });
-    assert.equal(plan.slots.length, 15);
-    assert.deepEqual([...new Set(plan.slots.map((s) => s.formatId))].sort(), [...ids].sort());
-    for (const f of ids) assert.equal(plan.slots.filter((s) => s.formatId === f).length, 5, `${f} used evenly`);
-    const flyer = plan.slots.find((s) => s.formatId === 'flyer')!;
-    assert.deepEqual([flyer.width, flyer.height], [1240, 1748]);
-    // without chosen formats the earlier behaviour is unchanged
-    const legacy = planHybrid({ concepts, originals: 5, templateCreatives: 15, channelPriority: ['instagram'], fixedSize: null, brandImages: 0, basis: 'forecast' });
-    assert.ok(new Set(legacy.slots.map((s) => s.formatId)).size >= 3);
-    assert.ok(!legacy.slots.some((s) => s.formatId === 'flyer'));
   });
 
   it('designFormatIds follows the design and only the formats the collection can draw', () => {

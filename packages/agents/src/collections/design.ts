@@ -29,6 +29,7 @@ export const SOURCE_LABELS: Record<PaletteSource, string> = {
   collection_default: 'Collection default',
 };
 
+/** 'prefer_ai' is LEGACY: kept only so designs saved before V4 still parse. It changes nothing: no AI image is ever generated. */
 export const IMAGE_SOURCING_MODES = ['prefer_existing', 'balanced', 'prefer_ai'] as const;
 export type ImageSourcingMode = (typeof IMAGE_SOURCING_MODES)[number];
 
@@ -40,16 +41,22 @@ export const PaletteEvidence = z.object({
 });
 export type PaletteEvidence = z.infer<typeof PaletteEvidence>;
 
-export const FORMAT_OPTION_KEYS = ['instagram_post', 'instagram_story', 'facebook_post', 'linkedin_post', 'website_banner', 'flyer', 'billboard', 'other'] as const;
+export const FORMAT_OPTION_KEYS = ['x_post', 'tiktok_cover', 'instagram_post', 'instagram_story', 'facebook_post', 'linkedin_post', 'website_banner', 'display_ad', 'flyer', 'billboard', 'other'] as const;
 export type FormatOptionKey = (typeof FORMAT_OPTION_KEYS)[number];
 
-/** The formats the user chooses by name (the same keys the project stores as defaults) and the creative formats each one means. */
+/**
+ * The deliverable formats by name and the creative formats each one means (used to show what a collection can draw). A V4 campaign does not
+ * ask the user to pick formats: the deliverables plan (hybrid/deliverables.ts) produces all of them the collection can draw.
+ */
 export const FORMAT_OPTIONS: Record<FormatOptionKey, { label: string; formatIds: string[] }> = {
+  x_post: { label: 'X post', formatIds: ['x_post'] },
+  tiktok_cover: { label: 'TikTok cover (9:16)', formatIds: ['story'] },
   instagram_post: { label: 'Instagram post', formatIds: ['instagram_square', 'instagram_portrait'] },
   instagram_story: { label: 'Instagram story', formatIds: ['story'] },
   facebook_post: { label: 'Facebook post', formatIds: ['facebook_feed'] },
   linkedin_post: { label: 'LinkedIn post', formatIds: ['linkedin_feed'] },
-  website_banner: { label: 'Website banner', formatIds: ['web_banner', 'landing_hero'] },
+  website_banner: { label: 'Web banner ad', formatIds: ['web_banner'] },
+  display_ad: { label: 'Display ad', formatIds: ['display_square'] },
   flyer: { label: 'Flyer', formatIds: ['flyer'] },
   billboard: { label: 'Billboard', formatIds: ['billboard'] },
   other: { label: 'Other (16:9 promotional graphic)', formatIds: ['promo_16x9'] },

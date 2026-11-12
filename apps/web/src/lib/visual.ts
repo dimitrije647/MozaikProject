@@ -28,13 +28,8 @@ export interface PaletteEvidence {
 
 export const FORMAT_OPTION_KEYS = ['instagram_post', 'instagram_story', 'facebook_post', 'linkedin_post', 'website_banner', 'flyer', 'billboard', 'other'] as const;
 export type FormatOptionKey = (typeof FORMAT_OPTION_KEYS)[number];
+/** Stored with older designs; V4 never generates images, so the value no longer changes what a campaign does. */
 export type ImageSourcing = 'prefer_existing' | 'balanced' | 'prefer_ai';
-export const SOURCING_LABELS: Record<ImageSourcing, { title: string; text: string }> = {
-  prefer_existing: { title: 'Prefer existing / licensed images', text: 'Use your pictures and licensed ones first. AI images are still made exactly as many as you request; the plan only suggests fewer.' },
-  balanced: { title: 'Balanced', text: 'AI originals as requested; your own pictures fill the concepts that have none.' },
-  prefer_ai: { title: 'Prefer original AI images', text: 'AI originals as requested; existing pictures only where a concept has no AI original.' },
-};
-
 export interface CampaignDesignData {
   version: 1;
   collectionId: CollectionId;
@@ -45,7 +40,7 @@ export interface CampaignDesignData {
   formats: FormatOptionKey[];
   preferredTemplates: string[];
   imageSourcing: ImageSourcing;
-  /** NO AI HYBRID: fully automatic authorized-stock mode (only licenses the provider clears; credits recorded). Absent = false. */
+  /** Fully automatic authorized-stock mode (only licenses the provider clears; credits recorded). Absent = false. */
   autoStock?: boolean;
   confirmed: boolean;
   confirmedAt: string | null;
@@ -149,30 +144,6 @@ export interface PaletteSuggestionData {
   sources: { website: string | null; repository: string | null };
 }
 
-export interface ImageCandidateData {
-  id: string;
-  provider: string;
-  kind: 'LICENSED_STOCK' | 'REFERENCE_ONLY';
-  title: string;
-  pageUrl: string;
-  creator: string | null;
-  thumbnailUrl: string | null;
-  platform: string | null;
-  width: number | null;
-  height: number | null;
-  license: { status: 'cleared' | 'needs_review' | 'blocked'; license: string; licenseUrl: string | null; attribution: string | null; attributionRequired: boolean; reasons: string[] };
-}
-
-export interface DiscoveryData {
-  intents: { query: string; why: string }[];
-  providers: { id: string; label: string; kind: 'licensed' | 'reference'; status: 'ok' | 'not_configured' | 'failed' | 'rate_limited' | 'skipped'; message: string | null; count: number }[];
-  licensed: ImageCandidateData[];
-  references: ImageCandidateData[];
-  notes: string[];
-  searchedAt: string;
-  cached: boolean;
-}
-
 // ---- URLs of the free previews (drawn by the server with the real renderer) ----------------------------------------------------------------------
 
 const hex = (c: string) => c.replace('#', '').toLowerCase();
@@ -225,18 +196,3 @@ export const useSaveDesign = (projectId: string) => {
 };
 
 export const usePaletteSuggestion = (projectId: string) => useMutation({ mutationFn: (v: { collectionId: CollectionId; refresh?: boolean; explicit?: Partial<Record<PaletteRole, string>> }) => post<PaletteSuggestionData>(`/projects/${projectId}/design/palette`, v) });
-
-export const useDiscoverImages = (projectId: string) => useMutation({ mutationFn: (v: { refresh?: boolean } = {}) => post<DiscoveryData>(`/projects/${projectId}/design/discover`, v) });
-
-export const useLicensedImages = (projectId: string) => useQuery({ queryKey: keysVisual.images(projectId), queryFn: () => get<{ items: { id: string; assetId: string; provider: string; license: string; attribution: string | null; pageUrl: string; creator: string | null }[]; credits: string }>(`/projects/${projectId}/design/images`) });
-
-export const useAddLicensedImage = (projectId: string) => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (v: { provider: string; id: string; reviewConfirmed?: boolean }) => post(`/projects/${projectId}/design/images`, v),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keysVisual.images(projectId) });
-      qc.invalidateQueries({ queryKey: ['project', projectId] });
-    },
-  });
-};

@@ -1,9 +1,7 @@
 import type { SafeProviderError } from '../../../ai/errors';
 import type { SourceRecord } from '../../../discovery/f1/board';
-import { audienceMessage, competitorMessage, competitorPresenceBlock, scoutMessage, seasonalMessage, srcBlock } from '../../../strategy/prompts';
-import type { ChannelId } from '../../../strategy/channels';
+import { researchMessage, srcBlock } from '../../../strategy/prompts';
 import type { CompetitorLead, StrategyFacts } from '../../../strategy/context';
-import type { StrategyAgentOutput, LlmStrategyFinding } from '../../../strategy/schemas';
 import { competitorQueries, hostKey, namedCompetitorQuery, pickCandidates, pickNamed } from '../../../tools/competitors';
 import { countryCodeFor, upcoming, type Holiday } from '../../../tools/holidays';
 import { pageRole, type ExtractedPage } from '../../../tools/html';
@@ -13,15 +11,11 @@ import type { PhaseAgent } from '../f1/agent';
 import type { F3Env } from './env';
 
 /**
- * The deterministic "gather" step of each F3 participant. Tools (search, SSRF-safe fetch, holiday calendar) do the
- * retrieval within hard limits; the model only sees the compact, delimited result. Every retrieval, success or
- * failure, is published as `source.retrieved`.
+ * The deterministic "gather" step of the Marketing Strategist. Tools (search, SSRF-safe fetch, holiday calendar) do the
+ * retrieval within hard limits; the model only sees the compact, delimited result in ONE research message. Every
+ * retrieval, success or failure, is published as `source.retrieved`.
  */
-export type F3Prep =
-  | { kind: 'ready'; message: string }
-  | { kind: 'direct'; output: StrategyAgentOutput; reason: string }
-  | { kind: 'skip'; reason: string }
-  | { kind: 'fail'; error: SafeProviderError };
+export type F3Prep = { kind: 'ready'; message: string } | { kind: 'fail'; error: SafeProviderError };
 
 type NewSource = Pick<SourceRecord, 'kind' | 'label' | 'status'> & Partial<Omit<SourceRecord, 'id' | 'retrievedAt' | 'excerpt' | 'chars'>>;
 
@@ -31,36 +25,10 @@ function addSource(env: F3Env, agent: PhaseAgent, rec: NewSource, text?: string)
   return r;
 }
 
-const msgCtx = (env: F3Env) => ({ f1: env.f1, f2: env.f2, input: env.input, now: env.settings.now });
 const webOrigin = (env: F3Env) => (env.settings.fixtureSources ? 'fixture' : 'public_page') as 'fixture' | 'public_page';
 const apiOrigin = (env: F3Env) => (env.settings.fixtureSources ? 'fixture' : 'live_api') as 'fixture' | 'live_api';
 
-const gapFinding = (title: string, statement: string, recommendation: string | null): LlmStrategyFinding => ({
-  kind: 'gap',
-  title,
-  statement,
-  classification: 'unknown',
-  importance: 'medium',
-  sourceType: 'ai_inference',
-  sourceId: null,
-  locator: null,
-  excerpt: null,
-  reasoning: 'No source material was available, and nothing is invented to fill the gap.',
-  confidence: null,
-  recommendation,
-  segment: null,
-  competitor: null,
-  channel: null,
-  opportunity: null,
-});
-
-// ---- A14 Audience Researcher --------------------------------------------------------------------------------------------------
-
-export async function prepareAudience(env: F3Env): Promise<F3Prep> {
-  return { kind: 'ready', message: audienceMessage(msgCtx(env)) };
-}
-
-// ---- A15 Competitor Researcher ------------------------------------------------------------------------------------------------
+// ---- competitors ---------------------------------------------------------------------------------------------------------------
 
 /** One competitor page as the model sees it. Pages of one site share `competitor_site`, so the model treats them as one competitor. */
 const pageBody = (p: ExtractedPage, url: string, site: string, role: string) =>
@@ -82,7 +50,8 @@ const pageBody = (p: ExtractedPage, url: string, site: string, role: string) =>
 
 const searchFailure = (e: unknown) => (e instanceof SearchError ? e.message : 'Search failed.');
 
-export async function prepareCompetitor(env: F3Env, agent: PhaseAgent): Promise<F3Prep> {
+/** Reads the competitor sites (user URLs first, then user names, then a bounded category search). Returns the <source> blocks. */
+export async function gatherCompetitors(env: F3Env, agent: PhaseAgent): Promise<string[]> {
   const { web, search, extract } = env.tools;
   const { settings, input } = env;
   const signal = agent.signal;
@@ -226,34 +195,24 @@ export async function prepareCompetitor(env: F3Env, agent: PhaseAgent): Promise<
   }
   if (!input.competitorUrls.length && !names.length) facts.gaps.push('No competitor URLs or names were supplied by the user.');
 
-  if (!blocks.length) {
-    return {
-      kind: 'direct',
-      reason: 'No competitor material could be retrieved: reported as insufficient research, without a model call.',
-      output: {
-        summary: 'There is not enough live research to identify competitors. No competitor is named, because naming one without a source would be invented.',
-        findings: [gapFinding('Insufficient live competitor research', 'No competitor page or search result could be retrieved, so no competitor is named, no competitor figure is invented and no competitive positioning is claimed as a finding. Where the strategy talks about the category, it is a labelled hypothesis.', 'Add competitor website URLs or names to the project, or configure a search provider (TAVILY_API_KEY), and run the strategy again.')],
-        missingInformation: facts.gaps.slice(0, 8),
-      },
-    };
-  }
-  return { kind: 'ready', message: competitorMessage(msgCtx(env), blocks, facts) };
+  return blocks;
 }
 
-// ---- A17 Seasonal Intelligence ------------------------------------------------------------------------------------------------
+// ---- holiday calendar ----------------------------------------------------------------------------------------------------------
 
-export async function prepareSeasonal(env: F3Env, agent: PhaseAgent): Promise<F3Prep> {
+/** The public-holiday calendar (only with the user's opt-in and one country). Returns the <holiday_calendar> block or null, and a note for the model. */
+export async function gatherHolidays(env: F3Env, agent: PhaseAgent): Promise<{ calendar: string | null; note: string }> {
   const { settings, input } = env;
   const fixture = settings.fixtureSources;
   const note = (n: string) => ({ used: false, country: null as string | null, note: n, holidays: [] as { date: string; name: string }[] });
   if (!input.useHolidayCalendar) {
     env.facts.holidays = note('The public-holiday calendar is switched off for this project (intake: seasonal calendar). Seasonal analysis is limited to labeled hypotheses.');
-    return { kind: 'ready', message: seasonalMessage(msgCtx(env), null, 'No holiday calendar is available: every seasonal statement must be a labeled hypothesis.') };
+    return { calendar: null, note: 'No holiday calendar is available: every seasonal statement must be a labeled hypothesis.' };
   }
   const country = countryCodeFor(input.geography);
   if (!country) {
     env.facts.holidays = note('The holiday calendar was not queried: a single country could not be determined from the geography. Seasonal analysis is limited to labeled hypotheses.');
-    return { kind: 'ready', message: seasonalMessage(msgCtx(env), null, 'No holiday calendar is available: every seasonal statement must be a labeled hypothesis.') };
+    return { calendar: null, note: 'No holiday calendar is available: every seasonal statement must be a labeled hypothesis.' };
   }
   const year = settings.now.getUTCFullYear();
   const years = settings.now.getUTCMonth() >= 8 ? [year, year + 1] : [year];
@@ -269,19 +228,20 @@ export async function prepareSeasonal(env: F3Env, agent: PhaseAgent): Promise<F3
     const msg = errors[0] ?? 'The calendar returned no upcoming holidays.';
     addSource(env, agent, { kind: 'holiday_calendar', label: `Public holidays ${country}`, status: 'failed', live: true, fixture, origin: apiOrigin(env), error: msg });
     env.facts.holidays = { used: false, country, note: `The holiday calendar could not be used: ${msg}`, holidays: [] };
-    return { kind: 'ready', message: seasonalMessage(msgCtx(env), null, `The holiday calendar was unavailable (${msg}): every seasonal statement must be a labeled hypothesis.`) };
+    return { calendar: null, note: `The holiday calendar was unavailable (${msg}): every seasonal statement must be a labeled hypothesis.` };
   }
   const text = [`country: ${country}`, `source: Nager.Date public holiday API (date.nager.at), requested now`, ...list.map((h) => `${h.date} | ${h.name} | ${h.localName}`)].join('\n');
   const rec = addSource(env, agent, { kind: 'holiday_calendar', label: `Public holidays ${country} (${years.join(', ')})`, url: `https://date.nager.at/api/v3/PublicHolidays/${years[0]}/${country}`, status: 'retrieved', live: true, fixture, origin: apiOrigin(env), httpStatus: 200 }, text);
   env.facts.holidays = { used: true, country, note: `Public holidays for ${country} from the Nager.Date API${fixture ? ' (FIXTURE data)' : ''}.`, holidays: list.map((h) => ({ date: h.date, name: h.name })) };
   const block = `<holiday_calendar>\n${srcBlock(rec, text)}\n</holiday_calendar>`;
-  return { kind: 'ready', message: seasonalMessage(msgCtx(env), block, 'A public-holiday calendar is supplied. Dates in it are observations of the calendar; whether a holiday matters for demand is your hypothesis.') };
+  return { calendar: block, note: 'A public-holiday calendar is supplied. Dates in it are observations of the calendar; whether a holiday matters for demand is your hypothesis.' };
 }
 
-// ---- A16 Channel Scouts (dynamic) ---------------------------------------------------------------------------------------------
+// ---- the research step -----------------------------------------------------------------------------------------------------------
 
-export async function prepareScout(env: F3Env, _agent: PhaseAgent, channel: ChannelId): Promise<F3Prep> {
-  const upstream = env.board.findings.filter((f) => f.area === 'audience' || f.area === 'competitor' || f.area === 'seasonal');
-  const decision = env.board.scoutDecisions.find((d) => d.channel === channel);
-  return { kind: 'ready', message: scoutMessage(msgCtx(env), channel, decision, upstream, env.board.summaries, competitorPresenceBlock(env.facts.competitors)) };
+/** Competitors and the holiday calendar are gathered first; then ONE message carries everything to the model. */
+export async function prepareResearch(env: F3Env, agent: PhaseAgent): Promise<F3Prep> {
+  const competitorBlocks = await gatherCompetitors(env, agent);
+  const holidays = await gatherHolidays(env, agent);
+  return { kind: 'ready', message: researchMessage({ f1: env.f1, input: env.input, now: env.settings.now }, { competitorBlocks, competitors: env.facts.competitors!, calendar: holidays.calendar, holidayNote: holidays.note }) };
 }

@@ -6,7 +6,6 @@ import {
   DocumentExtractionTool,
   FORMAT_OPTIONS,
   FORMAT_OPTION_KEYS,
-  GitHubRepositoryTool,
   TEMPLATE_LIBRARY,
   WebFetchTool,
   acquireLicensedImage,
@@ -33,8 +32,6 @@ import {
   newDesign,
   paletteFit,
   parseDesign,
-  placeholderImage,
-  planImageSources,
   stockRights,
   readGuidelinesBrand,
   readImagesBrand,
@@ -526,7 +523,7 @@ export class VisualService {
    * Everything about the approved design that can be checked for free before spending: it must be confirmed, readable and able to produce the
    * chosen formats, and the planner reports where the pictures come from. null when the campaign has no design (it was configured before collections).
    */
-  async preflight(projectId: string, hs: HybridSettings, o: { imageOn: boolean; concepts: number; brandImageCount: number; imageUsd: number | null }) {
+  async preflight(projectId: string, hs: HybridSettings, o: { concepts: number; brandImageCount: number; deliverables: number }) {
     const design = hs.design;
     if (!design) return null;
     const c = getCollection(design.collectionId);
@@ -539,16 +536,18 @@ export class VisualService {
       this.tables(() => this.prisma.imageProvenance.count({ where: { projectId } })).catch(() => 0),
       this.tables(() => this.prisma.visualDiscoveryRun.findFirst({ where: { projectId, expiresAt: { gt: new Date() } }, orderBy: { createdAt: 'desc' } })).catch(() => null),
     ]);
-    const hasPicture = (o.imageOn && hs.originals > 0) || o.brandImageCount > 0;
-    const ev = this.evaluate(design, { hasPicture, facts: hs.facts, templateCreatives: hs.templateCreatives });
+    const hasPicture = o.brandImageCount > 0;
+    const ev = this.evaluate(design, { hasPicture, facts: hs.facts, templateCreatives: o.deliverables });
     if (!design.confirmed) blockers.push({ code: 'design_unconfirmed', message: 'Confirm the campaign design (template collection, palette and formats) before starting: it decides how every creative looks.' });
     if (!ev.check.ok) blockers.push({ code: 'design_palette', message: `The palette is not readable: ${ev.check.errors.join(' ')}` });
     if (ev.formats && !ev.formats.ok) blockers.push({ code: 'design_formats', message: `${ev.formats.messages.join(' ')} ${ev.formats.options.plan.join(' ')}${ev.formats.options.collections.length ? ` Collections that support every chosen format: ${ev.formats.options.collections.map((x) => x.name).join(', ')}.` : ''}`.trim() });
     warnings.push(...ev.check.warnings, ...ev.paletteFit.notes.filter((n) => !ev.check.errors.includes(n)), ...(ev.formats?.ok ? ev.formats.messages : []));
     const defaults = PALETTE_DEFAULT_ROLES.filter((r) => design.paletteEvidence[r]?.source === 'collection_default');
     if (defaults.length === 5) warnings.push(`No brand colors were detected or chosen: the ${c.name} default palette is used. Review it before you start.`);
-    const sources = planImageSources({ mode: design.imageSourcing, originalsRequested: hs.originals, imageModelOn: o.imageOn, concepts: o.concepts, userImages: Math.max(0, o.brandImageCount - licensed), licensedImages: licensed, licensedCandidates: ((candidates?.resultJson as unknown as DiscoveryResult | undefined)?.licensed ?? []).length, imageUsd: o.imageUsd });
-    warnings.push(...sources.warnings);
+    // where the pictures come from: approved uploads and approved website/repository pictures, licensed stock, never an image model
+    const candidatesCount = ((candidates?.resultJson as unknown as DiscoveryResult | undefined)?.licensed ?? []).length;
+    const sources = { mode: design.imageSourcing, aiImages: 0, approvedPictures: o.brandImageCount, licensedImages: licensed, licensedCandidates: candidatesCount };
+    if (!o.brandImageCount) warnings.push(candidatesCount ? `No picture is approved yet; ${candidatesCount} licensed candidate(s) wait for your review in the image gallery. Without an approved picture every visual is typography-first.` : 'No approved picture exists for this project: every visual will be typography-first (brand colors, type and logo). Upload pictures, approve website pictures with Get Content, or search licensed stock to use real photographs.');
     return {
       design,
       collection: { id: c.id, name: c.name, version: c.version, latestVersion: c.version, styleId: c.styleId },

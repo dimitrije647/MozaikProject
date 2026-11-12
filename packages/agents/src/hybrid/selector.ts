@@ -13,7 +13,7 @@ import type { HybridFacts } from './settings';
  * must be designed for the slot's format class and must have all the content it requires (an offer card needs an offer the USER gave;
  * a template with a hero picture needs a picture). Among eligible templates it scores style, industry, channel, density, objective,
  * brand tone and the user's favourites, and it penalizes repetition so a campaign does not show the same layout twice.
- * A model may re-rank a SHORTLIST (assisted mode); its answer is validated against these same rules and discarded if it breaks them.
+ * It is fully deterministic: no model call (the same inputs always give the same plan).
  */
 
 export interface SelectorContext {
@@ -184,7 +184,7 @@ export function scoreTemplate(t: TemplateDef, slot: TemplateSlot, ctx: SelectorC
   const usesImage = t.layers.some((l) => l.type === 'image');
   if (slot.source !== 'none' && usesImage) {
     score += 1;
-    reasons.push(slot.source === 'ai_original' ? 'shows the concept\'s original image' : 'shows a brand image');
+    reasons.push('shows an approved picture');
   }
   if (slot.source !== 'none' && !usesImage) score -= 2; // would waste the picture that exists
   // a second picture exists only if the project has brand images; without one the template's second area shows a plain pattern
@@ -209,7 +209,7 @@ export interface SelectionInput {
 
 export interface SelectionResult {
   plan: TemplateSelectionPlan;
-  /** Per slot: eligible candidates by raw score (before repetition penalties), best first. The assisted mode re-ranks within this shortlist only. */
+  /** Per slot: eligible candidates by raw score (before repetition penalties), best first. */
   shortlists: Map<string, Candidate[]>;
   /** Slots that could not be given any template (with the reason). */
   unplaceable: { slotId: string; reason: string }[];
@@ -286,10 +286,10 @@ export function selectTemplates(input: SelectionInput): SelectionResult {
 
     let ranked = rank(slot);
     const extra: string[] = [];
-    if (!forced && !ranked.length) {
-      // no template exists for this format with this content: try the channel's other formats, then the other channels' formats
+    if (!forced && !ranked.length && !slot.fixedFormat) {
+      // no template exists for this format with this content: try the channel's other formats (a billboard, flyer or ad never changes shape)
       const tried = new Set([`${slot.channel}|${slot.formatId}`]);
-      const options: { ch: ChannelId; f: string }[] = [slot.channel, ...(Object.keys(HYBRID_FORMATS) as ChannelId[]).filter((c) => c !== slot.channel)].flatMap((ch) => (HYBRID_FORMATS[ch] ?? []).map((f) => ({ ch, f })));
+      const options: { ch: ChannelId; f: string }[] = (HYBRID_FORMATS[slot.channel] ?? []).map((f) => ({ ch: slot.channel, f }));
       for (const o of options) {
         if (tried.has(`${o.ch}|${o.f}`)) continue;
         tried.add(`${o.ch}|${o.f}`);
@@ -384,7 +384,7 @@ export function selectTemplates(input: SelectionInput): SelectionResult {
 
   return {
     plan: {
-      mode: ctx.mode,
+      mode: ctx.mode === 'assisted' ? 'automatic' : ctx.mode,
       basis: ctx.basis,
       styleId: ctx.direction.styleId,
       collection: ctx.collection ? { id: ctx.collection.id, version: ctx.collection.version, name: ctx.collection.name } : null,
@@ -404,41 +404,4 @@ export function selectTemplates(input: SelectionInput): SelectionResult {
     shortlists,
     unplaceable,
   };
-}
-
-/** Validates a model's re-ranking of the shortlists: every pick must come from that slot's shortlist, and no template may exceed `maxUses` uses. */
-export function applyAssisted(result: SelectionResult, picks: { slotId: string; templateId: string; reason: string }[], maxUses = 2): { plan: TemplateSelectionPlan; applied: number; rejected: string[] } {
-  const plan = structuredClone(result.plan);
-  const rejected: string[] = [];
-  const count = (id: string, except?: string) => plan.items.filter((i) => i.templateId === id && i.slotId !== except).length;
-  let applied = 0;
-  for (const p of picks) {
-    const item = plan.items.find((i) => i.slotId === p.slotId);
-    const cand = result.shortlists.get(p.slotId)?.find((c) => c.template.id === p.templateId);
-    if (!item) {
-      rejected.push(`${p.slotId}: unknown slot`);
-      continue;
-    }
-    if (item.origin === 'user_override') continue; // the user's choice is never re-ranked
-    if (!cand) {
-      rejected.push(`${p.slotId}: ${p.templateId} is not on the shortlist`);
-      continue;
-    }
-    if (p.templateId === item.templateId) continue;
-    if (count(p.templateId, item.slotId) >= maxUses) {
-      rejected.push(`${p.slotId}: ${p.templateId} would be used more than ${maxUses} times`);
-      continue;
-    }
-    const t = cand.template;
-    Object.assign(item, { templateId: t.id, templateName: t.name, templateVersion: t.version, category: t.category, family: t.family, score: cand.score, origin: 'assisted' as const, rationale: `${t.name}: ${p.reason.replace(/\s+/g, ' ').trim().slice(0, 200)} (re-ranked by the Template Selector from a validated shortlist)` });
-    applied++;
-  }
-  plan.mode = 'assisted';
-  plan.byTemplate = {};
-  plan.byCategory = {};
-  for (const it of plan.items) {
-    plan.byTemplate[it.templateId] = (plan.byTemplate[it.templateId] ?? 0) + 1;
-    plan.byCategory[it.category] = (plan.byCategory[it.category] ?? 0) + 1;
-  }
-  return { plan, applied, rejected };
 }

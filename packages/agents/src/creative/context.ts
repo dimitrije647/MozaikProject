@@ -1,13 +1,13 @@
 import { CampaignStrategyReport } from '../strategy/schemas';
 import { readStoredReport, type ReadNotes, type ReportFailure } from '../contracts/report-contract';
 import type { F1Context } from '../audit/context';
-import type { F2Context } from '../strategy/context';
 import type { ChannelId } from '../strategy/channels';
+import type { VoiceOverride } from '../copywriting/voice';
 
 /**
  * What F4 receives from F3: ONE completed Campaign Strategy (its report, including the F4 creative brief). Built by the
- * backend from the stored report; F4 never rebuilds or fabricates it. With the F1 and F2 contexts it is the full chain the
- * creative work is grounded in.
+ * backend from the stored report; F4 never rebuilds or fabricates it. With the F1 context it is the full chain the creative work is
+ * grounded in (Business Research -> Strategy -> Creative). Strategies made before V4 also name the Marketing Audit they used.
  */
 export interface F3Context {
   strategyId: string;
@@ -16,7 +16,8 @@ export interface F3Context {
   model: string | null;
   partial: boolean;
   f1ReportId: string;
-  f2AuditId: string;
+  /** LEGACY: the Marketing Audit an older strategy was built on; null for V4 strategies. */
+  f2AuditId: string | null;
   report: CampaignStrategyReport;
 }
 
@@ -31,7 +32,7 @@ export type ReadF3 = { ok: true; context: F3Context; notes: ReadNotes } | { ok: 
  * Reads a stored F3 strategy through the shared contract. This is the one gate between F3 and F4: a report that F3 produced with this
  * build always passes it (see the producer/consumer test), and a report that does not is explained field by field. The stored row is not changed.
  */
-export function readF3Report(row: { id: string; f1ReportId: string; f2AuditId: string; schemaVersion: number; reportJson: unknown; metadataJson: unknown; createdAt: Date }): ReadF3 {
+export function readF3Report(row: { id: string; f1ReportId: string; f2AuditId: string | null; schemaVersion: number; reportJson: unknown; metadataJson: unknown; createdAt: Date }): ReadF3 {
   const read = readStoredReport('F3', row, CampaignStrategyReport);
   if (!read.ok) return read;
   const meta = (row.metadataJson ?? {}) as StoredStrategyMeta;
@@ -40,7 +41,7 @@ export function readF3Report(row: { id: string; f1ReportId: string; f2AuditId: s
 }
 
 /** Returns null when the stored strategy cannot be read (readF3Report says exactly why). */
-export function buildF3Context(row: { id: string; f1ReportId: string; f2AuditId: string; schemaVersion: number; reportJson: unknown; metadataJson: unknown; createdAt: Date }): F3Context | null {
+export function buildF3Context(row: { id: string; f1ReportId: string; f2AuditId: string | null; schemaVersion: number; reportJson: unknown; metadataJson: unknown; createdAt: Date }): F3Context | null {
   const r = readF3Report(row);
   return r.ok ? r.context : null;
 }
@@ -50,12 +51,15 @@ export interface CreativeInput {
   projectName: string;
   language: string;
   websiteUrl: string | null;
-  /** Channels to produce for (a subset of the strategy's recommended channels). */
+  /** The social platforms to write and design for (normally all five: x, tiktok, facebook, instagram, linkedin). */
   channels: ChannelId[];
-  /** Number of original creative concepts (1 to 5). */
+  /** Number of campaign concepts (1 to 5; default 3). */
   concepts: number;
-  /** Build a landing page content (default true). */
-  landing: boolean;
+  /** The campaign objective and target audience in the user's own words (null = the strategy's). */
+  objective?: string | null;
+  audience?: string | null;
+  /** The user's writing-style override from the campaign setup (tone, humor, preferred and forbidden words); null = inferred. */
+  voice?: VoiceOverride | null;
 }
 
-export type { F1Context, F2Context };
+export type { F1Context };

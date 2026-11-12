@@ -4,19 +4,14 @@ import { StartFactoryDto } from './dto/factory.dto';
 import { FactoryService } from './factory.service';
 
 /**
- * The full campaign: F1 -> F2 -> F3 -> F4 driven by one deterministic orchestrator over the existing phase services.
- * Nothing here spends anything except POST /projects/:id/factory, which needs this explicit call (the plan is free).
+ * CAMPAIGN PRODUCTION, the one workflow ("Generate Campaign"): Business Research -> Marketing Strategy -> Creative Production, driven by one
+ * deterministic orchestrator. Nothing here spends anything except POST /projects/:id/factory, which needs this explicit call (the plan is free).
  */
 @Controller()
 export class FactoryController {
   constructor(private factory: FactoryService) {}
 
-  @Get('factory/presets')
-  presets() {
-    return this.factory.presets();
-  }
-
-  /** The plan the user confirms: reused vs executed phases, exact limits, models. No paid request is made. */
+  /** The plan the user confirms: stages, deliverables, the provider in use and the one budget. No paid request is made. */
   @Post('projects/:projectId/factory/preflight')
   @HttpCode(200)
   preflight(@CurrentUser() u: AuthUser, @Param('projectId') projectId: string, @Body() dto: StartFactoryDto) {

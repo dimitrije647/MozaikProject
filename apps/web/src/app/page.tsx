@@ -19,11 +19,11 @@ import { Button } from '@/components/ui/button';
 
 const features = [
   { icon: UploadCloud, title: 'One structured brief', body: 'Product, assets, audience, goals and channels captured once, in a form built for AI agents to consume.' },
-  { icon: Search, title: 'SEO audit', body: 'Switch on a site audit so strategy starts from what your product and website actually say today.' },
+  { icon: Search, title: 'Real pictures, no AI images', body: 'Your uploads, approved website pictures and licensed stock, with rights and credits recorded. Nothing is generated.' },
   { icon: CalendarRange, title: 'Seasonal calendar', body: 'Plan around launches, holidays and local seasons instead of posting into the void.' },
-  { icon: Palette, title: 'Multi-format creative', body: 'Instagram, LinkedIn, banners, flyers, even billboards. Pick the formats, keep the brand.' },
-  { icon: Plug, title: 'Bring your own keys', body: 'Connect OpenAI or Gemini with your own API key, encrypted on our side and used only by your agents.' },
-  { icon: Layers, title: 'Everything in one workspace', body: 'Intelligence, audit, strategy, creative and export live together, per campaign.' },
+  { icon: Palette, title: 'One complete package', body: 'Posts for X, TikTok, Facebook, Instagram and LinkedIn, web and display ads, a billboard and a flyer, in one ZIP.' },
+  { icon: Plug, title: 'Bring your own keys', body: 'Connect OpenAI or a Claude API key, encrypted on our side and used only by your agents.' },
+  { icon: Layers, title: 'One click', body: 'Research, strategy, copy, design and review by a small team of agents, then one download.' },
 ];
 
 const steps = [

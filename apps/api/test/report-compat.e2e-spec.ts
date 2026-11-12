@@ -1,32 +1,35 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, NotFoundException } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { FakeOpenAI, type FakeOpenAIOptions, type FakeRequest } from '@launchpilot/agents/dist/testing/fake-openai';
 import { defaultStrategyDraft } from '@launchpilot/agents/dist/testing/fake-strategy';
 import { explainFailure, type RecoveryView } from '../src/mozaik/failure-view';
 import { MozaikService } from '../src/mozaik/mozaik.service';
-import { configureOpenAi, createApp, registerUser, sleep, type TestUser } from './helpers';
+import { configureOpenAi, createApp, registerUser, startF3, startF4, waitForTerminal, type TestUser } from './helpers';
 
-// INCIDENT 2026-11-02 (second): the user's REAL Hybrid Production campaign had paid for F1, F2 and F3, and F4 refused to start 76 ms after F3 finished with
-// "A report in the F1 -> F2 -> F3 chain could not be read (older format). Run the Strategy again." The saved strategy held 9 claimsToAvoid; F4's schema allowed 8.
+// HISTORICAL COMPATIBILITY (V4). INCIDENT 2026-11-02 (second): a REAL campaign of V3 had paid for F1, F2 and F3, and F4 refused to start 76 ms after F3
+// finished with "A report in the F1 -> F2 -> F3 chain could not be read (older format). Run the Strategy again." The saved strategy held 9 claimsToAvoid;
+// F4's schema allowed 8.
 //
-// The three saved reports are in the repo as SANITIZED fixtures (same structure, same lengths, no business text). They are seeded into the isolated test
-// database, exactly as the real run left them, and the recovery is driven with a FAKE OpenAI over real HTTP: nothing is billed and the real database is not touched.
+// V4 runs no F2 audit and no AI images, and every new campaign writes its own strategy. What must keep working: the saved V3 reports (F1, the F2 audit,
+// the V3 strategy that names its audit) stay READABLE, the failed V3 run is still explained truthfully, and Creative Production can still be built on a
+// saved V3 strategy. The three saved reports are in the repo as SANITIZED fixtures (same structure, same lengths, no business text). They are seeded into
+// the isolated test database exactly as the real run left them; OpenAI is faked over real HTTP: nothing is billed and the real database is not touched.
 jest.setTimeout(600_000);
 
 const KEY = 'sk-test-REPORTCOMPAT1234567890abcdefghi';
 const MODEL = 'gpt-4.1-mini';
-const IMAGE = 'gpt-image-1.5';
 const FIXTURES = path.resolve(__dirname, '../../../packages/agents/src/testing/fixtures/incident-2026-11-02');
 const LEGACY = 'A report in the F1 -> F2 -> F3 chain could not be read (older format). Run the Strategy again.';
-const HYBRID = { preset: 'hybrid_production', mode: 'continue', approvedBudgetUsd: 4, confirmCost: true, f4: { imageModel: IMAGE } };
-const F123 = ['input', 'text', 'web', 'repo', 'files', 'visual', 'synthesizer', 'seo', 'social', 'brand', 'messaging', 'presence', 'auditor', 'audience', 'competitor', 'seasonal', 'scout', 'strategist'];
+/** The agents of the stages BEFORE Creative Production (V4 names, plus the V3 names a fake could still report). */
+const BEFORE_F4 = ['researcher', 'strategist', 'input', 'text', 'web', 'repo', 'files', 'visual', 'synthesizer', 'audience', 'competitor', 'seasonal', 'scout'];
+const F4_OPTIONS = { channels: ['instagram'], concepts: 1 };
 
 type Row = Record<string, any>;
 const fixture = (name: string): Row => JSON.parse(fs.readFileSync(path.join(FIXTURES, name), 'utf8'));
 
-describe('INCIDENT: F4 could not read the strategy F3 had just produced', () => {
+describe('HISTORICAL COMPATIBILITY: the saved V3 chain of the incident in V4', () => {
   let app: INestApplication;
   let db: PrismaClient;
   let fake: FakeOpenAI;
@@ -35,7 +38,7 @@ describe('INCIDENT: F4 could not read the strategy F3 had just produced', () => 
 
   async function useFake(options: FakeOpenAIOptions = {}) {
     if (fake) await fake.close();
-    fake = await new FakeOpenAI({ models: [MODEL, IMAGE, 'gpt-image-1-mini', 'text-embedding-test'], ...options }).start();
+    fake = await new FakeOpenAI({ models: [MODEL, 'text-embedding-test'], ...options }).start();
     process.env.LAUNCHPILOT_OPENAI_BASE_URL = fake.url;
   }
   const paid = () => fake.requests.filter((r) => r.path.endsWith('/responses') || r.path.endsWith('/images/generations'));
@@ -43,29 +46,21 @@ describe('INCIDENT: F4 could not read the strategy F3 had just produced', () => 
   const called = (names: string[]) => fake.requests.filter((r) => names.includes(r.agent));
 
   const preflight = (u: TestUser, projectId: string, body: object = {}) => u.agent.post(`/projects/${projectId}/factory/preflight`).send(body);
-  const startF = (u: TestUser, projectId: string, body: object = {}) => u.agent.post(`/projects/${projectId}/factory`).send(body);
   const getF = async (u: TestUser, id: string) => (await u.agent.get(`/factory-runs/${id}`).expect(200)).body;
-  const waitF = async (u: TestUser, id: string, ms = 420_000) => {
-    const end = Date.now() + ms;
-    for (;;) {
-      const v = await getF(u, id);
-      if (!['queued', 'running'].includes(v.status)) return v;
-      if (Date.now() > end) throw new Error(`Factory run ${id} still ${v.status} after ${ms} ms`);
-      await sleep(150);
-    }
-  };
+  /** Creative Production asked directly (the F4 door): resolves with the started run or with the HttpException it was refused with. */
+  const f4Door = (u: TestUser, projectId: string, strategyId: string) => app.get(MozaikService).startCreativeProduction(u.id, projectId, { strategyId, objective: null, audience: null, design: {}, ...F4_OPTIONS }).then((run) => ({ run, err: null as any }), (err) => ({ run: null, err }));
 
   async function readyProject(label: string) {
     const user = await registerUser(app, label);
-    const projectId = (await user.agent.post('/projects').send({ name: 'Firmenfels', description: 'Compliance software for regulated companies.' }).expect(201)).body.id;
-    await user.agent.put(`/projects/${projectId}/intake`).send({ productName: 'Firmenfels', shortDescription: 'Compliance software for regulated companies.', targetMarket: 'Switzerland', preferredLanguage: 'en' }).expect(200);
+    const projectId = (await user.agent.post('/projects').send({ name: 'FIRMENFELS GRUPPE', description: 'Compliance software for regulated companies.' }).expect(201)).body.id;
+    await user.agent.put(`/projects/${projectId}/intake`).send({ productName: 'FIRMENFELS GRUPPE', shortDescription: 'Compliance software for regulated companies.', targetMarket: 'Switzerland', preferredLanguage: 'en' }).expect(200);
     await configureOpenAi(user, KEY, MODEL);
     return { user, projectId };
   }
 
   /**
    * Seeds the saved chain of the incident into a project of the TEST database, exactly as the real run left it (completed child runs, the three
-   * reports with their original structure) and, optionally, the failed Factory run with the legacy message. `tweak` edits the F3 report (for the
+   * reports with their original structure) and, optionally, the failed V3 Factory run with the legacy message. `tweakF3` edits the F3 report (for the
    * corrupt/unknown-version cases). Ids are made unique per call so the suite can be run again.
    */
   async function seedIncident(user: TestUser, projectId: string, o: { failedRun?: boolean; withoutF3?: boolean; tweakF3?: (row: Row) => void } = {}) {
@@ -177,14 +172,14 @@ describe('INCIDENT: F4 could not read the strategy F3 had just produced', () => 
 
   // ---- the incident chain, seeded exactly as the real run left it ---------------------------------------------------------------------------
 
-  describe('the saved chain of the incident (F1, F2 and F3 paid for; F4 refused to start)', () => {
+  describe('the saved V3 chain of the incident (F1, F2 and F3 paid for; F4 refused to start)', () => {
     let user: TestUser;
     let projectId: string;
     let ids: { f1: string; f2: string; f3: string; r1: string; r2: string; r3: string };
     let failedRunId: string;
     let before: string;
-    let continued: any;
-    let continuedPaid: FakeRequest[] = [];
+    let built: any;
+    let builtPaid: FakeRequest[] = [];
 
     beforeAll(async () => {
       ({ user, projectId } = await readyProject('compat-incident'));
@@ -194,7 +189,7 @@ describe('INCIDENT: F4 could not read the strategy F3 had just produced', () => 
       before = await snapshot(ids, failedRunId);
     });
 
-    it('the seeded F3 has the incident\'s shape: 9 claimsToAvoid (more than the 8 F4 used to accept), schema version 1, lineage intact', async () => {
+    it('the seeded F3 has the incident\'s shape: 9 claimsToAvoid (more than the 8 F4 used to accept), schema version 1, lineage intact (it names its F2 audit)', async () => {
       const f3 = await db.marketingStrategyReport.findUniqueOrThrow({ where: { id: ids.f3 } });
       const report = f3.reportJson as Row;
       expect(report.creativeBrief.claimsToAvoid).toHaveLength(9);
@@ -202,12 +197,14 @@ describe('INCIDENT: F4 could not read the strategy F3 had just produced', () => 
       expect(report.creativeBrief.provenance).toMatchObject({ f1ReportId: ids.f1, f2AuditId: ids.f2 });
     });
 
-    it('the failed run is explained for what it is: F4 never started, the saved F1, F2 and F3 are intact and READABLE NOW, and only F4 would run; the advice "run the Strategy again" is not given', async () => {
+    it('the failed V3 run is explained for what it is: F4 never started, the saved reports are intact and READABLE NOW; the advice "run the Strategy again" is not given', async () => {
       const v = await getF(user, failedRunId);
       expect(v.status).toBe('failed');
+      expect(v.config).toMatchObject({ workflow: 'legacy', legacyPreset: 'hybrid_production' }); // the historical record is shown as it was
       expect(v.failure.headline).toBe('Campaign stopped during F4 Creative Production.');
       expect(v.failure.recovery.ready).toBe(true);
-      expect(v.failure.recovery.reports.map((r: Row) => [r.code, r.status])).toEqual([['F1', 'current'], ['F2', 'current'], ['F3', 'current']]);
+      // V4 reads the F1 report and the strategy (the audit is history: no V4 stage reads it)
+      expect(v.failure.recovery.reports.map((r: Row) => [r.code, r.status])).toEqual([['F1', 'current'], ['F3', 'current']]);
       expect(v.failure.recovery.resumeFrom).toEqual({ code: 'F4', title: 'Creative Production' });
       expect(v.failure.canContinue).toBe(true);
       expect(v.failure.saved.map((s: Row) => s.code)).toEqual(['F1', 'F2', 'F3']);
@@ -215,9 +212,7 @@ describe('INCIDENT: F4 could not read the strategy F3 had just produced', () => 
       expect(v.failure.reason).toMatch(/could not start: a saved report was rejected by the format check that was in place when this run started/);
       expect(v.failure.reason).not.toMatch(/Run the Strategy again/);
       expect(v.failure.detail).toContain(LEGACY); // what was recorded at the time stays visible
-      expect(v.failure.nextAction).toMatch(/F1, F2, F3 are saved and this version of LaunchPilot can read all of them/);
-      expect(v.failure.nextAction).toMatch(/they are reused \(nothing is paid for them again\) and only F4 Creative Production runs/);
-      expect(v.failure.nextAction).toMatch(/approve a new campaign budget first; nothing is retried automatically/);
+      expect(v.failure.nextAction).toMatch(/F1, F3 are saved and this version of LaunchPilot can read all of them/);
       expect(v.failure.imageGeneration).toMatchObject({ started: false, requests: 0 });
       expect(v.failure.imageGeneration.why).not.toMatch(/Run the Strategy again/);
       expect(v.failure.spending.knownUsd).toBeCloseTo(0.48445, 4);
@@ -226,154 +221,129 @@ describe('INCIDENT: F4 could not read the strategy F3 had just produced', () => 
       expect(v.failure.restated.phaseNote).not.toMatch(/Run the Strategy again/);
       expect(v.errorMessage).toContain(LEGACY);
       expect(v.phases[3].error).toBe(LEGACY);
+      expect(v.chain).toMatchObject({ f1ReportId: ids.f1, f2AuditId: ids.f2, f3StrategyId: ids.f3 });
     });
 
-    it('FREE PREFLIGHT: the plan reuses F1, F2 and F3, runs only F4, and says so in the exact words; no paid request is made', async () => {
-      const p = (await preflight(user, projectId, HYBRID).expect(200)).body;
-      expect(p.ok).toBe(true);
-      expect(p.blockers).toEqual([]);
-      expect(p.phases.map((x: Row) => [x.code, x.action])).toEqual([['F1', 'reuse'], ['F2', 'reuse'], ['F3', 'reuse'], ['F4', 'run']]);
-      expect(p.chain).toMatchObject({ f1ReportId: ids.f1, f2AuditId: ids.f2, f3StrategyId: ids.f3 });
-      expect(p.reportChecks.map((c: Row) => [c.code, c.status, c.message])).toEqual([
-        ['F1', 'current', 'Existing Product Discovery report is compatible and will be reused.'],
-        ['F2', 'current', 'Existing Marketing Audit is compatible and will be reused.'],
-        ['F3', 'current', 'Existing strategy is compatible and will be reused.'],
-      ]);
+    it('FREE PREFLIGHT of a NEW campaign on this project: ONE workflow (Strategy and Creative always run for the new campaign); no paid request is made', async () => {
+      const p = (await preflight(user, projectId).expect(200)).body;
+      expect(p.phases.map((x: Row) => x.code)).toEqual(['F1', 'F3', 'F4']);
+      expect(p.phases.slice(1).map((x: Row) => x.action)).toEqual(['run', 'run']);
+      expect(p.phases.find((x: Row) => x.code === 'F2')).toBeUndefined();
       expect(paid()).toHaveLength(0); // the model list is free; nothing was inferred
     });
 
-    it('CONTINUE FROM SAVED WORK: F1, F2 and F3 are reused, F4 starts and finishes with 5 original images and 15 template creatives; nothing earlier runs again', async () => {
-      const started = (await startF(user, projectId, HYBRID).expect(201)).body;
-      continued = await waitF(user, started.id);
-      continuedPaid = paid();
-      expect(continued.status).toBe('completed');
-      expect(continued.phases.map((p: Row) => [p.code, p.status])).toEqual([['F1', 'reused'], ['F2', 'reused'], ['F3', 'reused'], ['F4', 'completed']]);
+    it('BUILT ON THE SAVED V3 STRATEGY: Creative Production reads it (9 claims) and finishes; nothing earlier runs again and no image is requested', async () => {
+      const { run, err } = await f4Door(user, projectId, ids.f3);
+      expect(err).toBeNull();
+      built = await waitForTerminal(user, run!.id, 120_000);
+      builtPaid = paid();
+      expect(built.status).toBe('COMPLETED');
+      expect(built.campaignId).toBeTruthy();
       // nothing of the paid research or strategy was requested again
-      expect(called(F123)).toHaveLength(0);
-      expect(images()).toHaveLength(5);
-      const camp = (await user.agent.get(`/campaigns/${continued.campaignId}`).expect(200)).body;
-      const h = camp.package.hybrid;
-      expect(h.counts.originals).toMatchObject({ planned: 5, requested: 5, generated: 5 });
-      expect(h.counts.templates).toMatchObject({ planned: 15, rendered: 15, failed: 0 });
-      expect(h.counts.total).toEqual({ planned: 20, delivered: 20 });
-      expect(camp.assets.filter((a: Row) => a.kind === 'image' && a.source === 'ai_image')).toHaveLength(5);
-      expect(camp.assets.filter((a: Row) => a.kind === 'layout' && a.status !== 'superseded')).toHaveLength(15);
+      expect(called(BEFORE_F4)).toHaveLength(0);
+      expect(images()).toHaveLength(0);
+      const camp = (await user.agent.get(`/campaigns/${built.campaignId}`).expect(200)).body;
+      expect(camp.package.deliverables.counts.delivered).toBeGreaterThan(0);
+      expect(camp.assets.filter((a: Row) => a.kind === 'image' && a.source === 'ai_image')).toHaveLength(0);
     });
 
-    it('LINEAGE: the new campaign is built on exactly the saved F3, F2 and F1 of the incident', async () => {
-      expect(continued.chain).toEqual({ f1ReportId: ids.f1, f2AuditId: ids.f2, f3StrategyId: ids.f3 });
-      const camp = await db.creativeCampaign.findUniqueOrThrow({ where: { id: continued.campaignId } });
-      expect(camp.f3StrategyId).toBe(ids.f3);
-      expect((camp.metadataJson as Row).chain).toEqual({ f1ReportId: ids.f1, f2AuditId: ids.f2, f3StrategyId: ids.f3 });
-      // the F4 brief carried every claim to avoid of the strategy, including the 9th that used to be refused
-      const pkgBrief = JSON.stringify(camp.packageJson);
-      expect(pkgBrief.length).toBeGreaterThan(1000);
+    it('LINEAGE: the new campaign is built on exactly the saved F3 and F1 of the incident; it names no audit (V4 runs none)', async () => {
+      const camp = await db.creativeCampaign.findUniqueOrThrow({ where: { id: built.campaignId } });
+      expect(camp).toMatchObject({ f1ReportId: ids.f1, f3StrategyId: ids.f3, f2AuditId: null });
+      expect((camp.metadataJson as Row).chain).toEqual({ f1ReportId: ids.f1, f3StrategyId: ids.f3 });
+      expect(JSON.stringify(camp.packageJson).length).toBeGreaterThan(1000);
     });
 
-    it('THE ORIGINALS ARE UNTOUCHED: the saved F1, F2 and F3 and the failed run are byte-identical after the recovery (the failed run stays failed, as history)', async () => {
+    it('THE ORIGINALS ARE UNTOUCHED: the saved F1, F2 and F3 and the failed run are byte-identical afterwards (the failed run stays failed, as history)', async () => {
       expect(await snapshot(ids, failedRunId)).toBe(before);
       const failed = await getF(user, failedRunId);
       expect(failed.status).toBe('failed');
       expect(failed.phases[3]).toMatchObject({ code: 'F4', status: 'failed', error: LEGACY });
-      expect(await db.factoryRun.count({ where: { projectId } })).toBe(2);
+      expect(await db.factoryRun.count({ where: { projectId } })).toBe(1); // the stage was asked directly: no new campaign run row
     });
 
-    it('NO AUTOMATIC RETRIES and no surprise spending: exactly the 5 image requests of the plan; the failed campaign was not rerun', () => {
-      expect(continuedPaid.filter((r) => r.path.endsWith('/images/generations'))).toHaveLength(5);
-      const per = new Map<string, number>();
-      for (const r of continuedPaid.filter((x) => x.path.endsWith('/responses'))) per.set(`${r.agent}/${r.kind}`, (per.get(`${r.agent}/${r.kind}`) ?? 0) + 1);
-      expect(per.get('strategist/synthesis') ?? 0).toBe(0);
+    it('NO AUTOMATIC RETRIES and no surprise spending: no image request at all; the strategy was not rewritten', () => {
+      expect(builtPaid.filter((r) => r.path.endsWith('/images/generations'))).toHaveLength(0);
+      expect(builtPaid.filter((r) => r.agent === 'strategist')).toHaveLength(0);
     });
 
-    it('existing outputs stay readable through the API: the saved strategy still serves its full report (9 claims) and the project lists it', async () => {
+    it('existing outputs stay readable through the API: the saved strategy and the saved audit still serve their full reports and the project lists them', async () => {
       const s = (await user.agent.get(`/strategies/${ids.f3}`).expect(200)).body;
       expect(s.report.creativeBrief.claimsToAvoid).toHaveLength(9);
-      expect(s.id).toBe(ids.f3);
+      expect(s).toMatchObject({ id: ids.f3, f2AuditId: ids.f2 });
       expect((await user.agent.get(`/projects/${projectId}/strategies`).expect(200)).body.items.some((i: Row) => i.id === ids.f3)).toBe(true);
+      const audit = (await user.agent.get(`/audits/${ids.f2}`).expect(200)).body;
+      expect(audit.id).toBe(ids.f2);
+      expect((await user.agent.get(`/projects/${projectId}/audits`).expect(200)).body.items.some((i: Row) => i.id === ids.f2)).toBe(true);
     });
 
-    it('ISOLATION: another user cannot see the failed run, the recovery or the reports, and cannot preflight this project', async () => {
+    it('ISOLATION: another user cannot see the failed run, the reports or the audit, and cannot preflight this project', async () => {
       const other = await registerUser(app, 'compat-other');
       await other.agent.get(`/factory-runs/${failedRunId}`).expect(404);
       await other.agent.get(`/strategies/${ids.f3}`).expect(404);
-      await preflight(other, projectId, HYBRID).expect(404);
+      await other.agent.get(`/audits/${ids.f2}`).expect(404);
+      await preflight(other, projectId).expect(404);
     });
 
-    it('ISOLATION: a project cannot build on another project\'s saved reports, even when it names them', async () => {
+    it('ISOLATION: a project cannot build on another project\'s saved strategy, even when it names it', async () => {
       const { user: second, projectId: secondProject } = await readyProject('compat-second');
-      const res = await preflight(second, secondProject, { ...HYBRID, reports: { f3StrategyId: ids.f3 } }).expect(200);
-      expect(res.body.ok).toBe(false);
-      expect(res.body.blockers.map((b: Row) => b.code)).toContain('lineage');
-      expect(res.body.blockers.find((b: Row) => b.code === 'lineage').message).toMatch(/not a completed, saved result of this project/);
-      expect(res.body.reportChecks).toEqual([]); // nothing of the other project was even read
+      await expect(startF4(app, second, secondProject, ids.f3, F4_OPTIONS)).rejects.toBeInstanceOf(NotFoundException);
+      expect(paid()).toHaveLength(0);
     });
   });
 
   // ---- unreadable inputs are caught for free, with the exact field ---------------------------------------------------------------------
 
-  describe('a saved report that really cannot be read is caught BEFORE any money is approved', () => {
-    it('an F3 over even the new limit: the free preflight blocks with the report, the field, the count and the limit - and says nothing has to run again', async () => {
-      const { user, projectId } = await readyProject('compat-over');
-      const { ids } = await seedIncident(user, projectId, { tweakF3: (r) => { r.reportJson.creativeBrief.claimsToAvoid = Array.from({ length: 13 }, (_, i) => ({ claim: `Claim ${i}`, reason: 'Reason' })); } });
-      const p = (await preflight(user, projectId, HYBRID).expect(200)).body;
-      expect(p.ok).toBe(false);
-      const b = p.blockers.find((x: Row) => x.code === 'report_unreadable');
-      expect(b.message).toMatch(/^Creative Production could not read the saved Strategy report \(format version 1\)\. Field "creativeBrief\.claimsToAvoid" has 13 entries; this version accepts at most 12\./);
-      expect(b.message).toMatch(/saved unchanged and its content is complete/);
-      expect(b.message).toMatch(/do not need to run again/);
-      expect(b.message).not.toMatch(/older format/);
-      expect(p.reportChecks.map((c: Row) => [c.code, c.status])).toEqual([['F1', 'current'], ['F2', 'current'], ['F3', 'unreadable']]);
-      expect(p.reportChecks[2].id).toBe(ids.f3);
-      // and the start is refused: no run, no request
-      const res = await startF(user, projectId, HYBRID).expect(422);
-      expect(JSON.stringify(res.body)).toMatch(/creativeBrief\.claimsToAvoid/);
-      expect(paid()).toHaveLength(0);
-      expect(await db.factoryRun.count({ where: { projectId } })).toBe(0);
-    });
-
-    it('REPRODUCTION of the original failure at the F4 door: asking Creative Production directly names the report and field instead of "older format"', async () => {
+  describe('a saved report that really cannot be read is refused BEFORE anything is sent, with the report and the field', () => {
+    it('an F3 over even the new limit: Creative Production names the report, the field, the count and the limit instead of "older format"', async () => {
       const { user, projectId } = await readyProject('compat-door');
       const { ids } = await seedIncident(user, projectId, { tweakF3: (r) => { r.reportJson.creativeBrief.claimsToAvoid = Array.from({ length: 13 }, (_, i) => ({ claim: `Claim ${i}`, reason: 'Reason' })); } });
-      const err = await app.get(MozaikService).startCreativeProduction(user.id, projectId, { strategyId: ids.f3 } as never).then(() => null, (e) => e);
+      const { err } = await f4Door(user, projectId, ids.f3);
       expect(err).not.toBeNull();
       expect(err.getStatus()).toBe(422);
       const body = err.getResponse() as Row;
       expect(body.code).toBe('report_unreadable');
       expect(body.reports[0]).toMatchObject({ report: 'F3', reportId: ids.f3, schemaVersion: 1, contentIntact: true });
       expect(body.reports[0].issues[0]).toEqual({ path: 'creativeBrief.claimsToAvoid', problem: 'too_many', limit: 12, actual: 13, message: 'has 13 entries; this version accepts at most 12' });
+      expect(String(body.message)).toMatch(/Field "creativeBrief\.claimsToAvoid" has 13 entries; this version accepts at most 12\./);
       expect(String(body.message)).not.toContain(LEGACY);
+      expect(String(body.message)).not.toMatch(/older format/);
+      // the stored report is served unchanged (read-only): nothing was "fixed" or rewritten
+      expect((await user.agent.get(`/strategies/${ids.f3}`).expect(200)).body.report.creativeBrief.claimsToAvoid).toHaveLength(13);
       expect(paid()).toHaveLength(0);
+      expect(await db.creativeCampaign.count({ where: { projectId } })).toBe(0);
     });
 
     it('a corrupt report (a required field missing) and a report of an unknown newer version are each refused with their own reason; neither is "fixed" by guessing', async () => {
       const a = await readyProject('compat-corrupt');
-      await seedIncident(a.user, a.projectId, { tweakF3: (r) => { delete r.reportJson.creativeBrief.objective; } });
-      const pa = (await preflight(a.user, a.projectId, HYBRID).expect(200)).body;
-      const damaged = pa.blockers.find((x: Row) => x.code === 'report_damaged');
-      expect(damaged.message).toMatch(/Field "creativeBrief\.objective" is missing \(a string is required\)/);
-      expect(damaged.message).toMatch(/genuinely missing or damaged in the saved report, so this Market Research & Strategy has to run again/);
+      const sa = await seedIncident(a.user, a.projectId, { tweakF3: (r) => { delete r.reportJson.creativeBrief.objective; } });
+      const damaged = (await f4Door(a.user, a.projectId, sa.ids.f3)).err.getResponse() as Row;
+      expect(damaged.code).toBe('report_damaged');
+      expect(String(damaged.message)).toMatch(/Field "creativeBrief\.objective" is missing \(a string is required\)/);
+      expect(String(damaged.message)).toMatch(/has to run again/);
 
       const b = await readyProject('compat-newer');
-      await seedIncident(b.user, b.projectId, { tweakF3: (r) => { r.schemaVersion = 9; } });
-      const pb = (await preflight(b.user, b.projectId, HYBRID).expect(200)).body;
-      const newer = pb.blockers.find((x: Row) => x.code === 'report_unreadable');
-      expect(newer.message).toMatch(/\(format version 9\)\. Field "schemaVersion" is 9; this version of LaunchPilot reads up to 1\. It was saved by a newer version of LaunchPilot\. Update LaunchPilot; nothing needs to run again\./);
+      const sb = await seedIncident(b.user, b.projectId, { tweakF3: (r) => { r.schemaVersion = 9; } });
+      const newer = (await f4Door(b.user, b.projectId, sb.ids.f3)).err.getResponse() as Row;
+      expect(newer.code).toBe('report_unreadable');
+      expect(String(newer.message)).toMatch(/\(format version 9\)\. Field "schemaVersion" is 9; this version of LaunchPilot reads up to 1\. It was saved by a newer version of LaunchPilot\. Update LaunchPilot; nothing needs to run again\./);
       expect(paid()).toHaveLength(0);
     });
 
-    it('a strategy that points at another audit than the saved one is a lineage problem, named as such', async () => {
+    it('a strategy whose brief points at another business research report than the saved one is a lineage problem, named as such', async () => {
       const { user, projectId } = await readyProject('compat-lineage');
-      await seedIncident(user, projectId, { tweakF3: (r) => { r.reportJson.creativeBrief.provenance.f2AuditId = 'some-other-audit'; } });
-      const p = (await preflight(user, projectId, HYBRID).expect(200)).body;
-      expect(p.ok).toBe(false);
-      expect(p.blockers.find((x: Row) => x.code === 'report_lineage').message).toMatch(/The strategy brief refers to a different Marketing Audit than the saved one\./);
+      const { ids } = await seedIncident(user, projectId, { tweakF3: (r) => { r.reportJson.creativeBrief.provenance.f1ReportId = 'some-other-report'; } });
+      const body = (await f4Door(user, projectId, ids.f3)).err.getResponse() as Row;
+      expect(body.code).toBe('report_lineage');
+      expect(String(body.message)).toMatch(/The strategy brief refers to a different Product Discovery report than the saved one\./);
+      expect(paid()).toHaveLength(0);
     });
   });
 
   // ---- the producer/consumer contract with the REAL pipeline ------------------------------------------------------------------------------
 
   describe('what F3 produces, F4 can always read (the real pipeline on the fake provider)', () => {
-    it('the incident sequence: F1 and F2 reused, F3 produced FRESH (8 claims from the strategist plus the claims the audit flagged), and F4 reads what F3 just saved', async () => {
+    it('a NEW V4 strategy on the saved V3 business research (8 claims to avoid from the strategist), and F4 reads what F3 just saved', async () => {
       await useFake({
         reply: (r: FakeRequest) => {
           if (r.agent !== 'strategist' || r.kind !== 'synthesis') return undefined;
@@ -382,22 +352,23 @@ describe('INCIDENT: F4 could not read the strategy F3 had just produced', () => 
         },
       });
       const { user, projectId } = await readyProject('compat-pipeline');
-      const { ids } = await seedIncident(user, projectId, { withoutF3: true }); // the real F1 and F2 (the audit flagged claims); F3 is produced now, as in the real run
-      const started = (await startF(user, projectId, HYBRID).expect(201)).body;
-      const run = await waitF(user, started.id);
-      expect(run.status).toBe('completed');
-      expect(run.phases.map((p: Row) => [p.code, p.status])).toEqual([['F1', 'reused'], ['F2', 'reused'], ['F3', 'completed'], ['F4', 'completed']]);
-      expect(run.chain).toMatchObject({ f1ReportId: ids.f1, f2AuditId: ids.f2 });
-      expect(called(['input', 'text', 'web', 'repo', 'files', 'visual', 'synthesizer', 'seo', 'social', 'brand', 'messaging', 'presence', 'auditor'])).toHaveLength(0); // F1 and F2 were not repeated
-      const f3 = await db.marketingStrategyReport.findUniqueOrThrow({ where: { id: run.chain.f3StrategyId } });
+      const { ids } = await seedIncident(user, projectId, { withoutF3: true }); // the saved V3 F1 (and its audit, as history); F3 is produced now
+      const f3run = await waitForTerminal(user, (await startF3(app, user, projectId, ids.f1)).id, 120_000);
+      expect(f3run.status).toBe('COMPLETED');
+      const f3 = await db.marketingStrategyReport.findUniqueOrThrow({ where: { id: f3run.strategyId } });
+      expect(f3).toMatchObject({ f1ReportId: ids.f1, f2AuditId: null }); // V4 builds on no audit
       const claims = (f3.reportJson as Row).creativeBrief.claimsToAvoid as Row[];
-      expect(claims.length).toBeGreaterThan(8); // the strategist's 8 plus what the audit flagged: exactly what used to break F4
+      expect(claims.length).toBeGreaterThanOrEqual(8);
       expect(claims.length).toBeLessThanOrEqual(12);
       expect(claims.slice(0, 8).map((c) => c.claim)).toEqual(Array.from({ length: 8 }, (_, i) => `Strategist claim number ${i + 1} that must not be used`));
-      expect(images()).toHaveLength(5);
       // and the producer's own boundary check found nothing to report
       const policy = ((f3.metadataJson as Row).policyIssues ?? []) as Row[];
       expect(policy.filter((i) => i.type === 'report_contract')).toEqual([]);
+      // F4 reads it at once
+      const f4run = await waitForTerminal(user, (await startF4(app, user, projectId, f3run.strategyId, F4_OPTIONS)).id, 120_000);
+      expect(f4run.status).toBe('COMPLETED');
+      expect(called(['researcher'])).toHaveLength(0); // the saved F1 was not repeated
+      expect(images()).toHaveLength(0);
     });
   });
 });

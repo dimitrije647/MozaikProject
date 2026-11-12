@@ -65,18 +65,15 @@ export function buildInferenceRunnerConfig(credentials?: InferenceCredentials): 
 export interface TextTransportOptions {
   /** Test seam for the provider's base URL (the backend only passes a value under NODE_ENV=test). */
   baseUrl?: string;
-  /** OpenAI only: NO AI HYBRID / Real Content Production refuses every image request in the client itself. */
-  forbidImages?: boolean;
-  onImageRefused?: () => void;
 }
 
 /**
  * The text transport of ONE run, for the provider the user chose. There is no fallback: a Claude run never sends anything to OpenAI and
- * the reverse. `openai` is the OpenAI client when the provider is OpenAI (needed for its image tools), otherwise null.
+ * the reverse. `openai` is the OpenAI client when the provider is OpenAI (model list), otherwise null. Neither client can request an image.
  */
 export function createTextTransport(credentials: InferenceCredentials, options: TextTransportOptions = {}): { transport: TextTransport; openai: OpenAIClient | null } {
   if (credentials.provider === 'openai') {
-    const openai = new OpenAIClient({ apiKey: credentials.apiKey, baseUrl: options.baseUrl, forbidImages: options.forbidImages, onImageRefused: options.onImageRefused });
+    const openai = new OpenAIClient({ apiKey: credentials.apiKey, baseUrl: options.baseUrl });
     return { transport: new OpenAITransport(openai), openai };
   }
   if (credentials.provider === 'anthropic') {

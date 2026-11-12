@@ -44,7 +44,85 @@ Postgres is mapped to host port **5433** so it does not clash with a local Postg
 `@launchpilot/agents` compiles to CommonJS in `packages/agents/dist` (the API imports it). Rebuild it after changing
 it: `pnpm --filter @launchpilot/agents build`. The old hello-world still runs with `pnpm --filter @launchpilot/agents hello`.
 
-## V3: Claude provider and Real Content Production
+## V4: one workflow — Campaign Production
+
+LaunchPilot has ONE production workflow. There are no presets and no modes: the user creates a project, enters the business information,
+optionally runs Get Content, chooses a template collection and palette, sets the campaign objective and audience, reviews ONE budget and
+clicks **Generate Campaign** (`POST /projects/:id/factory`; the plan is free: `POST /projects/:id/factory/preflight`). The text provider and
+model are the defaults saved under Settings → AI providers (OpenAI or Claude); they are used automatically and never switched.
+
+**Stages and agents (real Mozaik participants and SemanticEvents):**
+
+| Stage | Agent | Responsibility | Model calls |
+|---|---|---|---|
+| all | Campaign Coordinator (deterministic: `FactoryService` + the stage coordinators) | runs the stages in order, budget ledger, progress, failures | 0 |
+| F1 Business Research | **Business Researcher** (A1) | reads the intake, website, GitHub repo, documents and images (authorized sources only); evidenced facts; the business brief. Not an SEO/GEO audit | 2 |
+| F3 Marketing Strategy | **Marketing Strategist** (A2) | competitor pages and holiday calendar (deterministic tools), positioning, key messages, content pillars, channel strategy for X, TikTok, Facebook, Instagram, LinkedIn | ~2 |
+| F4 Creative Production | **Content Writer** (A3) | concepts on the strategy; per-platform post text, hook, CTA, hashtags, posting format; TikTok video concept and script (no video is generated); web/display ad copy; billboard and flyer copy | 1 (+1 per repair) |
+| | **Visual Researcher** (A4) | approved uploads, approved website/repository pictures, licensed stock (rights gate, provenance, credits); matches pictures to concepts | 0 |
+| | **Creative Designer** (A5) | template selection in the chosen collection + deterministic rendering (sharp); never an AI image | 0 |
+| | **Quality Reviewer** (A6) | deterministic checks (facts, claims, text limits, formats, rights, duplicates) + one text review and a small sampled vision review; at most one repair round | 1–2 |
+
+Business Research is reused when the project's information has not changed since the last report (`refreshResearch` forces a new one); the
+strategy and the creative stage always run for the campaign at hand. Stage limits are internal ceilings (`STAGE_LIMITS` in
+`apps/api/src/mozaik/factory-plan.ts`), not user settings.
+
+**Deliverables plan (`packages/agents/src/hybrid/deliverables.ts`).** Per concept one visual for each selected social platform (X 16:9,
+TikTok 9:16 cover, Facebook feed, Instagram portrait, LinkedIn feed); web banner and display ad for the lead concepts; one billboard and one
+flyer. At most 24. A format the chosen collection cannot draw is reported as not planned, with the reason; it is never faked or stretched.
+
+**No AI images.** F4 has no image generator at all and the text transport refuses image requests. If no permitted picture exists, the visuals
+are typography-first (brand colors, type, logo) and labelled so.
+
+**The ZIP (`GET /campaigns/:id/export`).** `campaign/README.md`, `strategy/`, `social/{x,tiktok,facebook,instagram,linkedin}/` (images +
+`post.txt`, TikTok `video-script.md`), `ads/{web,display}/`, `print/{billboards,flyers}/`, `brand/`, `sources/` (CREDITS.txt, provenance,
+rights; originals only where the license allows), `review/`. Missing deliverables are listed in the README, never replaced by placeholders.
+
+**Removed in V4:** the presets (First Test, Demo, Full Production, Hybrid Production, NO AI HYBRID), the F2 Marketing Audit (SEO, GEO,
+PageSpeed, presence auditors), landing-page generation, AI image generation (Visual Creator, image models, image continuation), Channel
+Scouts and analyst cross-checks, the per-stage start endpoints. **Historical data stays readable:** saved audits (`GET /audits/:id`),
+pre-V4 strategies and campaigns (old packages keep their own ZIP layout), and factory runs with their preset.
+
+**Migration:** `20261112090000_v4_optional_audit` makes `MarketingStrategyReport.f2AuditId` and `CreativeCampaign.f2AuditId` optional
+(additive, no data change). Apply it with `pnpm db:deploy`.
+
+### Copywriting: twelve principles, combinations and the brand voice
+
+`packages/agents/src/copywriting/` is the ONE source of the copywriting guidance. It adds no agent and no model call.
+
+- **Principles (`principles.ts`).** P1 Killer headline, P2 Say what only you can say, P3 Call out the right audience, P4 Reason why,
+  P5 Damaging admission, P6 Show don't tell, P7 Tie benefits to status, P8 Genuine urgency, P9 Implied authority, P10 Powerful ending,
+  P11 Clear CTA, P12 Third-grade clarity, plus optional P13 Humor. Each has one line on how to use it and one on what it must never become.
+  The full text is in the Content Writer's system instruction only (a short version is in the Quality Reviewer's); agents exchange ids.
+- **Combinations.** Awareness (P1 P3 P6, optional P7 P9), trust (P2 P4 P9, optional P5 P6), engagement (P3 P4 P6 P12, optional P9),
+  conversion (P1 P4 P11, optional P7 P8 P2), leadership (P3 P7 P9 P12, optional P2 P10), product (P2 P6 P11, optional P1 P4 P8).
+  These are starting patterns, not formulas.
+- **Who decides what.** The Business Researcher gathers the evidence. The Marketing Strategist writes `creativeBrief.copyDirection`
+  (purpose, main problem, practical and status benefit, the one next action, proof points, real urgency or limitation with the finding it
+  cites, suitable principles). The policy drops urgency or limitations that cite no real finding. The Content Writer decides HOW, applies a
+  few principles per piece and lists them (`principles`, `principleNote`). The Quality Reviewer judges against the plan.
+- **Plan (`plan.ts`, deterministic).** Purpose (from the strategist, else the objective, else a default), primary, optional and
+  **excluded** principles. P8 is excluded without a real deadline, season, capacity or offer (an offer or date the user entered counts).
+  P5 is excluded without a documented limitation, and P13 when the voice is not playful or the industry is regulated. Per placement (each
+  platform, web/display ad, billboard, flyer) the plan lists the few principles that fit, the length limits from `creative/limits.ts` and the
+  format guidance. Billboards get at most two principles and no body text.
+- **Brand Voice Profile (`voice.ts`, deterministic).** Tone, formality, directness, intensity, technical depth, personality, preferred and
+  forbidden words, humor, sensitivity and evidence confidence. It is inferred from, in order: the user's override in the campaign setup
+  (writing style, humor, words to avoid), the strategist's tone of voice, the research's brand notes, then the business type and industry.
+  The collection only nudges directness and intensity. Regulated industries (finance, legal, health, governance...) get conservative claims
+  and no humor. With little evidence the profile is a cautious default and the campaign says so.
+- **Checks (`checks.ts`, no model).** Generic slogans and superlatives (EN/DE plus the voice's forbidden words), artificial urgency without
+  evidence, excluded principles that were used anyway, overlong sentences and jargon, overloaded billboards, a forced "P.S.", repeated
+  openings and one CTA everywhere. The reviewer rubric adds headline strength, specificity, clarity, CTA quality, platform fit and
+  principle fit (these criteria are optional in rubrics stored before they existed). There is still at most one repair round.
+- **Stored and exported.** `CampaignPackage.copywriting` holds the plan. The ZIP has `brand/voice.md` and `review/copywriting-plan.json`.
+  Each post also carries a `visualLine`, the short line printed on the visual, so captions are not cut off on the image.
+
+FIRMENFELS GRUPPE (independent Swiss asset managers and trustees) is the reference case in `copywriting/copywriting.test.ts`: one audience,
+one real problem, credibility before exaggeration, status as control and preparedness, no invented credentials or urgency. It is only a test
+case: no brand language from it is in any prompt.
+
+## V3: Claude provider
 
 **AI providers (Settings → AI providers).** The campaign agents run on ONE provider, the one you mark as default: **OpenAI** or
 **Claude** (Anthropic). The default provider (`User.defaultAiProvider`) and its model (`ApiCredential.model`) are stored on the server and used
@@ -67,14 +145,7 @@ Claude costs are computed from the **Claude** price book (`pricing.ts`, verified
 Current Claude models think adaptively and that counts against `max_tokens`, so LaunchPilot adds a thinking headroom (medium effort: +4,096
 tokens) and reserves the full value in the campaign budget. Claude writes text only: an AI-image campaign on Claude is refused.
 
-**Real Content Production is the default (`no_ai_hybrid`).** A campaign makes **zero AI image requests**: 5 concepts × 4 = 20 creatives
-rendered locally from the chosen template collection, the approved palette and logo, and your approved pictures (uploads, attested website
-and GitHub pictures, licensed stock with credits). The guarantee is enforced in the factory plan, the F4 program, the Visual Creator and the
-OpenAI client (`forbidImages`). The AI-image presets (First test, Demo, Full Production, Hybrid Production) remain available as **Legacy**
-and run only when chosen explicitly. V3 also fixes the path from approved picture to creative: the Template Selector draws a slot that has
-a picture with a photo template whenever one fits (typography only when none fits or the exact creative already exists, with the reason
-recorded); a picture counts as a source only when it is really drawn; a slow stock provider can no longer discard the approved library; an
-SVG logo no longer fails every creative (the brand name is drawn and flagged); GIF/AVIF website pictures are converted to PNG at import.
+**Real content only.** Since V4 every campaign renders its visuals from approved pictures and the template collection; see the V4 section above.
 
 ## Mozaik / NestJS integration
 
@@ -207,7 +278,7 @@ execution" atomic under concurrent requests (Prisma cannot express partial index
    use the run's isolated inference runner (`InferenceGateway`).
 4. The backend does not change: it still persists whatever events the runtime emits.
 
-## OpenAI BYOK and Product Discovery (F1, seven agents)
+## OpenAI BYOK and Business Research (F1; historical design notes, see V4 for the current agents)
 
 The first real AI workflow: up to seven Mozaik agents turn your project (text, website, public GitHub repository, uploaded
 documents and images) into a saved, structured, evidence-aware **Product Discovery report** and a **Product Manifest**,
@@ -400,115 +471,7 @@ Placeholder `.example` URLs are never live sources: they fail to resolve and are
 - Single API instance, in-process runs. Prices are not shown.
 - Future: phases F2 to F4.
 
-## F2 Marketing Audit (six agents)
-
-F2 is a **diagnostic** of the CURRENT marketing state of a business, built on one completed F1 Product Discovery report.
-It does not write ads, campaign strategy, creative or calendars (that is F3/F4). It runs in the same Mozaik runtime, with the
-same event protocol, shared-board pattern, evidence classes, cross-check protocol, BYOK isolation, cancellation and timeouts as F1.
-
-### The six agents
-
-| # | Agent | Audits | Tools (deterministic, no AI) | Activated when |
-|---|---|---|---|---|
-| A8 | SEO Auditor | title, meta description, headings, canonical, robots meta/robots.txt, sitemap, viewport, structured data, alt text, bounded broken-internal-link scan, optional PageSpeed | `auditSite` (SSRF-safe `WebFetchTool` from F1), `PageSpeedTool` | a valid website URL |
-| A9 | Social Media Auditor | supplied social profiles, only from official APIs, user-typed details, user exports/screenshots | `YouTubeTool`, `parseSocialUrl`, `DocumentExtractionTool` | social profiles or details supplied |
-| A10 | Brand Auditor | brand coherence: F1 visual evidence (reused), website-declared colors/fonts/logo, tone, stated vs. actual identity | the page inspector, `ImagePreparationTool` (only if F1 has no visual analysis) | any brand material exists |
-| A11 | Messaging Auditor | clarity, headline, consistency with the Product Manifest, CTA, hierarchy, trust, claims that need evidence | the page inspector | always |
-| A12 | Presence Auditor | cross-channel consistency and completeness: website vs. supplied URLs, contact, trust signals | `checkPresence` | always (no model call when there is nothing to compare) |
-| A13 | Audit Synthesizer | consolidates the five audits into the report | none | always |
-
-An **Audit Coordinator** (a deterministic Mozaik agent, no model) plans activation, fans out `task.assigned`, is the single
-writer of the F2 board (`FactoryRuntimeState.f2`), waits at bounded fan-in barriers, pairs reviewers, and emits `phase.ready`.
-
-```
-factory.started -> phase.started (plan: activated + skipped with reasons)
-  task.assigned -> source.retrieved (shared website collection, owned by the SEO Auditor) -> finding.posted -> task.completed   (A8..A12 concurrently)
-  barrier 1 (every activated auditor reported success, failure, skip or timeout)
-  crosscheck.requested -> crosscheck.answered   (a DIFFERENT auditor reviews selected claims, answering from its own earlier analysis)
-  barrier 2 (answers or the review deadline) -> phase.ready -> A13 reads the board -> audit.completed
-Orchestrator saves the report, THEN phase.completed -> factory.completed
-```
-
-Cross-check pairs: SEO -> Messaging (e.g. a missing page description vs. how the page communicates), Messaging -> Brand (wording
-vs. identity), Social -> Presence (profile description vs. cross-channel identity), Brand -> Messaging, Presence -> Social/SEO.
-Reviews are capped (`maxReviews`, default 4, one request per producer, at most 3 claims) and are the first thing dropped when the
-model-call budget is tight. An auditor that made no model call (deterministic result) cannot review. Every review logs the original
-finding, its author, the reviewer, the reviewer's response and the final classification.
-
-### How F1 results reach F2
-
-The backend loads the selected (default: newest completed, schema v2) `ProductDiscoveryReport`, validates it and builds an
-`F1Context` (Product Manifest, findings with provenance, sources, measured palette). The exact report id travels with the run and
-is stored on the audit (`MarketingAuditReport.f1ReportId`, shown in the report and in `GET /audits/:id`). F1 findings are referenced by
-id (`sourceType f1_finding`) and an F2 finding can never be stronger than the F1 finding it cites. F1's visual analysis is reused;
-images are viewed again only when F1 had none. With no completed F1 report, `POST .../marketing-audit` answers 422 and nothing runs.
-F2 audits what exists NOW (current website, profiles and uploads); F1 only supplies the product understanding.
-
-### Evidence rules (enforced in code, `audit/policy.ts`)
-
-* **verified** = an *observation* of a measurable property of a **live** source retrieved in this run (a page's title, a missing tag,
-  an API number) with a verbatim excerpt. It never certifies that a claim on a page is true: *"the site says 10,000 customers"* is a
-  `claim_on_source`, at most **claimed**. Judgments are at most **inferred**.
-* Fixtures, user-typed data and exports are never verified. Every source carries an origin: `public_page`, `live_api`, `user_provided`,
-  `export`, `fixture`, `previous_phase`. Reports show them.
-* Report statements are capped by the strongest finding they cite; severities cannot exceed their cited findings; disputed findings are
-  always added to the contradictions; measured sections (website health, per-platform access, channels, limitations, evidence
-  appendix, product context) are filled by code from tool results, never by the model.
-* No indexing/ranking claims (Search Console is not connected), no invented scores or social metrics. Missing data is reported as
-  missing, never as a weakness. "Not supplied", "unavailable / unverified", "not found" and "confirmed absent" stay distinct.
-
-### External APIs
-
-| Tool | Official API | Needs | Without it |
-|---|---|---|---|
-| Website / SEO | the site itself, through the F1 SSRF-safe fetcher (robots.txt respected, bounded) | nothing | n/a |
-| PageSpeed Insights | `GET https://www.googleapis.com/pagespeedonline/v5/runPagespeed` (Lighthouse lab data, single run) | `PAGESPEED_API_KEY` (+ the API enabled in Google Cloud) | **not called**; performance reported as unavailable. A quota error is reported, never retried. |
-| YouTube | YouTube Data API v3 `channels` + `playlistItems` (subscribers may be hidden by the owner) | `YOUTUBE_API_KEY` | no live YouTube data; user-provided details still work |
-| Instagram, Facebook, LinkedIn, X, TikTok, Pinterest, Reddit | **no live adapter** (their official APIs need an authorized app and account tokens LaunchPilot does not hold; public pages are not scraped) | n/a | metrics reported as unavailable; use typed details, an export or a screenshot |
-
-Keys stay on the server, travel only in requests to that provider and are never logged, stored in events/reports or sent to the model.
-A basic audit needs none of them (nor Tavily, Brave or Meta credentials).
-
-### Database, API and UI
-
-One additive migration (`20261101090000_marketing_audit`): table `MarketingAuditReport` (`reportJson`, `metadataJson`, `f1ReportId`,
-one row per run; reruns add rows, nothing is overwritten). `CampaignRun`/`CampaignEvent` are reused (`mode = marketing_audit`).
-
-| Method | Path | Notes |
-|---|---|---|
-| POST | `/projects/:id/runs/marketing-audit` | `{ f1ReportId?, model?, maxModelCalls? (3-30), maxReviews? (0-8), maxOutputTokens? (800-6000), socialDetails? }`; 422 without an F1 report/key/model; 409 if a run is active |
-| GET | `/projects/:id/audits?limit=&cursor=` | summaries, newest first, cursor pagination |
-| GET | `/audits/:id` | full report + metadata (404 for other users) |
-| GET | `/runs/:id/analysis` | same endpoint as F1: plan, agents, sources (with origin), findings, cross-checks, usage per agent |
-
-The Workspace has a **Marketing Audit** card below Product Discovery with the F1 prerequisite state, a report selector, the start
-button and cost limits, and tabs **Overview** (plan, skipped agents with reasons, sources with access type, limitations), **Agents**
-(state, AI calls and tokens per agent), **Findings** (filter by area/severity/class), **Cross-Checks** and **Report** (15 sections),
-plus a selector for previous audits. All of it is read from the persisted run.
-
-### Cost controls
-
-Explicit click only; hard cap on model calls (default 14, typical audit 8-10), `max_output_tokens` (auditors 2500, reviews up to 1500,
-synthesis up to double), bounded retries, per-agent/per-run timeouts, cancellation that aborts requests, compact contexts (each
-auditor sees only its own slice of the shared page data), F1 evidence reused, no image generation, vision only when necessary.
-Agents with nothing to analyze (e.g. social profiles without data) make **no** model call. Token usage is measured and shown per agent;
-no price is displayed (no trustworthy pricing source).
-
-### Manual test (uses your own keys)
-
-1. `pnpm dev`; sign in; configure your OpenAI key and model (Settings > AI providers); optional: `PAGESPEED_API_KEY` / `YOUTUBE_API_KEY` in `.env`, restart the API.
-2. **Deep Diving School:** set a real website URL and social URLs in its intake, run **Product Discovery** (Analyze Idea), then **Marketing Audit > Start**.
-3. **TaskFlow:** same, with a real website URL. Social profiles are optional.
-4. Check **Overview** (skipped agents and why; sources show `live`/`user provided`/`FIXTURE`), **Findings**, **Cross-Checks**, **Report**; reload or restart the API and reopen the audit.
-
-### Limitations
-
-* Only YouTube has a live social adapter. No Meta/LinkedIn/X/TikTok data without your own authorized integration.
-* Pages that need JavaScript are read as served (no headless browser; the SEO signals flag `rendering: javascript_app_suspected`); the crawl is bounded (default 5 pages + 8 link checks).
-* No Search Console: nothing is claimed about indexing or rankings. PageSpeed is a single lab run.
-* The audit uses a single model and is only as good as the F1 report beneath it.
-
-## F3 Market Research & Strategy (five base roles + dynamic Channel Scouts)
+## F3 Marketing Strategy (historical design notes; V4 runs one Marketing Strategist)
 
 F3 turns the product understanding (F1) and the audit of the current marketing (F2) into a **campaign strategy** and a
 machine-readable **creative brief** for the next phase. It does not write ads, copy or images. It runs in the same Mozaik
@@ -635,7 +598,7 @@ model call. Token usage is measured per agent; no price is shown. These limits a
 * Scout eligibility is rule-based and simple; it can be wrong for unusual businesses (raise or lower the cap, or review the rule hits).
 * One model for all participants; strategy quality depends on the F1/F2 reports beneath it.
 
-## F4 Creative Production (six agents, images through your own key)
+## F4 Creative Production (historical design notes; V4 agents and deliverables are described in the V4 section)
 
 F4 turns ONE completed F3 strategy (and the exact F1 report and F2 audit it names) into a campaign package: creative
 concepts, channel copy, one original base image per concept, every channel format cut from it, landing page content, a
@@ -680,122 +643,6 @@ Separate caps, all enforced locally per run and **not** an OpenAI spending cap: 
 images (default one per concept, max 10), regenerations (default 0), repair rounds (default 2), vision reviews
 (default 0). Nothing runs on page load, startup, tests or restart. The image model must be a `gpt-image-*` id your key
 lists; a text model is refused. No price is computed anywhere: only measured tokens and counts are shown.
-
-### Image generation: what is checked, what is recorded, what is never hidden
-
-* **The image model.** The default is `auto`: LaunchPilot reads the model list of *your* key (free) and picks a current
-  `gpt-image-*` model, never a shut-down one. An explicit model is accepted only if it is a GPT Image model, is listed and is not
-  retired. OpenAI keeps **listing** models it has shut down (`gpt-image-1`, `dall-e-2`, `dall-e-3`), so a listing never proves a
-  model works. The plan shows the model that will really be requested and whether it was chosen automatically.
-* **Only a request proves a model works.** Settings > AI providers has **Test image model (billed)**: exactly one image request at the
-  lowest quality and size, after a confirmation, with a cooldown. The picture is discarded. A shut-down model is refused without any
-  request. The result shows OpenAI's HTTP status, error code and (sanitized) message, for example when an organization still needs
-  verification for a GPT Image model. API: `POST /integrations/openai/image-test`. Nothing makes this request by itself.
-* **Four different numbers.** The plan shows concepts requested, original images the limit permits, image requests planned and
-  concepts left to brand-colored backgrounds. With 3 concepts and a limit of 1 you get one request, two concepts marked as skipped
-  because of the configured maximum, and a warning. LaunchPilot never raises the limit for you, and regeneration cannot be used to get
-  around it.
-* **One result per concept, always.** The saved package has `imageResults`: for every concept whether an image was generated, failed
-  or skipped, whether a request was made, the stage (`configuration`, `budget`, `planning`, `provider`, `decoding`, `storage`), the
-  provider status/code, a one-sentence explanation and whether a brand-colored background stands in. A concept with a stand-in is
-  labelled **NOT an AI image** in the Generated images tab and counted in the summary. A failed image makes the run `partial` and a
-  failure that hits every concept (wrong key, no permission, unknown model, no credit) stops further image requests.
-* **Provider errors.** The provider's status, code, parameter and message are kept (sanitized: keys, bearer tokens and session ids
-  are removed, length bounded). The text of an authentication failure is never kept.
-
-### Full Production: 20 original AI images, agent capacity and spending
-
-**Preset "Full Production — 20 AI Images"** (First Test and Demo are unchanged). The whole campaign has **ONE budget** (see *One campaign
-budget* below); the images use the most capable model of your key at quality `high`, which costs more than a small campaign, so a typical
-approval is $7 or more. Everything is shown as an *estimate* before anything runs.
-
-| | First Test | Demo | Full Production |
-|---|---|---|---|
-| F1 / F2 text calls (cap) | 12 / 12 | 16 / 14 | **25 / 25** |
-| F3 text calls, scouts, reviews | 14, 3, 3 | 24, 4, 6 | **30, 6, 8** |
-| F4 text calls, repair rounds, vision reviews | 12, 2, 0 | 16, 2, 2 | **60, 3, 4** |
-| Output tokens per call | model default | model default | **6000** (never above the model's limit) |
-| Concepts | 1 | 3 | **5** |
-| Original AI images | 1 | 3 | **20** (several per concept) |
-| Image quality / model | low / auto (economy) | medium / auto (economy) | **high / auto (Quality First)** |
-
-The higher limits are **ceilings, not budgets**: every agent still stops when its task is done, and nothing forces a call to be used.
-The text model is the one saved in Settings and the image model is `auto` (or the one you choose): nothing is switched silently.
-
-**How the 20 images are allocated.** A deterministic *Image Allocation Planner* (`packages/agents/src/creative/image-allocation.ts`)
-shares the images between concepts by weight (the strategy's channel ranking x the channels each concept has copy for), at least one
-per concept, at most 8 per concept; the same input always gives the same plan, and the plan is saved in the campaign. Every image has
-its own *role* (hero, detail, wide context, human moment, outcome, atmosphere, symbolic graphic), *camera perspective* and *lighting*,
-so no two images of a concept are planned alike. The text model only proposes **what each picture shows** for this business (in chunks
-that fit its output limit); a repeated or missing proposal is replaced by a direction built from the planner's seeds, and prompts are
-checked for distinctness. The model never decides how many images exist. Each image is **one provider request**, one stored asset with
-its own id, variation id, prompt, model, quality, usage and cost; a failed image is recorded with the provider's reason and is never
-replaced by a stand-in picture. Layouts are cut **locally** from the originals (no extra image request): 20 originals x up to 3 formats,
-each layout names the original it came from. Images are labelled *conceptual* (not photographs of a real place, product or person).
-
-**What is counted.** *requested* (the target) / *planned* / *attempted* (a request was sent) / *generated* (a real provider result) /
-*failed* / *skipped* (never requested) / *blocked by budget*. A campaign never claims 20 images unless 20 were generated: fewer makes the
-factory run `partial` and the campaign "approved with notes", with the count and the reasons.
-
-**Cost.** Prices live in one place (`packages/agents/src/ai/pricing.ts`) with the date they were read from OpenAI's pricing, model and
-image-generation pages (**2026-10-31**): gpt-4.1-mini $0.40 / $0.10 cached / $1.60 per 1M tokens; gpt-image-1-mini $0.005 / $0.011 /
-$0.036 per image (low / medium / high, square); gpt-image-1.5 and gpt-image-2 have their own tables; **GPT Image 2.5 has no published
-per-image price** (token-priced), so its estimate is shown as *"Cost estimate unavailable"* with the exact request cap, and the real cost
-of each finished image is computed from the usage OpenAI reports. A model without a price never gets an invented number. Token volumes
-per call come from **your own earlier runs** when you have them, otherwise from stated assumptions (listed in the estimate). The
-preflight shows text per phase, images (count x price), the typical and worst-case total, the price date and warnings. If the plan does not
-fit, you get four explicit choices (raise the budget, a cheaper image model, lower quality, fewer images); LaunchPilot never applies one itself.
-
-**Spending limit (what is and is not enforced).** Starting a Full Production run needs an approved limit (`approvedBudgetUsd`) **and** a
-confirmation (`confirmCost`); without them the API answers 422 and nothing is sent to OpenAI. The limit is an **application-side
-controller**: before every paid request it reserves the worst case (estimated input + the full output cap for text; the price-book figure
-or the dearest real image seen so far for images), replaces the reservation with the cost computed from the usage OpenAI reports, and
-refuses, unsent, a request that would knowingly exceed the approved amount. It is ONE ledger for the whole campaign (the required analysis and
-the required images are protected from optional checks, see *One campaign budget*) and is never raised by itself. Under a limit the first image goes alone, so its real cost is known before
-more are sent. **It is not an OpenAI billing cap**: a request that times out or is cancelled after it was sent may still be billed (kept
-as *uncertain* spend), a model without a published price cannot be bounded in dollars (request caps still apply), and the prices can
-be out of date. Set a hard monthly limit at platform.openai.com as well.
-
-**Rate limits.** OpenAI's own limits (for example gpt-image-1-mini: 20 images per minute on the Build tier, 150 on Launch; gpt-4.1-mini: 5,000
-requests and 2,000,000 tokens per minute on Build) are enforced by OpenAI and cannot be bypassed. LaunchPilot sends at most
-`imageConcurrency` (1-4, default 3 here) image requests at once, honors `Retry-After` (up to 60 s; every worker waits, not just the one that
-was refused), retries only rate limits and outages (never a timeout, which may already have been billed) within a hard attempt cap, and
-stops all further paid image requests on a systematic error (invalid key, missing permission, unknown or retired model, no credit).
-
-**Finish missing images without repeating research.** A campaign with fewer images than requested shows *Generate the missing images*
-(API: `POST /campaigns/:id/continue-images/preflight`, then `POST /campaigns/:id/continue-images`). It creates a **new campaign (a
-revision)** that copies the strategy, copy, landing content, the plan and every image that succeeded, and requests **only the missing
-images** with the prompts already planned, under a budget you approve again. The earlier campaign is never changed. Research, strategy,
-copy and landing are not run again.
-
-**ZIP.** `campaign.json`, `strategy/`, `copy/`, `images/originals/concept-01-variation-01.png ...`, `images/layouts/`, `images/asset-manifest.json`
-(concept -> variation -> original -> layouts, with model, size and status; only files that exist are referenced), `landing/`, `review/`,
-`usage/`. `GET /campaigns/:id/export/originals` downloads only the originals.
-
-**Limits that were found (and what changed).** Local limits are enforced by LaunchPilot; OpenAI's are not ours to change.
-
-| Limit | Where | Was | Now | Safe to raise |
-|---|---|---|---|---|
-| F1 text calls / output tokens | `f1-program.ts`, `factory.dto.ts` | 1-40 (16), 800-8000 | 1-40, 800-16000 (capped by the model) | yes |
-| F2 text calls / output tokens | `f2-program.ts` | 1-30 (14), 800-6000 | 1-30, 800-16000 | yes |
-| F3 text calls / scouts / reviews / tokens | `f3-program.ts` | 1-60, 0-6, 0-10, 800-6000 | same calls/scouts/reviews, tokens 800-16000 | yes |
-| F4 text calls | `f4-program.ts`, DTOs | 2-40 (16) | 2-80 (60 in Full Production) | yes |
-| F4 output tokens | `f4-program.ts` | 800-6000 | 800-16000 (capped by the model) | yes |
-| Original images | `f4-program.ts`, `factory-plan.ts` | at most 10 and never above the concept count | up to 40 with several per concept (the old rule still applies without it) | yes, costs money |
-| Concepts | `schemas.ts` (copy schema) | 1-5 | 1-5 (unchanged) | would need a schema change |
-| Copy variants | `coordinator.ts`, `schemas.ts` | 12 (schema 14) | 24 (schema 30) with several images per concept | yes |
-| Repair rounds / vision reviews | `f4-program.ts` | 0-3 / 0-6 | unchanged ranges (Full: 3 / 4) | yes |
-| Image regeneration | `openai-images.ts` | 0-5 | off when several originals per concept exist | no (cost) |
-| Images in flight | `agents.ts` | fixed 2 | 1-4 (3 in Full Production) | yes, within OpenAI's limit |
-| Time limits | `f4-program.ts`, `factory.service.ts` | visual 7 min, run 25 min, phase 35 min | grow with the image count (visual up to 30 min, run 55 min, phase 75 min) | yes |
-| Retries | `gateway.ts`, `openai-images.ts` | text 2, images 1; Retry-After capped at 15 s | same attempts; Retry-After honored up to 60 s | keep small |
-| Spending | nothing | no dollar limit | `SpendBudget` (above) | n/a |
-
-**Manual test (uses your own key, billed).** (1) Settings > AI providers: key and text model; *Test image model* once if unsure. (2) Open
-the project > Campaign, choose **Full Production**, press *Review plan* (free): check the 20-image allocation, the estimate and the price
-date. (3) Type a spending limit (the estimate's worst case is suggested), tick the confirmation and start. (4) Watch *attempted / generated /
-failed* and the spend while it runs. (5) Open the finished campaign: the gallery shows the 20 originals by concept, then the layouts; download
-one image, *Download all original images* and the full ZIP. (6) If some images failed, press *Generate the missing images* on the campaign.
 
 ### One campaign budget (shared by text, images, reviews and repairs)
 
@@ -882,62 +729,6 @@ plan with the report, the field, the count and the limit, and says whether anyth
 information does). A failed run whose saved reports are readable shows that on its page ("Saved reports now"), so **Continue from saved work** reuses F1, F2
 and F3 and runs only the phase that did not finish.
 
-### Quality First: image model choice, agent depth and the quality record
-
-**Which image model "Automatic" picks** depends on a *strategy* (it never matters for an explicit model, which is always kept as typed):
-
-| Strategy | Used by | Order (first usable model of YOUR key wins) |
-|---|---|---|
-| Economy | First Test, Demo (unchanged) | gpt-image-1-mini, 1.5, 2, 2.5-flare, 2.5-sunburst |
-| Balanced | choose it in Advanced settings | gpt-image-2, 2.5-flare, 1.5, 2.5-sunburst, 1-mini |
-| **Quality First** | **Full Production (default)** | **gpt-image-2.5-sunburst, 2.5-flare, 2, 1.5, 1-mini** |
-
-Retired models are never offered. For Balanced and Quality, a model whose announced shutdown is within 90 days (today: gpt-image-1-mini,
-2026-12-01) moves behind longer-lived ones. Price is never part of the order. The Quality order follows what OpenAI's own pages say
-(read 2026-10-31): Sunburst is "our most capable model for image generation and editing", Flare is its "fastest model for high-quality,
-everyday image generation", GPT Image 2 a "state-of-the-art image generation model", GPT Image 1.5 "our previous image generation model".
-That is the vendor's positioning, **not an independent benchmark**: LaunchPilot does not claim a model is "the best". The plan shows the exact
-model, why it was chosen, the other usable models, and that its generation permission is **unverified** until a billed *Test image model* (a
-listing in /models proves nothing; GPT Image models may need organization verification). A quality value the model does not list (for
-example `xhigh` on GPT Image 1.5) is refused with the reason, never replaced. No failed paid request ever switches the model.
-
-*Why Automatic used to pick `gpt-image-1-mini`:* `IMAGE_MODEL_PREFERENCE` in `packages/agents/src/ai/image-models.ts` was a fixed
-cheapest-first list (its comment said so: "a sensible default for a first, low-cost test") and Full Production reused it.
-
-**Unknown image price.** GPT Image 2.5 is billed by tokens and OpenAI publishes no per-image figure, so its estimate is "Cost estimate
-unavailable" (with an orientation-only reference at GPT Image 2's price, clearly marked as not an estimate). Starting needs an extra
-confirmation: there is no separate checkbox; the ONE budget approval also names the maximum number of image requests (`approvedImageRequests`, computed from
-the plan); the first image goes alone, its real cost (from the usage OpenAI reports) is learned, and the rest of the campaign is protected with it. If the plan does not fit the approved amount, the options are shown (raise the budget, another model, lower
-quality, fewer images); nothing is changed silently.
-
-**One campaign budget (replaces the earlier text and image pools).** `approvedBudgetUsd` is ONE amount for the whole campaign. See *One campaign budget* above.
-
-**Image prompts are creative briefs.** The Visual Creator now receives a *visual brief* built from F1 and the strategy (what the business
-offers, the problem, campaign goal, audience, brand tone, visual direction and constraints, locale, channels and what to avoid); before it
-saw only the strategy block. Each image's prompt names the goal, audience, brand, concept, this image's role, medium, subject, setting,
-focal point, camera, light, placement, how it must differ from its siblings, and the constraints (conceptual imagery, no invented facts,
-no generic stock look). A repeated proposal is replaced from the planner's seeds. Prompts are saved per image for audit and continuation.
-
-**What the agents actually do (and why raising a limit alone did nothing).** A limit is a *ceiling*, not an allowance:
-`maxReviews` only capped how many producers got one cross-check (F1: 3-4 requests, F2: 4, F3: 3-4, whatever the value), and
-`maxModelCalls` was never reached by the workflow (a Demo run used 7/16, 12/14, 16/24 and 14/16 calls). Full Production therefore enables
-**depth**: (1) F1-F3 run extra cross-check passes in which claims nobody checked yet are reviewed by *another* agent, up to `maxReviews`
-(only claims worth a call; never a claim twice); (2) F4 critiques the concepts *before any image is paid for*: the Reviewer scores
-specificity, originality, audience fit and visual potential, rewrites a weak visual idea, and hands the Visual Creator a concrete art
-direction (one call; deterministic overlap and cliché checks run first). Nothing forces a call: when there is nothing to review, no call is made.
-
-**Cut-off answers.** An answer that hits `max_output_tokens` is unusable JSON, and asking again with the same cap truncates it again (a
-real run lost its Audience Researcher this way). The gateway now re-sends such a request with twice the cap, at most twice, up to what the
-model supports (verified limits are in `pricing.ts`; an unverified model is capped at 4,096). The cut-off attempt stays in the accounting.
-
-**Quality gates.** The reviewer scores six criteria 1-5 (product accuracy, brand consistency, audience relevance, objective alignment,
-originality, cross-channel consistency); a score of 2 or less that no specific issue explains becomes a finding, so valid JSON never
-approves a weak campaign. Deterministic checks cover concept overlap, thin or cliché visual ideas and a landing call to action that
-differs from the ads (this one is repaired deterministically: the Landing builder's text revision could not change the CTA *type*, which is
-why a real campaign stayed "unresolved"). The reviewer is given the call to action as `{text, type}` (it used to see `text (type)` and
-flagged the internal label as visible text). Everything is saved as the campaign's *quality diagnostic*: review and repair rounds, concept
-critique scores, rubric history, findings fixed/open/unresolved, cut-off answers retried, and the work that was **not** done and why.
-
 ### Manual low-cost test (uses your own key)
 
 Settings > AI providers: model `gpt-4.1-mini`. Workspace: with a completed F3 strategy, choose image model
@@ -962,7 +753,7 @@ not changed by runs.
 * The deterministic checks are word-based (promise lexicons exist for en, sr, hr, de, es, fr and it; other languages get the English list only); the model review judges meaning. Channel length limits are configurable defaults, not live platform specifications. Vision review is opt-in and budgeted.
 * A repair the owner cannot make (or a rejected picture with regeneration off) stays visible as unresolved.
 
-## Hybrid Production: original AI images + template creatives
+## Template creatives: library, rendering and selection
 
 **Hybrid Production** is a fourth preset next to First Test, Demo and Full Production (which are unchanged). Instead of buying one AI image per creative, it asks the image model for a **small number of original images** (default **5**) and builds the other creatives **locally** from a library of professionally designed, declarative **templates** (default **15**): each one is a real layout rendered from a template, your brand colors and logo, your approved copy and one of the originals (or a brand image). Default: 5 concepts × (1 original + 3 template creatives) = **5 original AI images + 15 template creatives = 20 finished creatives**.
 
@@ -1313,22 +1104,11 @@ Not used: Google Custom Search (closed to new customers), Bing search (retired),
 
 `20261108090000_no_ai_image_library` (NO AI HYBRID) is additive too: one new table (`ProjectImage`, the image library with rights) and four new nullable/defaulted columns on `ImageProvenance` (`sourceKind`, `originalUrl`, `perceptualHash`, `rightsJson`). Apply it the same way (`pnpm db:deploy`).
 
-## NO AI HYBRID: a campaign with no AI image at all
+## Real pictures: sourcing, rights and provenance
 
 **NO AI HYBRID** (preset `no_ai_hybrid`) is Hybrid Production without any image generation. The Mozaik agents still do the thinking: Product Discovery, the Marketing Audit and the Strategy read the business, the copywriter writes, the Visual Researcher sources pictures, the Template Selector matches them to your collection, the Layout Designer renders and the reviewers check. The text model is the only paid thing. **No image-generation request is ever made**: not for a missing picture, not for a background, not for a "just this once". The screen says it plainly: *AI-generated images: 0 · Existing/licensed imagery: enabled · AI agents for strategy and copywriting: enabled*.
 
 Defaults: 5 concepts × 4 template creatives = **20 finished creatives**, 0 AI images, 1 template collection, 1 approved palette, the formats you chose, local Sharp/SVG rendering for everything. The counts are settings; the guarantee is not.
-
-### Differences from Hybrid Production
-
-| | Hybrid Production | NO AI HYBRID |
-|---|---|---|
-| AI images | 5 originals (paid) | **0, enforced** |
-| Template creatives | 15 | 20 |
-| Pictures | the originals, else brand images in turn | an **approved image library** with rights, scored and allocated per creative |
-| Image model / quality / cap | chosen, estimated | none: the fields are refused, not ignored |
-| Budget | one total, images + text | one total, text only (image cost is exactly $0, not "unknown") |
-| Continuation | image-only (missing originals) | start again from the same strategy with new pictures (F1–F3 reused) |
 
 ### Where the pictures come from (priority order)
 
@@ -1359,10 +1139,6 @@ One total, as everywhere. The plan shows AI image requests **0**, the maximum te
 ### Provenance and the archive
 
 Every picture records its source, address, creator, license, how the license was verified (provider / owner / owner-attested / owner-reviewed), whether download, commercial use, derivatives and passing the original on are allowed, who approved it and when, and a hash. Every creative records its collection, template, source pictures, concept, format, palette and rendering version. The ZIP contains `campaign.json`, `strategy/`, `copy/`, `design/`, `images/approved-sources/`, `images/templates/`, `layouts/`, `usage/` (`sources.json`, `rights.json`), `manifest.json` and `CREDITS.txt`. **An original picture is included only where its rights allow handing the unaltered file on** (yours and attested ones: yes; Pixabay and Pexels originals: no, only the advertisements made from them).
-
-### Continuing a partial campaign
-
-Add pictures (upload, approve website/repository pictures, or switch on automatic mode) and start the campaign again with *continue*: Product Discovery, the Marketing Audit and the Strategy are **reused**, not run again, and a new campaign is made; the earlier one is untouched. The image-only continuation of AI campaigns refuses a NO AI campaign.
 
 ### Providers: what works today
 
@@ -1446,39 +1222,6 @@ Five colors (primary, secondary, accent, background, text) with hex, source and 
 * A logo that exists only as inline `<svg>` markup in a page (no address) cannot be imported; upload it instead.
 * Social profiles are not read (no integration); upload a picture you own.
 * The palette step re-reads the site or repository through the existing palette analyzer (its own 24 h cache).
-
-## Run campaign: the full factory (F1 → F2 → F3 → F4 in one go)
-
-The **Run campaign** button (workspace, or `/projects/:id/campaign`) runs the four phases in order through ONE deterministic
-orchestrator (`apps/api/src/mozaik/factory.service.ts`). It does not replace anything: it calls the existing phase services, so
-each phase keeps its own Mozaik runtime, participants, cross-checks, dynamic Channel Scouts / Fixer, events and persistence.
-
-* **Plan first (free).** `POST /projects/:id/factory/preflight` shows which phases are reused (from exactly which saved result) and
-  which run, the models, every limit, the expected counts and the warnings. It makes no paid request (only `GET /models`).
-* **Continue (default) or fresh.** *Continue* reuses ONE coherent chain of completed reports (F4 ← that F3 ← that F2 ← that F1,
-  all from this project, all saved), not the newest report of each kind, and runs only what is missing. *Fresh* runs every phase.
-  Partial reports are reused only with a visible flag (switchable); older F1 reports without a Product Manifest are never reused;
-  a complete chain has "nothing to run"; a new creative round is an explicit option.
-* **State is persisted** (`FactoryRun`, additive migration `20261104090000_factory_run`): status, current phase, the four phase
-  states (pending / reused / running / completed / failed / cancelled / skipped), child run ids, saved result ids, the settings
-  snapshot (never credentials), warnings and the final campaign id. A refresh shows the same run; a restart marks an active run
-  **interrupted** and never resumes or repeats a paid request. One active run per project (partial unique index); a phase started
-  by hand is refused while it runs.
-* **Reliable sequencing.** The orchestrator waits for each phase's own completion (its persisted terminal status and saved result),
-  resolves the new result id, and starts the next phase from it. A failed, cancelled or interrupted phase stops the run; nothing is
-  retried automatically. **Cancel** stops only the active phase of this run and prevents later ones.
-* **Honest result.** `completed` means all four results exist and the campaign package is saved; the label then follows the review:
-  *approved*, *approved with notes*, or *completed with unresolved review issues* (never "ready to publish"). `partial` = the
-  package is saved but a creative participant failed or timed out (for example every image failed and brand-colored backgrounds
-  were used, which are shown as such).
-* **Limits.** Per-phase hard caps (the plan shows their sum). The default preset is the lowest-cost *first test*: reuse F1/F2; F3 up
-  to 14 calls, 3 Channel Scouts, 3 cross-checks, calendar off; F4 with `gpt-4.1-mini` text, an automatically chosen current GPT Image model at `low`, 1 concept,
-  Instagram, landing page, up to 12 text calls, 1 original image, regeneration off, vision off, 2 repair rounds. *Demo quality* is
-  richer and is never preselected. No dollar figure is shown (LaunchPilot does not know your pricing).
-* **Presets:** First Test (default), Demo, Full Production (20 original AI images) and **Hybrid Production** (original AI images + locally rendered template creatives; see the section above and `POST /projects/:id/hybrid/preview`, a free preview with real local renders and no OpenAI or Pinterest request).
-* API: `GET /factory/presets`, `POST /projects/:id/factory/preflight`, `POST /projects/:id/factory`, `GET /projects/:id/factory-runs`,
-  `GET /factory-runs/:id`, `GET /factory-runs/:id/events` (the recorded agent activity of the phases it ran),
-  `POST /factory-runs/:id/cancel`.
 
 ## Tests
 

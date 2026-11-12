@@ -1,5 +1,4 @@
 import { RuntimeState } from '@mozaik-ai/core';
-import { AuditBoardStore } from '../audit/board';
 import { F1BoardStore } from '../discovery/f1/board';
 import { StrategyBoardStore } from '../strategy/board';
 import { CreativeBoardStore } from '../creative/board';
@@ -74,8 +73,6 @@ export class FactoryRuntimeState extends RuntimeState {
   readonly boards: Record<BoardName, Board> = { intake: {}, audit: {}, market: {}, production: {} };
   /** F1 shared board (single writer: the Phase Coordinator). */
   readonly f1 = new F1BoardStore();
-  /** F2 shared board (single writer: the Audit Coordinator). */
-  readonly f2 = new AuditBoardStore();
   /** F3 shared board (single writer: the Strategy Coordinator). */
   readonly f3 = new StrategyBoardStore();
   /** F4 shared board (single writer: the Creative Coordinator). */

@@ -146,7 +146,8 @@ describe('GET CONTENT', () => {
     r.on('data', (c: Buffer) => chunks.push(c));
     r.on('end', () => cb(null, Buffer.concat(chunks)));
   };
-  const NO_AI = { preset: 'no_ai_hybrid', mode: 'fresh', approvedBudgetUsd: 3, confirmCost: true };
+  /** V4: ONE workflow (no preset, no image generation); a campaign needs its design and ONE approved budget. */
+  const CAMPAIGN = { approvedBudgetUsd: 3, confirmCost: true };
   const design = async (u: TestUser, projectId: string, over: Record<string, unknown> = {}) => {
     const d = (await u.agent.post(`/projects/${projectId}/design/new`).send({ collectionId: 'premium_editorial' }).expect(200)).body.design;
     return { ...d, formats: ['instagram_post', 'instagram_story', 'website_banner'], confirmed: true, ...over };
@@ -194,7 +195,7 @@ describe('GET CONTENT', () => {
     expect(calls.website + calls.repo).toBe(0);
     expect(await db.getContentRun.count({ where: { projectId } })).toBe(0);
     // the plan of a campaign needs nothing from Get Content: only the design (as before)
-    const plan = (await user.agent.post(`/projects/${projectId}/factory/preflight`).send({ ...NO_AI }).expect(200)).body;
+    const plan = (await user.agent.post(`/projects/${projectId}/factory/preflight`).send({}).expect(200)).body;
     expect(plan.blockers.map((b: any) => b.code)).toEqual(['design_missing']);
     expect(calls.website + calls.repo).toBe(0);
     expect(fake.requests.filter((r) => r.path.endsWith('/responses') || r.path.endsWith('/images/generations'))).toHaveLength(0);
@@ -451,13 +452,11 @@ describe('GET CONTENT', () => {
     await user.agent.post(`/projects/${projectId}/images/approve-batch`).send({ ids: photos.map((p: any) => p.id), attest: true }).expect(200);
     const d = await design(user, projectId);
     await user.agent.put(`/projects/${projectId}/design`).send(d).expect(200);
-
-    // the free preview draws the approved logo
-    const prev = (await user.agent.post(`/projects/${projectId}/hybrid/preview`).send({ preset: 'no_ai_hybrid', hybrid: { design: d } }).expect(200)).body;
-    expect(prev.brand).toMatchObject({ logo: true, logoApproved: true, approvedPhotos: 2 });
+    // what was approved is what the campaign will use (V4 has no separate preview route: the Get Content state says it)
+    expect((await state(user, projectId)).approved).toMatchObject({ logo: true, photos: 2 });
 
     const textBefore = fake.requests.filter((r) => r.path.endsWith('/responses')).length;
-    const started = (await startF(user, projectId, { ...NO_AI, hybrid: { design: d } }).expect(201)).body;
+    const started = (await startF(user, projectId, { ...CAMPAIGN, design: { design: d } }).expect(201)).body;
     const r1 = await waitF(user, started.id);
     expect(['completed', 'partial']).toContain(r1.status);
     expect(fake.imageCalls()).toHaveLength(0);
@@ -466,8 +465,8 @@ describe('GET CONTENT', () => {
     const h = pkg.hybrid;
     expect(h.brand.logo).toMatchObject({ approved: true, source: 'website', assetId: s0.logo.approved?.assetId ?? (await state(user, projectId)).logo.approved.assetId });
     expect(h.brand.approvedPhotos).toBe(2);
-    expect(h.brand.withLogo + h.brand.omitted.length).toBe(20);
-    expect(h.brand.withLogo).toBeGreaterThanOrEqual(18);
+    expect(h.brand.withLogo).toBeGreaterThan(0);
+    expect(h.brand.withLogo + h.brand.omitted.length).toBeLessThanOrEqual(pkg.deliverables.counts.planned);
     for (const c of h.creatives.filter((x: any) => x.status === 'rendered')) expect(c.logo).toBeDefined();
     // only the approved pictures were used (the third candidate was never approved, so it is not in any creative)
     const ids = new Set(h.imagery.library.map((l: any) => l.id));
@@ -478,19 +477,22 @@ describe('GET CONTENT', () => {
     const list = events.items ?? events;
     expect(JSON.stringify(list.filter((e: any) => (e.eventType ?? e.type) === 'finding.posted')).includes('Approved brand content: the official logo and 2 approved photograph')).toBe(true);
 
-    // the archive: brand metadata and the logo file travel with the campaign
+    // the archive (V4 layout under campaign/): brand metadata and the logo file travel with the campaign
     const res = await user.agent.get(`/campaigns/${r1.campaignId}/export`).buffer(true).parse(buf).expect(200);
     const zip = await JSZip.loadAsync(res.body as Buffer);
     const names = Object.keys(zip.files);
-    expect(names).toContain('design/brand-content.json');
-    expect(names.some((n) => n.startsWith('design/brand/logo-'))).toBe(true);
-    const meta = JSON.parse(await zip.file('design/brand-content.json')!.async('string'));
-    expect(meta).toMatchObject({ approvedPhotographs: 2, creativesWithLogo: h.brand.withLogo, logo: { approved: true, source: 'website', rights: 'Rights confirmed by the project owner' } });
-    expect(names.filter((n) => n.startsWith('images/templates/')).length).toBe(h.counts.templates.rendered);
+    expect(names).toContain('campaign/brand/brand.json');
+    expect(names.some((n) => n.startsWith('campaign/brand/logo-'))).toBe(true);
+    const meta = JSON.parse(await zip.file('campaign/brand/brand.json')!.async('string'));
+    expect(meta).toMatchObject({ approvedPhotographs: 2, creativesWithLogo: h.brand.withLogo, logo: { rights: 'Rights confirmed by the project owner' } });
+    expect(meta.logo.file).toMatch(/^brand\/logo-/);
+    const visuals = names.filter((n) => /^campaign\/(social|ads|print)\/.+\.(png|jpe?g)$/.test(n));
+    expect(visuals.length).toBeGreaterThan(0);
+    expect(visuals.length).toBeLessThanOrEqual(pkg.deliverables.counts.planned);
 
     // a LATER campaign for the same project reuses the approved content without another Get Content run
     const websiteCalls = calls.website;
-    const second = (await startF(user, projectId, { ...NO_AI, mode: 'continue', rerunCreative: true, hybrid: { design: d } }).expect(201)).body;
+    const second = (await startF(user, projectId, { ...CAMPAIGN, design: { design: d } }).expect(201)).body;
     const r2 = await waitF(user, second.id);
     expect(['completed', 'partial']).toContain(r2.status);
     const pkg2 = (await user.agent.get(`/campaigns/${r2.campaignId}`).expect(200)).body.package;
@@ -500,27 +502,28 @@ describe('GET CONTENT', () => {
     expect((await user.agent.get(`/campaigns/${r1.campaignId}`).expect(200)).body.package.hybrid.brand.withLogo).toBe(h.brand.withLogo);
   });
 
-  it('SKIPPING Get Content: the campaign behaves exactly as before (no brand block, no per-creative logo record, the newest uploaded logo is used)', async () => {
+  it('SKIPPING Get Content: the campaign still works (no brand block, no per-creative logo record, the newest uploaded logo is used)', async () => {
     const { user, projectId } = await readyUser('gc-skip');
     const up = await upload(user, projectId, 'logo', 'plain-logo.png', await logoPng('#226644'));
     for (const seed of [11, 12]) await upload(user, projectId, 'image', `photo-${seed}.jpg`, await picture(seed), 'image/jpeg');
     const d = await design(user, projectId);
     await user.agent.put(`/projects/${projectId}/design`).send(d).expect(200);
-    const prev = (await user.agent.post(`/projects/${projectId}/hybrid/preview`).send({ preset: 'no_ai_hybrid', hybrid: { design: d } }).expect(200)).body;
-    expect(prev.brand).toMatchObject({ logo: true, logoApproved: false, approvedPhotos: 0 });
-    const started = (await startF(user, projectId, { ...NO_AI, hybrid: { design: d } }).expect(201)).body;
+    expect((await state(user, projectId)).approved).toMatchObject({ logo: false, photos: 0 });
+    const started = (await startF(user, projectId, { ...CAMPAIGN, design: { design: d } }).expect(201)).body;
     const r = await waitF(user, started.id);
     expect(['completed', 'partial']).toContain(r.status);
     const pkg = (await user.agent.get(`/campaigns/${r.campaignId}`).expect(200)).body.package;
-    expect(pkg.hybrid.brand).toBeUndefined();
+    expect(pkg.hybrid.brand ?? null).toBeNull();
     for (const c of pkg.hybrid.creatives) expect(c.logo).toBeUndefined();
-    expect(pkg.hybrid.counts.templates.rendered).toBe(20);
+    expect(pkg.deliverables.counts.delivered).toBeGreaterThan(0);
     expect(await db.getContentRun.count({ where: { projectId } })).toBe(0);
     expect(await db.projectBrandContent.count({ where: { projectId } })).toBe(0);
     expect(calls.website + calls.repo).toBe(0);
     const res = await user.agent.get(`/campaigns/${r.campaignId}/export`).buffer(true).parse(buf).expect(200);
     const zip = await JSZip.loadAsync(res.body as Buffer);
-    expect(Object.keys(zip.files).some((n) => n.startsWith('design/brand'))).toBe(false);
+    expect(Object.keys(zip.files).some((n) => n.startsWith('campaign/brand/logo-'))).toBe(false); // no approved logo file to hand on
+    const meta = JSON.parse(await zip.file('campaign/brand/brand.json')!.async('string'));
+    expect(meta).toMatchObject({ logo: null, approvedPhotographs: null });
     expect((await db.projectAsset.findFirst({ where: { projectId, type: 'logo' } }))?.id).toBe(up.id);
     expect(fake.imageCalls()).toHaveLength(0);
   });

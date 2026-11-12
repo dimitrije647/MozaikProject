@@ -13,7 +13,6 @@ import {
   exportEligibility,
   formatClassOfId,
   formatIdsOf,
-  getCollection,
   imageStem,
   isImageBuffer,
   isNearDuplicate,

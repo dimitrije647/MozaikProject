@@ -1,15 +1,14 @@
 import { createHash } from 'node:crypto';
 import sharp from 'sharp';
-import type { ChannelId } from '../strategy/channels';
 import { limitsFor } from '../creative/limits';
-import type { ConceptCritique, CopyOutput, CopyRevisionOutput, LandingOutput, LandingRevisionOutput, ReviewOutput, VariationDirections, VisualDirections } from '../creative/schemas';
+import { CAMPAIGN_PLATFORMS, type CopyOutput, type CopyRevisionOutput, type ReviewOutput } from '../creative/schemas';
 
 /**
- * Default (valid) answers of the F4 agents for the fake OpenAI server. They are built from the prompt the request actually
- * carried (the strategy's value proposition, the concept ids, the variants to revise), contain nothing the deterministic review
- * would flag, and the revision answers genuinely remove what the findings complained about.
+ * Default (valid) answers of the F4 agents for the fake provider servers (tests only). They are built from the prompt the request actually
+ * carried (the strategy's value proposition, the platforms, the copy to revise), contain nothing the deterministic review would flag, and the
+ * revision answers genuinely remove what the findings complained about.
  */
-export type CreativeFakeAgent = 'copywriter' | 'landing' | 'vcreator' | 'creviewer';
+export type CreativeFakeAgent = 'writer' | 'creviewer';
 
 const block = (text: string, tag: string): unknown => {
   const m = new RegExp(`<${tag}>\\n([\\s\\S]*?)\\n</${tag}>`).exec(text);
@@ -23,128 +22,70 @@ const block = (text: string, tag: string): unknown => {
 const valueProposition = (t: string) => /"valueProposition": "([^"]{4,})"/.exec(t)?.[1] ?? 'A clear and honest offer for people who want to get started';
 
 const HOOKS = [
-  { name: 'Start with confidence', headline: 'Take the first step calmly', angle: 'Reassure newcomers that the first step is manageable', visual: 'A calm, welcoming scene that suggests a first step' },
-  { name: 'Clear and honest', headline: 'Know exactly what you get', angle: 'Lead with transparency about what is offered', visual: 'A bright, orderly scene that suggests clarity' },
-  { name: 'Learn with people', headline: 'Learn alongside a friendly group', angle: 'Show the human, supportive side', visual: 'People sharing a relaxed moment together' },
-  { name: 'Plan your next move', headline: 'Choose your next move with clarity', angle: 'Help the audience decide what to do next', visual: 'A path that leads toward a clear horizon' },
-  { name: 'Everyday progress', headline: 'Small steps, steady progress', angle: 'Celebrate steady, realistic progress', visual: 'A quiet scene with a sense of gradual movement' },
+  { name: 'Start with confidence', headline: 'Take the first step calmly', angle: 'Reassure newcomers that the first step is manageable', visual: 'A calm, welcoming entrance where a first visitor is greeted in person' },
+  { name: 'Clear and honest', headline: 'Know exactly what you get', angle: 'Lead with transparency about what is offered', visual: 'A bright counter where the offer is laid out plainly for a customer' },
+  { name: 'Learn with people', headline: 'Learn alongside a friendly group', angle: 'Show the human, supportive side', visual: 'A small group of people sharing a relaxed moment around a table' },
+  { name: 'Plan your next move', headline: 'Choose your next move with clarity', angle: 'Help the audience decide what to do next', visual: 'A person planning on paper at a quiet desk by a window' },
+  { name: 'Everyday progress', headline: 'Small steps, steady progress', angle: 'Celebrate steady, realistic progress', visual: 'Hands at work on a project that is clearly taking shape' },
 ];
 const FLAVOR: Record<string, string> = {
+  x: 'Tell us what you think.',
   instagram: 'Save this post and share it with a friend.',
   facebook: 'Tell us what you would like to know in the comments.',
   linkedin: 'Read how teams and professionals approach this.',
-  youtube: 'Watch how it works step by step.',
-  tiktok: 'See it in sixty seconds.',
-  google_search: 'Find the details you are looking for.',
-  email: 'Open the message for the full picture.',
-  organic_content: 'Read the story behind the offer.',
-  community: 'Join the conversation with others.',
+  tiktok: 'See it in thirty seconds.',
 };
+/** Each platform opens differently (the copy checks flag posts that all open with the same words). */
+const OPENER: Record<string, string> = { x: 'Quick take:', instagram: 'Picture this:', facebook: 'Here is something useful.', linkedin: 'A practical note for professionals:', tiktok: 'Watch this:' };
+const HOOK_TAIL: Record<string, string> = { x: ' today', tiktok: ' in 30 seconds', facebook: ' together', instagram: '', linkedin: ' at work' };
 
-/** Clean copy also respects the channel's length limits (the deterministic review measures them): cut at a word boundary. */
+/** Clean copy also respects the platform's length limits (the deterministic review measures them): cut at a word boundary. */
 export function fit(text: string, channel: string, placement: string, field: 'headline' | 'body', fallback: number): string {
-  const max = Math.min(fallback, ...limitsFor(channel, placement).filter((l) => l.field === field).map((l) => l.max));
+  const max = Math.min(fallback, ...limitsFor(channel, placement).filter((l) => l.field === field || (field === 'body' && l.field === 'post')).map((l) => l.max));
   return text.length <= max ? text : text.slice(0, max).replace(/\s+\S*$/, '').replace(/[,:;]$/, '');
 }
 
 export function defaultCopy(userText: string): CopyOutput {
-  const task = block(userText, 'task') as { concepts?: string; channels?: ChannelId[] } | null;
+  const task = block(userText, 'task') as { concepts?: string; posts?: string } | null;
   const n = Math.min(5, Math.max(1, Number(/exactly (\d+)/.exec(String(task?.concepts ?? ''))?.[1] ?? 3)));
-  const channels = task?.channels?.length ? task.channels : (['instagram'] as ChannelId[]);
+  const listed = /for each of: ([a-z_, ]+)/.exec(String(task?.posts ?? ''))?.[1]?.split(',').map((x) => x.trim()) ?? [];
+  const platforms = CAMPAIGN_PLATFORMS.filter((p) => !listed.length || listed.includes(p));
   const vp = valueProposition(userText).replace(/[.!]+$/, '');
+  const claims = [{ text: vp.slice(0, 150), support: 'f3' as const, ref: null }];
   const concepts = Array.from({ length: n }, (_, i) => {
     const h = HOOKS[i % HOOKS.length];
-    return { key: `c${i + 1}`, name: h.name, angle: h.angle, keyMessage: `${h.headline}.`, audience: 'People considering this offer', ctaType: 'learn_more' as const, ctaText: 'Learn more', visualIdea: h.visual };
+    return { key: `c${i + 1}`, name: h.name, basis: `Main message ${i + 1} of the strategy`, angle: h.angle, keyMessage: `${h.headline}.`, audience: 'People considering this offer', ctaType: 'learn_more' as const, ctaText: 'Learn more', visualIdea: h.visual, purpose: 'awareness' as const, principleNote: 'P1 hook, P3 audience and P6 a concrete situation; no urgency (none is evidenced).' };
   });
-  const variants: CopyOutput['variants'] = [];
+  const posts: CopyOutput['posts'] = [];
   concepts.forEach((c, i) => {
-    channels.slice(0, 3).forEach((ch, j) => {
-      if (variants.length >= Math.max(12, n * Math.min(3, channels.length))) return; // every concept gets copy, however many there are (5 concepts x 3 channels = 15)
-      const placement = j === 0 ? 'paid_ad' : 'organic_post';
-      variants.push({
+    const h = HOOKS[i % HOOKS.length];
+    for (const p of platforms) {
+      posts.push({
         conceptKey: c.key,
-        channel: ch,
-        placement,
-        length: j === 0 ? 'short' : 'long',
-        headline: fit(`${HOOKS[i % HOOKS.length].headline}${j ? ` on ${ch.replace('_', ' ')}` : ''}`, ch, placement, 'headline', 70),
-        body: fit(`${vp}. ${FLAVOR[ch] ?? 'Learn more on our site.'} Idea ${i + 1}, ${ch.replace('_', ' ')}: ${HOOKS[i % HOOKS.length].angle.toLowerCase()}.`, ch, placement, 'body', 400),
-        description: null,
-        ctaText: 'Learn more',
+        platform: p,
+        hook: fit(`${h.headline}${HOOK_TAIL[p] ?? ''}`, p, 'social_post', 'headline', 70),
+        text: fit(`${OPENER[p] ?? ''} ${vp}. ${FLAVOR[p] ?? ''} Idea ${i + 1} on ${p}: ${h.angle.toLowerCase()}.`.trim(), p, 'social_post', 'body', 400),
+        visualLine: fit(`${vp}.`, p, 'social_post', 'body', 100),
+        cta: 'Learn more',
         ctaType: 'learn_more',
-        hashtags: [],
-        claims: [{ text: vp.slice(0, 150), support: 'f3', ref: null }],
+        hashtags: p === 'linkedin' || p === 'x' ? [] : ['#getstarted'],
+        postingFormat: p === 'tiktok' ? 'Vertical 9:16 video with the cover image as thumbnail' : 'Single image post',
+        videoScript: p === 'tiktok' ? { hook: h.headline, durationSeconds: 20, scenes: [{ seconds: '0-5', visual: h.visual, onScreenText: h.headline, voiceover: vp.slice(0, 120) }, { seconds: '5-20', visual: 'The offer shown in a real setting', onScreenText: 'Learn more', voiceover: 'Find out what is offered.' }], soundNote: 'Calm background music' } : null,
+        claims,
+        principles: p === 'linkedin' ? ['P3', 'P9', 'P12'] : ['P1', 'P6'],
       });
-    });
+    }
   });
-  return { summary: `${n} distinct concept(s) with copy for ${channels.join(', ')}.`, concepts, variants, missingInformation: ['No customer testimonials were supplied, so none are used.'] };
+  const lead = concepts.slice(0, Math.min(2, n));
+  const ads: CopyOutput['ads'] = lead.flatMap((c, i) => (['web_ad', 'display_ad'] as const).map((kind) => ({ conceptKey: c.key, kind, headline: fit(HOOKS[i % HOOKS.length].headline, 'google_search', kind, 'headline', 30), description: fit(`${vp}.`, 'google_search', kind, 'body', 90), cta: 'Learn more', ctaType: 'learn_more' as const, claims, principles: ['P1', 'P4', 'P11'] })));
+  const print: CopyOutput['print'] = [
+    { conceptKey: 'c1', kind: 'billboard', headline: HOOKS[0].headline, body: '', visualLine: '', cta: 'Learn more', ctaType: 'learn_more', claims, principles: ['P1', 'P12'] },
+    { conceptKey: 'c1', kind: 'flyer', headline: HOOKS[0].headline, body: `${vp}. Everything you need to decide what to do next.`, visualLine: fit(`${vp}.`, 'organic_content', 'flyer', 'body', 100), cta: 'Learn more', ctaType: 'learn_more', claims, principles: ['P1', 'P4', 'P11'] },
+  ];
+  return { summary: `${n} concept(s) with posts for ${platforms.join(', ')}, ad and print copy.`, concepts, posts, ads, print, missingInformation: ['No customer testimonials were supplied, so none are used.'] };
 }
 
-export function defaultLanding(userText: string): LandingOutput {
-  const vp = valueProposition(userText).replace(/[.!]+$/, '');
-  return {
-    summary: 'Landing page content that repeats the strategy and the ads.',
-    content: {
-      seoTitle: vp.slice(0, 60),
-      metaDescription: `${vp}. Learn more about the offer.`.slice(0, 160),
-      hero: { headline: vp.slice(0, 90), description: 'Everything you need to understand the offer and decide what to do next.', ctaText: 'Learn more' },
-      valueProposition: vp.slice(0, 300),
-      benefits: [
-        { title: 'Clear next step', text: 'A short, honest explanation of what is offered.', evidence: 'f3', ref: null },
-        { title: 'Made for beginners', text: 'Written for people who are just getting started.', evidence: 'brief', ref: null },
-      ],
-      sections: [{ title: 'About the offer', body: vp.slice(0, 300) }],
-      howItWorks: [{ step: 'Read', text: 'Read about the offer.' }, { step: 'Ask', text: 'Ask a question if something is unclear.' }],
-      faq: [{ q: 'Where do I start?', a: 'Use the button on this page to learn more.' }],
-      trustSignals: [],
-      ctas: [{ objective: 'learn_more', text: 'Learn more' }],
-      ctaObjective: 'learn_more',
-      mobileHierarchy: ['Hero', 'Benefits', 'Call to action'],
-    },
-    missingInformation: ['No reviews or certifications were supplied, so no trust signals are shown.'],
-  };
-}
-
-const SCENES = ['harbor at sunrise', 'wooden table with warm cups', 'quiet garden path', 'busy open workshop', 'rooftop terrace at dusk', 'stone staircase in soft rain', 'sunlit studio window', 'long beach with drifting kites', 'lantern-lit courtyard', 'mountain trail above clouds', 'glass atrium with tall plants', 'street market with colorful awnings', 'lakeside pier at noon', 'cozy corner with open books', 'bright kitchen counter', 'forest clearing with mist', 'narrow alley with hanging lights', 'wide meadow under a pale sky', 'river bridge at golden hour', 'calm library reading room', 'seaside promenade', 'clay pottery bench', 'orchard rows in bloom', 'harvest table outdoors'];
-
-export function defaultVisual(userText: string): VisualDirections | VariationDirections {
-  const task = block(userText, 'task') as { concepts?: { key: string; name: string; visualIdea: string }[]; slots?: { slotId: string; concept: string; number: number; role: string; cameraPerspective: string; lighting: string }[] } | null;
-  // several originals per concept: one clearly different proposal per slot, built from the slot's own seeds
-  if (task?.slots?.length) {
-    return {
-      summary: `Planned ${task.slots.length} image(s) without any text.`,
-      variations: task.slots.map((s, i) => ({
-        slotId: s.slotId,
-        name: `${s.concept} picture ${s.number}`,
-        goal: `Show ${s.role.split(':')[0].toLowerCase()} number ${i + 1}`,
-        medium: i % 2 ? 'documentary-style photograph' : 'editorial photograph',
-        subject: `${SCENES[i % SCENES.length]} for ${s.concept}, image ${s.number}`,
-        setting: `${SCENES[(i + 3) % SCENES.length]} seen from the side`,
-        focalPoint: `the main subject near the ${SCENES[(i + 5) % SCENES.length]}`,
-        composition: `${s.cameraPerspective} framing, the ${SCENES[(i + 7) % SCENES.length]} off to one side, calm lower third`,
-        mood: 'Calm and trustworthy',
-        avoid: ['text', 'logos'],
-        altText: `Illustration ${i + 1} for ${s.concept}`,
-        promptDetails: `${s.lighting}; unique detail ${i + 1}`,
-      })),
-    };
-  }
-  const concepts = task?.concepts ?? [];
-  return {
-    summary: `Planned ${concepts.length} base image(s) without any text.`,
-    directions: concepts.map((c) => ({ conceptKey: c.key, subject: c.visualIdea || c.name, composition: 'Wide framing with a calm, empty lower third.', mood: 'Calm and trustworthy', colors: [], avoid: ['text', 'logos'], altText: `Illustration for ${c.name}`, promptDetails: 'Soft natural light.' })),
-  };
-}
-
-export const defaultCreativeReview = (): ReviewOutput => ({ summary: 'The copy and landing content are consistent with the strategy and the brief.', issues: [], scores: { productAccuracy: 4, brandConsistency: 4, audienceRelevance: 4, objectiveAlignment: 4, originality: 4, crossChannelConsistency: 4 } });
-
-/** A concept critique that keeps every concept (a test overrides it to make the critique ask for a revision). */
-export function defaultConceptCritique(userText: string): ConceptCritique {
-  const list = (block(userText, 'concepts_to_critique') ?? []) as { id: string; name: string; visualIdea: string }[];
-  return {
-    summary: `Reviewed ${list.length} concept(s): each names the product, differs from the others and gives a picture something to show.`,
-    concepts: list.map((c) => ({ conceptId: c.id, specificity: 4, originality: 4, audienceFit: 4, visualPotential: 4, verdict: 'keep' as const, problem: '', artDirection: `Show ${c.visualIdea || c.name} as a documentary-style photograph with one clear focal point.`, visualIdeaRevision: null })),
-  };
-}
+export const defaultCreativeReview = (): ReviewOutput => ({ summary: 'The copy is consistent with the strategy and the brief.', issues: [], scores: { productAccuracy: 4, brandConsistency: 4, audienceRelevance: 4, objectiveAlignment: 4, originality: 4, crossChannelConsistency: 4, headlineStrength: 4, specificity: 4, clarity: 4, ctaQuality: 4, platformFit: 4, principleFit: 4 } });
 
 const BAD = /\b(guarantee[sd]?|risk[- ]free|money[- ]back|award[- ]winning|awarded|certified by|testimonials?|discounts?|limited[- ]time|sale|best in)\b|\d+\s?%\s?off|\d[\d,.]*\+?\s*(?:happy\s+)?(?:customers|clients|students|users)|\bhttps?:\/\/\S+|\bwww\.\S+|\b[a-z0-9-]{2,}\.(?:com|net|org|io|rs|app|ai)\b\S*|\b(?:until|by)\s+\d{1,2}\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)\b/gi;
 export const sanitize = (s: string, fallback = 'Learn more') => {
@@ -153,39 +94,26 @@ export const sanitize = (s: string, fallback = 'Learn more') => {
 };
 
 export function defaultCopyRevision(userText: string): CopyRevisionOutput {
-  const variants = (block(userText, 'variants') ?? []) as { id: string; channel?: string; placement?: string; headline: string; body: string; ctaText: string; hashtags: string[]; claims: CopyRevisionOutput['revisions'][number]['claims'] }[];
+  const copy = (block(userText, 'copy') ?? []) as { id: string; platform?: string | null; placement?: string; headline: string; body: string; visualLine?: string; cta?: { text: string }; hashtags: string[]; claims: CopyRevisionOutput['revisions'][number]['claims'] }[];
   return {
-    revisions: variants.map((v) => ({
-      variantId: v.id,
-      headline: fit(sanitize(v.headline, 'A clear next step'), v.channel ?? '', v.placement ?? '', 'headline', 70),
-      body: fit(sanitize(v.body, 'Learn what is offered and decide at your own pace.'), v.channel ?? '', v.placement ?? '', 'body', 400),
-      ctaText: v.ctaText,
-      hashtags: v.hashtags ?? [],
-      claims: (v.claims ?? []).filter((c) => c.support !== 'hypothesis'),
-    })),
+    revisions: copy.map((v) => {
+      const channel = v.platform ?? (v.placement === 'web_ad' || v.placement === 'display_ad' ? 'google_search' : 'organic_content');
+      return {
+        variantId: v.id,
+        headline: fit(sanitize(v.headline, 'A clear next step'), channel, v.placement ?? '', 'headline', 70),
+        body: fit(sanitize(v.body, 'Learn what is offered and decide at your own pace.'), channel, v.placement ?? '', 'body', 400),
+        visualLine: v.visualLine ? sanitize(v.visualLine, '').slice(0, 100) : '',
+        ctaText: v.cta?.text ?? 'Learn more',
+        hashtags: v.hashtags ?? [],
+        claims: (v.claims ?? []).filter((c) => c.support !== 'hypothesis'),
+      };
+    }),
   };
 }
 
-export function defaultLandingRevision(userText: string): LandingRevisionOutput {
-  const landing = block(userText, 'landing') as { hero?: { headline: string; description: string }; valueProposition?: string; trustSignals?: unknown[]; benefits?: { title: string; text: string }[]; seoTitle?: string; metaDescription?: string } | null;
-  const changes: LandingRevisionOutput['changes'] = [];
-  const bad = (s?: string) => !!s && sanitize(s) !== s.trim();
-  if (bad(landing?.hero?.headline)) changes.push({ path: 'hero.headline', value: sanitize(landing!.hero!.headline).slice(0, 90) });
-  if (bad(landing?.hero?.description)) changes.push({ path: 'hero.description', value: sanitize(landing!.hero!.description).slice(0, 300) });
-  if (bad(landing?.valueProposition)) changes.push({ path: 'valueProposition', value: sanitize(landing!.valueProposition!).slice(0, 300) });
-  if (bad(landing?.seoTitle)) changes.push({ path: 'seoTitle', value: sanitize(landing!.seoTitle!).slice(0, 70) });
-  if (bad(landing?.metaDescription)) changes.push({ path: 'metaDescription', value: sanitize(landing!.metaDescription!).slice(0, 170) });
-  const removals: LandingRevisionOutput['removals'] = (landing?.trustSignals ?? []).map((_, index) => ({ list: 'trustSignals' as const, index }));
-  (landing?.benefits ?? []).forEach((b, index) => bad(`${b.title} ${b.text}`) && removals.push({ list: 'benefits', index }));
-  return { changes, removals };
-}
-
-// ---- the image endpoint --------------------------------------------------------------------------------------------------------
-
 const cache = new Map<string, string>();
-/** A valid PNG (never a real picture): a soft gradient with a few shapes, so crops have something to hold on to. */
+/** A valid PNG (never a real picture): a soft gradient with a few shapes. Tests use it as an approved "photograph". */
 export async function fakeImageBase64(size: string, prompt = ''): Promise<string> {
-  // the picture depends on the prompt: two different prompts give two different files, the same prompt the same one
   const key = `${size}|${prompt}`;
   const hit = cache.get(key);
   if (hit) return hit;
@@ -197,38 +125,4 @@ export async function fakeImageBase64(size: string, prompt = ''): Promise<string
   const b64 = (await sharp(Buffer.from(svg)).png().toBuffer()).toString('base64');
   cache.set(key, b64);
   return b64;
-}
-
-/** A valid Visual Researcher answer built from the CURRENT BRIEF line of the prompt (keeps the style, rewords the guidance). */
-export function defaultDirectionRefinement(userText: string) {
-  const line = userText.split('\n').find((l) => l.startsWith('{"styleId"'));
-  let cur: Record<string, any> = {};
-  try {
-    cur = JSON.parse(line ?? '{}');
-  } catch {
-    cur = {};
-  }
-  return {
-    styleId: cur.styleId ?? 'modern_corporate',
-    secondaryStyleIds: [] as string[],
-    rationale: 'Refined for this business: a calm, specific look that fits its audience.',
-    composition: cur.composition?.length ? cur.composition : ['One clear subject with a calm area for text'],
-    mood: cur.mood?.length ? cur.mood : ['calm'],
-    imageSubjects: cur.imageSubjects?.length ? cur.imageSubjects : ['people at work in a real setting'],
-    imageTreatment: cur.imageTreatment?.length ? cur.imageTreatment : ['natural light'],
-    channelNotes: cur.channelNotes ?? [],
-    limitations: [] as string[],
-  };
-}
-
-/** A valid Template Selector answer: for each SLOT, the SECOND template of its shortlist when there is one (so a test can see a re-ranking). */
-export function defaultTemplatePicks(userText: string) {
-  const picks: { slotId: string; templateId: string; reason: string }[] = [];
-  for (const block of userText.split(/\n(?=SLOT )/)) {
-    const slot = /^SLOT (\S+)/.exec(block)?.[1];
-    if (!slot) continue;
-    const ids = [...block.matchAll(/^\s+- (\S+) \|/gm)].map((m) => m[1]);
-    if (ids.length) picks.push({ slotId: slot, templateId: ids[1] ?? ids[0], reason: 'Suits the concept and keeps the campaign varied.' });
-  }
-  return { picks };
 }

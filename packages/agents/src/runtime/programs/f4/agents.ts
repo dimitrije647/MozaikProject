@@ -1,64 +1,50 @@
-import type { SituationHandler } from '@mozaik-ai/core';
 import sharp from 'sharp';
 import { toSafeError, type SafeProviderError } from '../../../ai/errors';
-import { reviewMessage } from '../../../discovery/f1/prompts';
-import { CrosscheckAnswer } from '../../../discovery/f1/schemas';
-import type { AssetRecord, ConceptRecord, CopyVariantRecord, ImageResultRecord, LayoutRecord, ReviewFindingRecord, SkippedLayout } from '../../../creative/schemas';
-import { ConceptCritique, CopyOutput, CopyRevisionOutput, CTA_TYPES, LandingOutput, LandingRevisionOutput, ReviewOutput, VisualDirections, type Rubric } from '../../../creative/schemas';
 import { CREATIVE_INFO } from '../../../creative/board';
-import { assetFindings, channelFindings, claimFindings, conceptFindings, consistencyFindings, dedupe, scoreFindings, templateFindings, type RawFinding } from '../../../creative/checks';
-import { formatsForChannels } from '../../../creative/formats';
-import { brandGradient, renderLayout, type LayoutOverrides } from '../../../creative/layout';
-import { SYSTEMATIC_IMAGE_FAILURES, generatedResult, notAttempted, providerFailure, storageFailure } from '../../../creative/image-results';
-import { imageModelProblem, retiredImageModel } from '../../../ai/image-models';
-import { CREATIVE_INSTRUCTIONS, conceptCritiqueMessage, copyRevisionMessage, copywriterMessage, imagePrompt, landingMessage, landingRevisionMessage, reviewTextMessage, reviewVisionMessage, visualMessage } from '../../../creative/prompts';
-import { layoutKey, layoutOperations, planRepairs, type CopyOp, type ImageOp, type LandingOp, type LayoutOp } from '../../../creative/repair';
+import { assetFindings, channelFindings, claimFindings, conceptFindings, consistencyFindings, corpusOf, dedupe, scoreFindings, templateFindings, type RawFinding } from '../../../creative/checks';
+import { copyCraftFindings } from '../../../copywriting/checks';
+import { CREATIVE_INSTRUCTIONS, copyRevisionMessage, reviewTextMessage, reviewVisionMessage, writerMessage } from '../../../creative/prompts';
+import { CopyOutput, CopyRevisionOutput, ReviewOutput, type Rubric } from '../../../creative/schemas';
+import { paletteKeyOf } from '../../../collections/design';
+import { directionFor } from '../../../hybrid/direction';
+import { verifyTemplateExport } from '../../../hybrid/quality';
+import type { DiscoverySummary, TemplateQualityReport } from '../../../hybrid/records';
+import type { DiscoveryResult } from '../../../imagery/types';
+import { visualDirectionSummary } from '../../../templates/visual-direction';
 import { OnEventTypes, guarded } from '../../run-context';
 import { PhaseAgent, type JobSpec } from '../f1/agent';
 import type { F4Env } from './env';
-import { hybridLayoutHandlers } from './hybrid-layout';
-import { generateVariations, planVariations, plansFromSeed, type VisualCtx } from './variations';
+import { sourceImages } from './image-sourcing';
 
-const CROSSCHECK_NOTE = `\nYou are checking material that ANOTHER participant of the same creative team produced. Compare it with what YOU produced earlier in this conversation and with the strategy and brief. "agree" = consistent with the strategy and supported; "disagree" = contradicts the strategy or the other material, or states something unsupported; "correct" = give the corrected wording; "insufficient_evidence" = you cannot judge it. Be fair and brief; do not invent problems.`;
+/**
+ * Three of the four F4 agents (the Creative Designer is in designer.ts). Each has ONE job and talks to the others only through the
+ * Creative Coordinator's events; none writes the board.
+ *   A3 Content Writer    task.assigned -> copy.proposed ; revision.requested -> revision.applied   (text model: 1 call + 1 per repair round)
+ *   A4 Visual Researcher task.assigned -> images.sourced                                            (no model)
+ *   A6 Quality Reviewer  review.requested -> review.completed                                       (text model: 1 call per round + optional vision)
+ */
 
 const clean = (s: string, max: number) => s.replace(/[<>\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
-const errNote = (e: SafeProviderError) => e.message;
-
-type Handler = SituationHandler;
-
-/** The cross-check answering every model-using participant shares: answers from its OWN earlier analysis. */
-function crosscheckHandler(env: F4Env, self: PhaseAgent, name: string): Handler {
-  const { ctx, settings } = env;
-  return {
-    specification: new OnEventTypes(['crosscheck.requested']),
-    processor: guarded(ctx.guard(name), ({ event }) => {
-      const p = event.payload as { requestId: string; producer: string; reviewer: string; claims: never[] };
-      if (p.reviewer !== name) return;
-      self.runJob({
-        kind: 'review',
-        message: reviewMessage(p.requestId, p.producer, p.claims, env.input.language) + CROSSCHECK_NOTE,
-        schema: CrosscheckAnswer,
-        schemaName: 'crosscheck_answer',
-        maxOutputTokens: settings.reviewTokens,
-        timeoutMs: settings.reviewTimeoutMs,
-        onSuccess: (out) => ctx.emit('crosscheck.answered', { requestId: p.requestId, producer: p.producer, reviewer: name, status: 'answered', answers: out.answers }, self.participant),
-        onFailure: (error) => ctx.emit('crosscheck.answered', { requestId: p.requestId, producer: p.producer, reviewer: name, status: 'failed', answers: [], error }, self.participant),
-      });
-    }),
-  };
-}
 
 const failedTask = (env: F4Env, self: PhaseAgent, name: string, error: SafeProviderError) => {
   self.closeTask();
   env.ctx.emit('task.completed', { agent: name, outcome: 'failed', error }, self.participant);
 };
 
-// ---- A19 Copywriter ------------------------------------------------------------------------------------------------------
+// ---- A3 Content Writer ----------------------------------------------------------------------------------------------------
 
-export function buildCopywriter(env: F4Env): PhaseAgent {
+/** One copy-revision request of the coordinator (from the Quality Reviewer's repair plan). */
+export interface CopyOp {
+  id: string;
+  kind: 'revise_copy';
+  variantIds: string[];
+  findingIds: string[];
+}
+
+export function buildWriter(env: F4Env): PhaseAgent {
   const { ctx, settings } = env;
-  const name = CREATIVE_INFO.copywriter.name;
-  return new PhaseAgent(env, { key: 'copywriter', name, instruction: CREATIVE_INSTRUCTIONS.copywriter, capabilities: ['creative-production', 'copywriting', 'inference'] }, (self) => [
+  const name = CREATIVE_INFO.writer.name;
+  return new PhaseAgent(env, { key: 'writer', name, instruction: CREATIVE_INSTRUCTIONS.writer, capabilities: ['creative-production', 'copywriting', 'inference'] }, (self) => [
     {
       specification: new OnEventTypes(['task.assigned']),
       processor: guarded(ctx.guard(name), ({ event }) => {
@@ -66,593 +52,144 @@ export function buildCopywriter(env: F4Env): PhaseAgent {
         if (!self.openTask(settings.agentTimeoutMs, () => ctx.emit('task.completed', { agent: name, outcome: 'failed', error: toSafeError('timeout') }, self.participant))) return;
         self.runJob({
           kind: 'analysis',
-          message: copywriterMessage(env.f1, env.f3, env.input),
+          message: writerMessage(env.f1, env.f3, env.input, env.copyPlan),
           schema: CopyOutput,
-          schemaName: 'copy_proposal',
-          maxOutputTokens: settings.analystTokens,
+          schemaName: 'campaign_copy',
+          maxOutputTokens: settings.writerTokens,
           onSuccess: (out) => {
             self.closeTask();
-            ctx.emit('copy.proposed', { agent: name, summary: out.summary, concepts: out.concepts, variants: out.variants, missingInformation: out.missingInformation }, self.participant);
+            ctx.emit('copy.proposed', { agent: name, summary: out.summary, concepts: out.concepts, posts: out.posts, ads: out.ads, print: out.print, missingInformation: out.missingInformation }, self.participant);
             ctx.emit('task.completed', { agent: name, outcome: 'succeeded' }, self.participant);
           },
           onFailure: (error) => failedTask(env, self, name, error),
         });
       }),
     },
-    crosscheckHandler(env, self, name),
     {
-      // Fixer -> Copywriter: revise ONLY the named variants, with the reviewer's findings in hand.
+      // Coordinator -> Content Writer: revise ONLY the named copy, with the review findings in hand.
       specification: new OnEventTypes(['revision.requested']),
       processor: guarded(ctx.guard(name), ({ event }) => {
         const p = event.payload as { agent: string; round: number; operations: CopyOp[] };
         if (p.agent !== name) return;
-        const ops = p.operations;
-        const operationIds = ops.map((o) => o.id);
-        const variantIds = [...new Set(ops.flatMap((o) => o.variantIds))];
-        const findingIds = new Set(ops.flatMap((o) => o.findingIds));
-        const findings = env.board.findings.filter((f) => findingIds.has(f.id));
-        const applied = (status: 'applied' | 'failed', note: string, patch: unknown) => ctx.emit('revision.applied', { owner: name, round: p.round, operationIds, status, note, patch }, self.participant);
-        self.runJob({
-          kind: 'review',
-          message: copyRevisionMessage(env.input, env.board.snapshot(), findings, variantIds),
-          schema: CopyRevisionOutput,
-          schemaName: 'copy_revision',
-          maxOutputTokens: settings.analystTokens,
-          timeoutMs: settings.agentTimeoutMs,
-          onSuccess: (out) => {
-            const revisions = out.revisions.filter((r) => variantIds.includes(r.variantId));
-            if (!revisions.length) return applied('failed', 'The Copywriter returned no usable revision.', null);
-            const reason = findings.map((f) => f.finding).join(' | ').slice(0, 200);
-            applied('applied', `${revisions.length} variant(s) revised.`, { kind: 'copy', revisions: revisions.map((r) => ({ ...r, reason })), results: ops.map((o) => ({ id: o.id, ok: true, note: '' })) });
-          },
-          onFailure: (error) => applied('failed', errNote(error), { results: ops.map((o) => ({ id: o.id, ok: false, note: errNote(error) })) }),
-        });
-      }),
-    },
-  ]);
-}
-
-// ---- A22 Landing Content Builder -----------------------------------------------------------------------------------------
-
-export function buildLanding(env: F4Env): PhaseAgent {
-  const { ctx, settings } = env;
-  const name = CREATIVE_INFO.landing.name;
-  return new PhaseAgent(env, { key: 'landing', name, instruction: CREATIVE_INSTRUCTIONS.landing, capabilities: ['creative-production', 'landing-content', 'inference'] }, (self) => [
-    {
-      specification: new OnEventTypes(['task.assigned']),
-      processor: guarded(ctx.guard(name), ({ event }) => {
-        if ((event.payload as { agent: string }).agent !== name) return;
-        if (!self.openTask(settings.agentTimeoutMs, () => ctx.emit('task.completed', { agent: name, outcome: 'failed', error: toSafeError('timeout') }, self.participant))) return;
-        self.runJob({
-          kind: 'analysis',
-          message: landingMessage(env.f1, env.f3, env.input),
-          schema: LandingOutput,
-          schemaName: 'landing_content',
-          maxOutputTokens: settings.analystTokens,
-          onSuccess: (out) => {
-            self.closeTask();
-            ctx.emit('landing.proposed', { agent: name, summary: out.summary, content: out.content, missingInformation: out.missingInformation }, self.participant);
-            ctx.emit('task.completed', { agent: name, outcome: 'succeeded' }, self.participant);
-          },
-          onFailure: (error) => failedTask(env, self, name, error),
-        });
-      }),
-    },
-    crosscheckHandler(env, self, name),
-    {
-      specification: new OnEventTypes(['revision.requested']),
-      processor: guarded(ctx.guard(name), ({ event }) => {
-        const p = event.payload as { agent: string; round: number; operations: LandingOp[] };
-        if (p.agent !== name) return;
         const operationIds = p.operations.map((o) => o.id);
+        const variantIds = [...new Set(p.operations.flatMap((o) => o.variantIds))];
         const findingIds = new Set(p.operations.flatMap((o) => o.findingIds));
         const findings = env.board.findings.filter((f) => findingIds.has(f.id));
         const applied = (status: 'applied' | 'failed', note: string, patch: unknown) => ctx.emit('revision.applied', { owner: name, round: p.round, operationIds, status, note, patch }, self.participant);
         self.runJob({
           kind: 'review',
-          message: landingRevisionMessage(env.input, env.board.snapshot(), findings),
-          schema: LandingRevisionOutput,
-          schemaName: 'landing_revision',
-          maxOutputTokens: settings.analystTokens,
-          timeoutMs: settings.agentTimeoutMs,
+          message: copyRevisionMessage(env.input, env.board.snapshot(), findings, variantIds, env.copyPlan),
+          schema: CopyRevisionOutput,
+          schemaName: 'copy_revision',
+          maxOutputTokens: settings.writerTokens,
+          timeoutMs: settings.repairTimeoutMs,
           onSuccess: (out) => {
-            if (!out.changes.length && !out.removals.length) return applied('failed', 'The Landing Content Builder proposed no change.', null);
-            applied('applied', `${out.changes.length} field(s) changed, ${out.removals.length} item(s) removed.`, { kind: 'landing', changes: out.changes, removals: out.removals, results: p.operations.map((o) => ({ id: o.id, ok: true, note: '' })) });
+            const revisions = out.revisions.filter((r) => variantIds.includes(r.variantId));
+            if (!revisions.length) return applied('failed', 'The Content Writer returned no usable revision.', null);
+            const reason = findings.map((f) => f.finding).join(' | ').slice(0, 200);
+            applied('applied', `${revisions.length} piece(s) of copy revised.`, { kind: 'copy', revisions: revisions.map((r) => ({ ...r, reason })) });
           },
-          onFailure: (error) => applied('failed', errNote(error), { results: p.operations.map((o) => ({ id: o.id, ok: false, note: errNote(error) })) }),
+          onFailure: (error) => applied('failed', error.message, null),
         });
       }),
     },
   ]);
 }
 
-// ---- shared: bases and layouts ---------------------------------------------------------------------------------------------
+// ---- A4 Visual Researcher -------------------------------------------------------------------------------------------------
 
-/** The concept's position decides which brand-colored gradient it gets, so fallbacks of different concepts are not identical. */
-const conceptIndex = (env: F4Env, conceptId: string) => Math.max(0, env.board.concepts.findIndex((c) => c.id === conceptId));
-
-async function saveGradientBase(env: F4Env, conceptId: string): Promise<AssetRecord> {
-  const data = await brandGradient(1024, env.palette, conceptIndex(env, conceptId));
-  return env.tools.assets.save({ kind: 'image', conceptId, channel: null, format: null, version: 1, parentAssetId: null, mimeType: 'image/png', width: 1024, height: 1024, source: 'brand_gradient', model: null, quality: null, requestedSize: null, status: 'rendered', flags: [], altText: null, promptMetadata: null, usage: null, data });
+/** A bounded, secret-free summary of a licensed picture search for the report. */
+export function summarizeDiscovery(d: DiscoveryResult): DiscoverySummary {
+  return {
+    searchedAt: d.searchedAt,
+    intents: d.intents.map((i) => ({ query: i.query, why: i.why })).slice(0, 6),
+    providers: d.providers.map((p) => ({ id: p.id, label: p.label, kind: p.kind, status: p.status, message: p.message, count: p.count })).slice(0, 8),
+    licensed: d.licensed.slice(0, 12).map((c) => ({ provider: c.provider, id: c.id, title: c.title.slice(0, 140), pageUrl: c.pageUrl, creator: c.creator, license: c.license.license, licenseStatus: c.license.status, attribution: c.license.attribution })),
+    references: d.references.slice(0, 8).map((c) => ({ provider: c.provider, title: c.title.slice(0, 140), pageUrl: c.pageUrl, platform: c.platform })),
+    usedInCampaign: false,
+    notes: d.notes.slice(0, 6),
+  };
 }
 
-/** The newest usable base image of a concept (never a superseded one). */
-function currentBase(env: F4Env, conceptId: string): AssetRecord | undefined {
-  return env.board.assets
-    .filter((a) => a.kind === 'image' && a.conceptId === conceptId && a.status !== 'superseded' && a.status !== 'failed')
-    .sort((a, b) => b.version - a.version)[0];
+/** The visual direction of the campaign: the approved design locked in, built from the brand and the strategy (deterministic). */
+export function campaignDirection(env: F4Env) {
+  return directionFor({ visualBrief: env.visualBrief, projectName: env.input.projectName, channels: env.input.channels, palette: env.palette, hasBrandPalette: env.hasBrandPalette, settings: env.settings.visual, referencePalettes: env.hybrid.referencePalettes });
 }
 
-const supportingText = (v: CopyVariantRecord) => {
-  const t = (v.description ?? v.body).replace(/\s+/g, ' ').trim();
-  return t.length <= 110 ? t : `${t.slice(0, 107).replace(/\s+\S*$/, '')}…`;
-};
-
-const pickVariant = (variants: CopyVariantRecord[], conceptId: string, channel: string) =>
-  variants.find((v) => v.conceptId === conceptId && v.channel === channel && v.placement === 'paid_ad') ?? variants.find((v) => v.conceptId === conceptId && v.channel === channel) ?? undefined;
-
-// ---- A20 Visual Creator ---------------------------------------------------------------------------------------------------------
-
-export function buildVisual(env: F4Env): PhaseAgent {
-  const { ctx, settings, tools } = env;
-  const name = CREATIVE_INFO.visual.name;
-  const copywriter = CREATIVE_INFO.copywriter.name;
-  const prompts = new Map<string, string>(); // conceptId -> the prompt used (kept in memory only, never persisted)
-  let requestSeq = 0;
-  let awaiting: { requestId: string; resume: (answers: { claimId: string; verdict: string; rationale: string; correction: string | null }[]) => void; timer: NodeJS.Timeout } | null = null;
-
-  const emptyDirection = (c: ConceptRecord) => ({ conceptKey: c.id, subject: c.visualIdea || c.keyMessage, composition: 'Balanced composition with a calm, uncluttered area for text.', mood: 'Calm and professional', colors: env.palette.slice(0, 2), avoid: [] as string[], altText: c.name, promptDetails: '' });
-
-  return new PhaseAgent(env, { key: 'visual', name, instruction: CREATIVE_INSTRUCTIONS.visual, capabilities: ['creative-production', 'image-generation', 'inference'] }, (self) => {
-    const outcome = (o: 'succeeded' | 'failed' | 'skipped', extra: { error?: SafeProviderError; reason?: string } = {}) => {
-      self.closeTask();
-      ctx.emit('task.completed', { agent: name, outcome: o, ...extra }, self.participant);
-    };
-
-    const generateAll = async (directions: Map<string, ReturnType<typeof emptyDirection>>, feedback: Map<string, string>) => {
-      const images = tools.images!;
-      const model = settings.imageModel!;
-      const cap = images.usage().limits.maxImages;
-      const all = env.board.concepts;
-      const eligible = all.slice(0, cap);
-      const retired = retiredImageModel(model, settings.now) ? imageModelProblem(model, settings.now) : null;
-      // shared by the (at most two) workers; one object so the narrowing of its fields stays honest across awaits
-      const st: { ok: number; firstFailure: ImageResultRecord | null; firstError: SafeProviderError | null; systematic: ImageResultRecord | null } = { ok: 0, firstFailure: null, firstError: null, systematic: null };
-      const alive = () => self.isTaskOpen() && !ctx.isClosed();
-
-      /** Saves the brand-colored fallback and reports this concept's result (a genuine visual.generated event). */
-      const fallback = async (c: ConceptRecord, d: ReturnType<typeof emptyDirection>, make: (assetId: string) => ImageResultRecord, error?: SafeProviderError) => {
-        const asset = await saveGradientBase(env, c.id);
-        const result = make(asset.id);
-        if (!alive()) return;
-        if (result.outcome === 'failed') {
-          st.firstFailure ??= result;
-          st.firstError ??= error ?? toSafeError('provider_unavailable');
-        }
-        ctx.emit('visual.generated', { agent: name, conceptId: c.id, asset, failed: result.outcome === 'failed', error, result, directionSummary: clean(d.subject, 160) }, self.participant);
-      };
-
-      // concepts beyond the image budget never reach the provider: say so, explicitly, per concept
-      for (const c of all.slice(cap)) {
-        await fallback(c, directions.get(c.id) ?? emptyDirection(c), (assetId) => notAttempted({ conceptId: c.id, conceptName: c.name, model, assetId }, 'budget', `Image generation was skipped because the configured maximum is ${cap} image${cap === 1 ? '' : 's'} for ${all.length} concept${all.length === 1 ? '' : 's'}.`, 'skipped'));
-      }
-      if (!eligible.length) return outcome('skipped', { reason: `Image generation was skipped because the configured maximum is ${cap} image${cap === 1 ? '' : 's'} for ${all.length} concept${all.length === 1 ? '' : 's'}.` });
-
-      const queue = [...eligible];
-      const one = async (c: ConceptRecord) => {
-        const d = directions.get(c.id) ?? emptyDirection(c);
-        const base = { conceptId: c.id, conceptName: c.name, model };
-        if (retired) return fallback(c, d, (assetId) => notAttempted({ ...base, assetId }, 'configuration', retired, 'failed'), toSafeError('model_unavailable'));
-        if (st.systematic) {
-          const why = st.systematic.explanation;
-          return fallback(c, d, (assetId) => notAttempted({ ...base, assetId }, 'provider', `Not attempted: an earlier image request already failed in a way that affects every concept. ${why ?? ''}`.trim(), 'failed'), st.firstError ?? toSafeError('model_unavailable'));
-        }
-        // every concept gets ITS OWN prompt: its own visual direction, grounded in the concept itself
-        const prompt = imagePrompt({ subject: d.subject, composition: d.composition, mood: d.mood, colors: d.colors, avoid: d.avoid, promptDetails: `${d.promptDetails}${feedback.get(c.id) ? ` Team feedback: ${feedback.get(c.id)}` : ''}`.trim() }, env.input.projectName, 'bottom', { name: c.name, keyMessage: c.keyMessage }, env.visualBrief);
-        const res = await images.generate(prompt, { model, quality: settings.imageQuality, size: settings.imageSize }, { signal: self.signal });
-        if (!alive()) return;
-        if (!res.ok) {
-          const probe = providerFailure({ ...base, assetId: '' }, res.error, settings.now);
-          if (SYSTEMATIC_IMAGE_FAILURES.has(res.error.code)) st.systematic ??= probe;
-          return fallback(c, d, (assetId) => ({ ...probe, assetId }), res.error);
-        }
-        let asset: AssetRecord;
+export function buildResearcher(env: F4Env): PhaseAgent {
+  const { ctx, settings } = env;
+  const name = CREATIVE_INFO.researcher.name;
+  const instruction = 'Visual Researcher. Builds the visual direction from the approved design, the brand and the strategy, then finds the pictures of the campaign: the approved library (uploads, approved website and repository pictures, licensed stock) and, in automatic stock mode, licensed pictures whose license is cleared. Records provenance and rights and decides which picture each creative uses. Never generates an image; makes no model call.';
+  return new PhaseAgent(env, { key: 'researcher', name, instruction, capabilities: ['creative-production', 'visual-research', 'image-rights', 'deterministic'] }, (self) => [
+    {
+      specification: new OnEventTypes(['task.assigned']),
+      processor: guarded(ctx.guard(name), async ({ event }) => {
+        if ((event.payload as { agent: string }).agent !== name) return;
+        if (!self.openTask(settings.sourcingTimeoutMs, () => ctx.emit('task.completed', { agent: name, outcome: 'failed', error: toSafeError('timeout') }, self.participant))) return;
+        await Promise.resolve(); // never answer inside the requester's own emit
+        const direction = campaignDirection(env);
+        let summary: string;
+        let sourcing: unknown = null;
         try {
-          asset = await tools.assets.save({ kind: 'image', conceptId: c.id, channel: null, format: null, version: 1, parentAssetId: null, mimeType: res.mimeType, width: res.width, height: res.height, source: 'ai_image', model, quality: settings.imageQuality, requestedSize: settings.imageSize, status: 'generated', flags: [], altText: clean(d.altText, 200) || null, promptMetadata: { promptChars: prompt.length, directionSummary: clean(d.subject, 160) }, usage: res.usage, data: res.bytes });
-        } catch (e) {
-          return fallback(c, d, (assetId) => storageFailure({ ...base, assetId }, clean(e instanceof Error ? e.message : 'storage error', 160)), toSafeError('provider_unavailable'));
+          const outcome = await sourceImages(env, direction);
+          if (!self.isTaskOpen() || ctx.isClosed()) return;
+          // the pictures that passed the rights gate (and nothing else) are what the Creative Designer may draw
+          env.hybrid.brandImages = outcome.library;
+          summary = outcome.summary;
+          sourcing = { imagery: outcome.imagery, allocation: outcome.allocation, discovery: outcome.discovery ? summarizeDiscovery(outcome.discovery) : null };
+          ctx.emit('finding.posted', { agent: name, summary: `${visualDirectionSummary(direction)} ${summary}`.slice(0, 900), findings: [], missingInformation: outcome.imagery.notes.slice(0, 5) }, self.participant);
+        } catch {
+          if (!self.isTaskOpen() || ctx.isClosed()) return;
+          summary = 'Picture sourcing failed; the pictures you already approved are used without a search.';
         }
-        prompts.set(c.id, prompt);
-        st.ok++;
-        ctx.emit('visual.generated', { agent: name, conceptId: c.id, asset, failed: false, result: generatedResult({ ...base, assetId: asset.id }), directionSummary: clean(d.subject, 160) }, self.participant);
-      };
-      const worker = async () => {
-        for (let c = queue.shift(); c; c = queue.shift()) {
-          if (self.signal.aborted) break;
-          await one(c).catch(() => undefined);
-        }
-      };
-      await Promise.all([worker(), worker()]); // at most two image requests in flight
-      if (!alive()) return;
-      // the task error carries the real reason (the first failure's explanation), not a generic text-model message
-      const error = st.firstError ? { ...st.firstError, message: st.firstFailure?.explanation ?? st.firstError.message } : toSafeError('provider_unavailable');
-      outcome(st.ok > 0 ? 'succeeded' : 'failed', st.ok > 0 ? {} : { error });
-    };
-
-    /** Copywriter <-> Visual Creator: the Copywriter checks the planned pictures against its messaging BEFORE any image is paid for. */
-    const gate = (claims: { claimId: string; statement: string }[], feedback: Map<string, string>, go: () => void) => {
-      const used = env.gateway.usage();
-      const copyReviewer = env.board.participantStatuses.some((s) => s.agent === copywriter && s.state === 'done') && (used.perAgent[copywriter]?.calls ?? 0) > 0;
-      if (!copyReviewer || used.callsStarted + 4 > settings.maxModelCalls || !claims.length) return go();
-      const requestId = `VX${++requestSeq}`;
-      const resume = (answers: { claimId: string; verdict: string; rationale: string; correction: string | null }[]) => {
-        if (!awaiting || awaiting.requestId !== requestId) return;
-        ctx.clearTimer(awaiting.timer);
-        awaiting = null;
-        for (const a of answers) {
-          const text = a.verdict === 'correct' ? a.correction : a.verdict === 'disagree' ? a.rationale : null;
-          if (text) feedback.set(a.claimId, clean(text, 220));
-        }
-        go();
-      };
-      awaiting = { requestId, resume, timer: ctx.setTimer(settings.reviewTimeoutMs + 2_000, () => resume([])) };
-      ctx.emit('crosscheck.requested', { requestId, producer: name, reviewer: copywriter, claims: claims.map((c) => ({ claimId: c.claimId, agent: name, statement: c.statement, classification: 'proposed', locator: 'visual direction', excerpt: null, sourceLabel: null })) }, self.participant);
-    };
-
-    const afterPlan = (out: VisualDirections) => {
-      const directions = new Map(out.directions.map((d) => [d.conceptKey, d]));
-      const concepts = env.board.concepts.slice(0, tools.images!.usage().limits.maxImages);
-      const feedback = new Map<string, string>();
-      gate(
-        concepts.map((c) => {
-          const d = directions.get(c.id) ?? emptyDirection(c);
-          return { claimId: c.id, statement: `Planned picture for concept "${c.name}" (key message: ${c.keyMessage}): ${clean(d.subject, 200)}. Mood: ${clean(d.mood, 80)}.` };
-        }),
-        feedback,
-        () => void generateAll(directions, feedback),
-      );
-    };
-
-    /** Several original images per concept: the planner fixed the slots; the model proposes the pictures; each image is its own request. */
-    const runVariations = () => {
-      const vc: VisualCtx = { env, self, name, alive: () => self.isTaskOpen() && !ctx.isClosed(), outcome };
-      if (env.seed) {
-        // image-only continuation: the plan and the prompts already exist; only the missing images are requested (no text-model call)
-        const plans = plansFromSeed(env);
-        if (!plans.length) return outcome('skipped', { reason: 'Every planned image of the earlier campaign already exists.' });
-        return void generateVariations(vc, plans, new Map());
-      }
-      planVariations(vc, (r) => {
-        if ('error' in r) return outcome('failed', { error: r.error }); // the text model could not plan: nothing is generated and nothing is paid for
-        const feedback = new Map<string, string>();
-        const byConcept = new Map<string, string[]>();
-        for (const p of r.plans) (byConcept.get(p.concept.id) ?? byConcept.set(p.concept.id, []).get(p.concept.id)!).push(`${p.direction.name}: ${clean(p.direction.subject, 110)}`);
-        const claims = [...byConcept].map(([id, list]) => ({ claimId: id, statement: `Planned pictures for concept "${env.board.concepts.find((c) => c.id === id)?.name ?? id}" (${list.length}): ${list.join(' | ')}`.slice(0, 900) }));
-        gate(claims, feedback, () => void generateVariations(vc, r.plans, feedback));
-      });
-    };
-
-    return [
-      {
-        specification: new OnEventTypes(['task.assigned']),
-        processor: guarded(ctx.guard(name), ({ event }) => {
-          if ((event.payload as { agent: string }).agent !== name) return;
-          if (!self.openTask(settings.visualTimeoutMs, () => ctx.emit('task.completed', { agent: name, outcome: 'failed', error: toSafeError('timeout') }, self.participant))) return;
-          // NO AI HYBRID: the Visual Creator never generates. If anything nevertheless carries an image generator or an image model here, that is an
-          // attempt: it is counted, reported as a safe event and refused before a request exists.
-          if (settings.noAiImages) {
-            if (tools.images || settings.imageModel || settings.imageGeneration) {
-              env.imageRefusals.count++;
-              ctx.emit('image.generation.refused', { agent: name, reason: 'no_ai_hybrid', count: env.imageRefusals.count }, self.participant);
-            }
-            return outcome('skipped', { reason: 'NO AI HYBRID never generates images. The Visual Researcher sources existing and licensed pictures instead.' });
-          }
-          if (!settings.imageGeneration || !tools.images || !settings.imageModel) return outcome('skipped', { reason: 'No image model was selected, so no picture is generated. The layouts use brand-colored backgrounds.' });
-          if (settings.variations && env.board.allocation && !env.board.allocation.variations.length) return outcome('skipped', { reason: 'No original images were planned, so no image is requested.' });
-          if (settings.variations && env.board.allocation) return runVariations();
-          self.runJob({
-            kind: 'analysis',
-            message: visualMessage(env.f3, env.input, env.board.concepts.slice(0, tools.images.usage().limits.maxImages), env.palette, !!env.logo, env.visualBrief, new Map(Object.entries(env.board.conceptNotes))),
-            schema: VisualDirections,
-            schemaName: 'visual_directions',
-            maxOutputTokens: settings.analystTokens,
-            onSuccess: (out) => {
-              env.ctx.emit('finding.posted', { agent: name, summary: out.summary, findings: [], missingInformation: [] }, self.participant);
-              afterPlan(out);
-            },
-            // The text model could not plan: nothing is generated and nothing is paid for.
-            onFailure: (error) => outcome('failed', { error }),
-          });
-        }),
-      },
-      {
-        specification: new OnEventTypes(['crosscheck.answered']),
-        processor: guarded(ctx.guard(name), ({ event }) => {
-          const p = event.payload as { requestId: string; producer: string; status: string; answers: { claimId: string; verdict: string; rationale: string; correction: string | null }[] };
-          if (p.producer !== name || !awaiting || awaiting.requestId !== p.requestId) return;
-          awaiting.resume(p.status === 'answered' ? p.answers : []);
-        }),
-      },
-      {
-        // Fixer -> Visual Creator: regenerate a rejected image (only when the user enabled it; the generator enforces the budget).
-        specification: new OnEventTypes(['revision.requested']),
-        processor: guarded(ctx.guard(name), async ({ event }) => {
-          const p = event.payload as { agent: string; round: number; operations: ImageOp[] };
-          if (p.agent !== name) return;
-          const operationIds = p.operations.map((o) => o.id);
-          const assets: AssetRecord[] = [];
-          const supersedes: string[] = [];
-          const results: { id: string; ok: boolean; note: string }[] = [];
-          for (const op of p.operations) {
-            const base = currentBase(env, op.conceptId);
-            const prompt = prompts.get(op.conceptId);
-            if (!tools.images || !base || base.source !== 'ai_image' || !prompt || !settings.imageModel) {
-              results.push({ id: op.id, ok: false, note: 'There is no generated image to regenerate for this concept.' });
-              continue;
-            }
-            const res = await tools.images.generate(`${prompt}\nImprove on the previous attempt: ${clean(env.board.findings.filter((f) => op.findingIds.includes(f.id)).map((f) => f.suggestedCorrection).join(' '), 300)}`, { model: settings.imageModel, quality: settings.imageQuality, size: settings.imageSize }, { regeneration: true, signal: self.signal });
-            if (!res.ok) {
-              results.push({ id: op.id, ok: false, note: errNote(res.error) });
-              continue;
-            }
-            const rec = await tools.assets.save({ kind: 'image', conceptId: op.conceptId, channel: null, format: null, version: base.version + 1, parentAssetId: base.id, mimeType: res.mimeType, width: res.width, height: res.height, source: 'ai_image', model: settings.imageModel, quality: settings.imageQuality, requestedSize: settings.imageSize, status: 'generated', flags: [], altText: base.altText, promptMetadata: base.promptMetadata, usage: res.usage, data: res.bytes });
-            await tools.assets.markSuperseded(base.id);
-            assets.push(rec);
-            supersedes.push(base.id);
-            results.push({ id: op.id, ok: true, note: 'Regenerated as a new version; the original is kept.' });
-          }
-          const ok = results.some((r) => r.ok);
-          ctx.emit('revision.applied', { owner: name, round: p.round, operationIds, status: ok ? 'applied' : 'failed', note: ok ? `${assets.length} image(s) regenerated.` : (results[0]?.note ?? 'Nothing regenerated.'), patch: { kind: 'image', assets, supersedes, results } }, self.participant);
-        }),
-      },
-    ];
-  });
+        self.closeTask();
+        ctx.emit('images.sourced', { agent: name, summary, sourcing, direction }, self.participant);
+        ctx.emit('task.completed', { agent: name, outcome: 'succeeded' }, self.participant);
+      }),
+    },
+  ]);
 }
 
-// ---- A21 Layout Designer ----------------------------------------------------------------------------------------------------------
-
-export function buildLayout(env: F4Env): PhaseAgent {
-  const { ctx, settings, tools } = env;
-  const name = CREATIVE_INFO.layout.name;
-  const visual = CREATIVE_INFO.visual.name;
-  const started = new Set<string>();
-  const done = new Set<string>();
-  let rendered = 0;
-
-  return new PhaseAgent(env, { key: 'layout', name, instruction: 'Deterministic layout designer. Renders channel formats from the base images with a layout tool. Performs no inference.', capabilities: ['creative-production', 'layout', 'sharp', 'deterministic'] }, (self) => {
-    // Hybrid Production: the Layout Designer renders the TEMPLATE CREATIVES of the Template Selector's plan instead of cutting layouts from every original
-    if (settings.hybrid) return hybridLayoutHandlers(env, self, name);
-    const finishIfDone = () => {
-      if (!self.isTaskOpen() || done.size < env.board.concepts.length || !env.board.concepts.length) return;
-      self.closeTask();
-      ctx.emit('task.completed', rendered > 0 ? { agent: name, outcome: 'succeeded' } : { agent: name, outcome: 'failed', error: { ...toSafeError('invalid_response'), message: 'No channel layout could be rendered.' } }, self.participant);
-    };
-
-    // several originals per concept: the task ends when the Visual Creator is finished and every render has finished
-    let inflight = 0;
-    let visualFinished = false;
-    const generated = new Set<string>(env.board.variations.filter((v) => v.status === 'generated').map((v) => v.conceptId)); // concepts that have at least one AI original
-    const finishVariations = () => {
-      if (!self.isTaskOpen() || !visualFinished || inflight > 0 || !env.board.concepts.length) return;
-      self.closeTask();
-      ctx.emit('task.completed', rendered > 0 ? { agent: name, outcome: 'succeeded' } : { agent: name, outcome: 'failed', error: { ...toSafeError('invalid_response'), message: 'No channel layout could be rendered.' } }, self.participant);
-    };
-
-    /** Cuts the layouts of ONE original image (the formats of the channels it is meant for). Every layout names the original it came from. */
-    const renderOriginal = async (variationId: string, base: AssetRecord) => {
-      if (started.has(`v:${variationId}`) || !self.isTaskOpen()) return;
-      started.add(`v:${variationId}`);
-      inflight++;
-      const slot = env.board.allocation?.variations.find((v) => v.variationId === variationId);
-      const conceptId = slot?.conceptId ?? base.conceptId;
-      const pairs = formatsForChannels(slot?.targetChannels ?? settings.formats.map((f) => f.channel), settings.layoutsPerOriginal);
-      const layouts: LayoutRecord[] = [];
-      const assets: AssetRecord[] = [];
-      const skipped: SkippedLayout[] = [];
-      try {
-        const baseBuf = await tools.assets.load(base.id);
-        for (const { format, channel } of pairs) {
-          if (self.signal.aborted) break;
-          const variant = pickVariant(env.board.variants, conceptId, channel) ?? env.board.variants.find((v) => v.conceptId === conceptId);
-          if (!variant) {
-            skipped.push({ conceptId, format: format.id, channel, reason: 'There is no copy for this concept to place on the layout.' });
-            continue;
-          }
-          const res = await renderLayout({ gradientVariant: conceptIndex(env, conceptId), base: baseBuf, format, headline: variant.headline, body: supportingText(variant), ctaText: variant.ctaText, palette: env.palette, logo: env.logo });
-          if (!res.ok) {
-            skipped.push({ conceptId, format: format.id, channel, reason: res.reason });
-            continue;
-          }
-          const rec = await tools.assets.save({ kind: 'layout', conceptId, variationId, channel, format: format.id, version: 1, parentAssetId: base.id, mimeType: 'image/png', width: res.width, height: res.height, source: base.source, model: base.model, quality: base.quality, requestedSize: null, status: 'rendered', flags: res.flags, altText: clean(variant.headline, 200), promptMetadata: null, usage: null, data: res.png });
-          assets.push(rec);
-          layouts.push({ id: `layout-${rec.id}`, conceptId, variantId: variant.id, variationId, assetId: rec.id, baseAssetId: base.id, format: format.id, channel, headline: variant.headline, ctaText: variant.ctaText, flags: res.flags });
-          rendered++;
-        }
-      } catch {
-        for (const { format, channel } of pairs) if (!layouts.some((l) => l.format === format.id && l.channel === channel)) skipped.push({ conceptId, format: format.id, channel, reason: 'The layout could not be rendered.' });
-      }
-      if (!ctx.isClosed() && self.isTaskOpen()) ctx.emit('layout.completed', { agent: name, conceptId, assets, layouts, skipped }, self.participant);
-      inflight--;
-      finishVariations();
-    };
-
-    const renderConcept = async (conceptId: string, given: AssetRecord | null) => {
-      if (started.has(conceptId) || !self.isTaskOpen()) return;
-      started.add(conceptId);
-      if (settings.variations) inflight++;
-      const layouts: LayoutRecord[] = [];
-      const assets: AssetRecord[] = [];
-      const skipped: SkippedLayout[] = [];
-      try {
-        let base = given;
-        if (!base) {
-          base = await saveGradientBase(env, conceptId);
-          assets.push(base);
-        }
-        const baseBuf = base.source === 'ai_image' ? await tools.assets.load(base.id) : null;
-        for (const { format, channel } of settings.formats) {
-          if (self.signal.aborted) break;
-          const variant = pickVariant(env.board.variants, conceptId, channel) ?? env.board.variants.find((v) => v.conceptId === conceptId);
-          if (!variant) {
-            skipped.push({ conceptId, format: format.id, channel, reason: 'There is no copy for this concept to place on the layout.' });
-            continue;
-          }
-          const res = await renderLayout({ gradientVariant: conceptIndex(env, conceptId), base: baseBuf, format, headline: variant.headline, body: supportingText(variant), ctaText: variant.ctaText, palette: env.palette, logo: env.logo });
-          if (!res.ok) {
-            skipped.push({ conceptId, format: format.id, channel, reason: res.reason });
-            continue;
-          }
-          const rec = await tools.assets.save({ kind: 'layout', conceptId, channel, format: format.id, version: 1, parentAssetId: base.id, mimeType: 'image/png', width: res.width, height: res.height, source: base.source, model: base.model, quality: base.quality, requestedSize: null, status: 'rendered', flags: res.flags, altText: clean(variant.headline, 200), promptMetadata: null, usage: null, data: res.png });
-          assets.push(rec);
-          layouts.push({ id: `layout-${rec.id}`, conceptId, variantId: variant.id, assetId: rec.id, baseAssetId: base.id, format: format.id, channel, headline: variant.headline, ctaText: variant.ctaText, flags: res.flags });
-          rendered++;
-        }
-      } catch {
-        for (const { format, channel } of settings.formats) if (!layouts.some((l) => l.format === format.id)) skipped.push({ conceptId, format: format.id, channel, reason: 'The layout could not be rendered.' });
-      }
-      if (ctx.isClosed() || !self.isTaskOpen()) return;
-      ctx.emit('layout.completed', { agent: name, conceptId, assets, layouts, skipped }, self.participant);
-      done.add(conceptId);
-      if (settings.variations) {
-        inflight--;
-        finishVariations();
-      } else finishIfDone();
-    };
-
-    return [
-      {
-        specification: new OnEventTypes(['task.assigned']),
-        processor: guarded(ctx.guard(name), ({ event }) => {
-          if ((event.payload as { agent: string }).agent !== name) return;
-          self.openTask(settings.productionTimeoutMs, () => ctx.emit('task.completed', { agent: name, outcome: 'failed', error: toSafeError('timeout') }, self.participant));
-        }),
-      },
-      {
-        // Visual Creator -> Layout Designer: a base image exists; its layouts can be rendered (concurrently with the other concepts).
-        specification: new OnEventTypes(['visual.generated']),
-        processor: guarded(ctx.guard(name), ({ event }) => {
-          const p = event.payload as { conceptId: string; variationId?: string; asset: AssetRecord | null; failed: boolean };
-          if (p.variationId) {
-            // a failed image has no asset: nothing is cut from it and no stand-in picture is made for it
-            if (p.asset && !p.failed) {
-              generated.add(p.conceptId);
-              void renderOriginal(p.variationId, p.asset).catch((e) => ctx.fail(e, name));
-            }
-            return;
-          }
-          if (!p.asset) return;
-          void renderConcept(p.conceptId, p.asset).catch((e) => ctx.fail(e, name));
-        }),
-      },
-      {
-        // The Visual Creator ended (or was skipped / failed): every concept without a base image gets a brand-colored one.
-        specification: new OnEventTypes(['task.completed']),
-        processor: guarded(ctx.guard(name), ({ event }) => {
-          const p = event.payload as { agent: string };
-          if (p.agent !== visual) return;
-          if (settings.variations) {
-            // a concept without ANY AI original still needs layouts for its copy: it gets ONE labelled brand-colored background
-            visualFinished = true;
-            for (const c of env.board.concepts) if (!generated.has(c.id) && !started.has(c.id)) void renderConcept(c.id, null).catch((e) => ctx.fail(e, name));
-            finishVariations();
-            return;
-          }
-          for (const c of env.board.concepts) if (!started.has(c.id)) void renderConcept(c.id, null).catch((e) => ctx.fail(e, name));
-        }),
-      },
-      {
-        // Fixer -> Layout Designer (second wave): re-render with adjusted parameters; the original assets are kept.
-        specification: new OnEventTypes(['revision.requested']),
-        processor: guarded(ctx.guard(name), async ({ event }) => {
-          const p = event.payload as { agent: string; round: number; operations: LayoutOp[] };
-          if (p.agent !== name) return;
-          const assets: AssetRecord[] = [];
-          const layouts: LayoutRecord[] = [];
-          const supersedes: string[] = [];
-          const results: { id: string; ok: boolean; note: string; before?: string | null; after?: string | null }[] = [];
-          for (const op of p.operations) {
-            try {
-              const variant = env.board.variants.find((v) => v.id === op.variantId);
-              const format = settings.formats.find((f) => f.format.id === op.format)?.format;
-              const base = (op.baseAssetId ? env.board.assets.find((a) => a.id === op.baseAssetId && a.status !== 'superseded') : undefined) ?? currentBase(env, op.conceptId);
-              if (!variant || !format || !base) {
-                results.push({ id: op.id, ok: false, note: 'The copy, format or base image is no longer available.' });
-                continue;
-              }
-              const baseBuf = base.source === 'ai_image' ? await tools.assets.load(base.id) : null;
-              const res = await renderLayout({ gradientVariant: conceptIndex(env, op.conceptId), base: baseBuf, format, headline: variant.headline, body: op.overrides.hideBody ? null : supportingText(variant), ctaText: variant.ctaText, palette: env.palette, logo: env.logo, overrides: op.overrides as LayoutOverrides });
-              if (!res.ok) {
-                results.push({ id: op.id, ok: false, note: res.reason });
-                continue;
-              }
-              const old = env.board.layouts.find((l) => l.conceptId === op.conceptId && l.format === op.format && l.variantId === op.variantId && (l.variationId ?? null) === (op.variationId ?? null));
-              const oldAsset = old ? env.board.assets.find((a) => a.id === old.assetId) : undefined;
-              const rec = await tools.assets.save({ kind: 'layout', conceptId: op.conceptId, variationId: op.variationId ?? null, channel: op.channel, format: op.format, version: (oldAsset?.version ?? 0) + 1, parentAssetId: base.id, mimeType: 'image/png', width: res.width, height: res.height, source: base.source, model: base.model, quality: base.quality, requestedSize: null, status: 'rendered', flags: res.flags, altText: clean(variant.headline, 200), promptMetadata: null, usage: null, data: res.png });
-              if (oldAsset) {
-                await tools.assets.markSuperseded(oldAsset.id);
-                supersedes.push(oldAsset.id);
-              }
-              assets.push(rec);
-              layouts.push({ id: `layout-${rec.id}`, conceptId: op.conceptId, variantId: op.variantId, variationId: op.variationId ?? null, assetId: rec.id, baseAssetId: base.id, format: op.format, channel: op.channel, headline: variant.headline, ctaText: variant.ctaText, flags: res.flags });
-              results.push({ id: op.id, ok: true, note: 'Rendered again; the earlier version is kept.', before: oldAsset ? `${oldAsset.id} (v${oldAsset.version})` : null, after: `${rec.id} (v${rec.version})` });
-            } catch {
-              results.push({ id: op.id, ok: false, note: 'The layout could not be rendered.' });
-            }
-          }
-          const ok = results.some((r) => r.ok);
-          ctx.emit('revision.applied', { owner: name, round: p.round, operationIds: p.operations.map((o) => o.id), status: ok ? 'applied' : 'failed', note: `${results.filter((r) => r.ok).length} of ${results.length} layout(s) re-rendered.`, patch: { kind: 'layout', assets, layouts, supersedes, results } }, self.participant);
-        }),
-      },
-    ];
-  });
-}
-
-// ---- A23 Content & Brand Reviewer --------------------------------------------------------------------------------------------------
+// ---- A6 Quality Reviewer --------------------------------------------------------------------------------------------------
 
 const BLOCKER_KINDS = new Set(['unsupported_claim', 'factual_error']);
 
 export function buildReviewer(env: F4Env): PhaseAgent {
-  const { ctx, settings } = env;
+  const { ctx, settings, tools } = env;
   const name = CREATIVE_INFO.reviewer.name;
   return new PhaseAgent(env, { key: 'reviewer', name, instruction: CREATIVE_INSTRUCTIONS.reviewer, capabilities: ['creative-production', 'quality-review', 'vision', 'inference'] }, (self) => [
     {
-      // Depth: the concepts are critiqued BEFORE any image is paid for (specific? original? right for the audience? something to show?).
-      specification: new OnEventTypes(['concept.review.requested']),
-      processor: guarded(ctx.guard(name), () => {
-        const snap = env.board.snapshot();
-        const det = conceptFindings(snap);
-        const done = (critique: ConceptCritique | null, modelReview: 'done' | 'failed' | 'skipped') => ctx.emit('concept.review.completed', { agent: name, critique, deterministic: det, modelReview }, self.participant);
-        if (settings.maxModelCalls - env.gateway.usage().callsStarted < 6) return done(null, 'skipped'); // keep room for the reviews and repairs that follow
-        self.runJob({
-          kind: 'review',
-          message: conceptCritiqueMessage(env.f1, env.f3, env.input, snap, det, env.visualBrief),
-          schema: ConceptCritique,
-          schemaName: 'concept_critique',
-          maxOutputTokens: settings.analystTokens,
-          timeoutMs: settings.reviewTimeoutMs,
-          onSuccess: (out) => done(out, 'done'),
-          onFailure: () => done(null, 'failed'),
-        });
-      }),
-    },
-    {
       specification: new OnEventTypes(['review.requested']),
       processor: guarded(ctx.guard(name), async ({ event }) => {
-        const p = event.payload as { round: number; scope: { variantIds: string[]; assetIds: string[]; landing: boolean } };
-        const snap = env.board.snapshot();
-        // 1. deterministic checks (no model): what code can prove
+        const p = event.payload as { round: number; scope: { variantIds: string[]; assetIds: string[] } };
+        await Promise.resolve();
+        // 1. the template side: every planned creative exists as a real file of the right size, from the collection, with cleared pictures only
+        let templateQuality: TemplateQualityReport | null = null;
+        try {
+          const hy = env.hybrid;
+          const design = hy.design && hy.collection ? { collectionId: hy.collection.id, collectionVersion: hy.collection.version, templateIds: hy.collection.templateIds, paletteKey: paletteKeyOf(hy.design.palette) } : null;
+          templateQuality = await verifyTemplateExport({ allowedSources: new Set((env.board.imagery?.library ?? []).map((l) => l.id)), design, selection: env.board.selection, creatives: env.board.templateCreatives, assets: env.board.assets, load: (id) => tools.assets.load(id) });
+        } catch {
+          templateQuality = null;
+        }
+        if (ctx.isClosed()) return;
+        const snap = { ...env.board.snapshot(), templateQuality: templateQuality ?? env.board.templateQuality };
+        // 2. deterministic checks (no model): what code can prove
         const det: RawFinding[] = dedupe([
           ...claimFindings({ board: snap, f1: env.f1, f3: env.f3, language: env.input.language, allowedUrls: [env.input.websiteUrl] }),
           ...channelFindings(snap),
           ...consistencyFindings(snap),
-          ...assetFindings({ board: snap, hasLogo: !!env.logo, hasPalette: env.hasBrandPalette, imageGeneration: settings.imageGeneration }),
+          // copy craft against the copywriting plan: generic wording, false urgency, excluded principles, repetition, clarity, billboard
+          ...copyCraftFindings({ variants: snap.variants.filter((v) => p.scope.variantIds.includes(v.id)), plan: env.copyPlan, corpus: corpusOf(env.f1, env.f3) }),
+          ...(p.round === 1 ? conceptFindings(snap) : []),
+          ...assetFindings({ board: snap, hasLogo: !!env.logo, hasPalette: env.hasBrandPalette }),
           ...templateFindings({ board: snap }),
         ]);
-        const known = new Set([...snap.assets.map((a) => a.id), ...snap.variants.map((v) => v.id), ...snap.concepts.map((c) => c.id), 'landing']);
-        const ownerOf = (ref: string | null, claimed: RawFinding['responsibleAgent']): RawFinding['responsibleAgent'] => (ref === 'landing' ? 'landing' : ref && snap.variants.some((v) => v.id === ref) ? 'copywriter' : claimed);
+        const known = new Set([...snap.assets.map((a) => a.id), ...snap.variants.map((v) => v.id), ...snap.concepts.map((c) => c.id)]);
+        const ownerOf = (ref: string | null, claimed: RawFinding['responsibleAgent']): RawFinding['responsibleAgent'] => (ref && snap.variants.some((v) => v.id === ref) ? 'copywriter' : claimed === 'landing' ? 'copywriter' : claimed);
         const toRaw = (i: ReviewOutput['issues'][number], source: 'llm_text' | 'llm_vision'): RawFinding => {
           const assetRef = i.assetRef && known.has(i.assetRef) ? i.assetRef : null;
-          // Subjective judgments never block: only an invented or forbidden claim can be a blocker.
+          // subjective judgments never block: only an invented or forbidden claim can be a blocker
           const severity = i.severity === 'blocker' && !(source === 'llm_text' && BLOCKER_KINDS.has(i.kind)) ? 'major' : i.severity;
           return { kind: i.kind, severity, assetRef, finding: clean(i.finding, 300), evidence: clean(i.evidence, 300), suggestedCorrection: clean(i.suggestedCorrection, 300), responsibleAgent: ownerOf(assetRef, i.responsibleAgent), source };
         };
@@ -663,7 +200,6 @@ export function buildReviewer(env: F4Env): PhaseAgent {
         let attempted = 0;
         let failed = 0;
         const left = () => settings.maxModelCalls - env.gateway.usage().callsStarted;
-
         const run = <T>(job: JobSpec<T>) =>
           new Promise<void>((resolve) =>
             self.runJob({
@@ -678,42 +214,41 @@ export function buildReviewer(env: F4Env): PhaseAgent {
               },
             }),
           );
-        // 2. the text review
-        if ((p.scope.variantIds.length || p.scope.landing) && left() < 1) skipped.push({ what: `text review (round ${p.round})`, reason: `no text-model call was left (limit ${settings.maxModelCalls})` });
-        if ((p.scope.variantIds.length || p.scope.landing) && left() >= 1) {
+        // 3. ONE text review of the copy in scope
+        if (p.scope.variantIds.length && left() < 1) skipped.push({ what: `text review (round ${p.round})`, reason: `no text-model call was left (limit ${settings.maxModelCalls})` });
+        if (p.scope.variantIds.length && left() >= 1) {
           attempted++;
           await run({
             kind: 'review',
-            message: reviewTextMessage(env.f1, env.f3, env.input, snap, det, { variantIds: p.scope.variantIds, landing: p.scope.landing }),
+            message: reviewTextMessage(env.f1, env.f3, env.input, snap, det, p.scope.variantIds, env.copyPlan),
             schema: ReviewOutput,
-            schemaName: 'creative_review',
+            schemaName: 'campaign_review',
             maxOutputTokens: settings.reviewTokens,
             timeoutMs: settings.reviewTimeoutMs,
             onSuccess: (out: ReviewOutput) => {
               summaries.push(out.summary);
-              llm.push(...out.issues.slice(0, 6).map((i) => toRaw(i, 'llm_text')));
+              llm.push(...out.issues.slice(0, 8).map((i) => toRaw(i, 'llm_text')));
               scores = out.scores ?? null;
-              // a weak score that no specific issue explains is still a finding: valid JSON alone never approves a weak campaign
               llm.push(...scoreFindings(scores, llm));
             },
             onFailure: () => failed++,
           });
         }
-        // 3. the vision review of exported assets (only when the user enabled it and the budget allows)
+        // 4. a small sampled vision review of rendered creatives (one per deliverable kind first), only when enabled and affordable
         const inScope = snap.layouts.filter((l) => p.scope.assetIds.includes(l.assetId));
-        // with several originals per concept the sample covers as many DIFFERENT originals as possible before showing a second cut of one
-        const firstOfEach = inScope.filter((l, i, a) => a.findIndex((x) => x.baseAssetId === l.baseAssetId) === i);
-        const shown = (settings.variations ? [...firstOfEach, ...inScope.filter((l) => !firstOfEach.includes(l))] : inScope).slice(0, settings.visionReviews);
+        const kindOf = (slotId: string | null | undefined) => snap.hybridPlan?.slots.find((s) => s.slotId === slotId)?.kind ?? 'social_post';
+        const firstOfKind = inScope.filter((l, i, a) => a.findIndex((x) => kindOf(x.slotId) === kindOf(l.slotId)) === i);
+        const shown = [...firstOfKind, ...inScope.filter((l) => !firstOfKind.includes(l))].slice(0, settings.visionReviews);
         if (settings.visionReviews > 0 && shown.length && left() < 1) skipped.push({ what: `vision review (round ${p.round})`, reason: `no text-model call was left (limit ${settings.maxModelCalls})` });
         if (settings.visionReviews > 0 && shown.length && left() >= 1 && !ctx.isClosed()) {
           attempted++;
           try {
-            const images = await Promise.all(shown.map(async (l) => ({ mediaType: 'image/jpeg', base64: (await sharp(await env.tools.assets.load(l.assetId)).resize({ width: 768, withoutEnlargement: true }).jpeg({ quality: 72 }).toBuffer()).toString('base64') })));
+            const images = await Promise.all(shown.map(async (l) => ({ mediaType: 'image/jpeg', base64: (await sharp(await tools.assets.load(l.assetId)).resize({ width: 768, withoutEnlargement: true }).jpeg({ quality: 72 }).toBuffer()).toString('base64') })));
             await run({
               kind: 'review',
               message: reviewVisionMessage(env.input, snap, shown.map((l) => ({ assetId: l.assetId, format: l.format, channel: l.channel, conceptId: l.conceptId, headline: l.headline, flags: l.flags })), env.f3),
               schema: ReviewOutput,
-              schemaName: 'creative_vision_review',
+              schemaName: 'campaign_vision_review',
               maxOutputTokens: settings.reviewTokens,
               timeoutMs: settings.reviewTimeoutMs,
               images,
@@ -726,171 +261,13 @@ export function buildReviewer(env: F4Env): PhaseAgent {
           } catch {
             failed++;
           }
-        }
+        } else if (!settings.visionReviews) skipped.push({ what: 'vision review of the rendered creatives', reason: 'switched off (visionReviews is 0); the creatives were checked by measurement only' });
         if (ctx.isClosed()) return;
         const modelReview = attempted === 0 ? 'skipped' : failed === 0 ? 'done' : failed === attempted ? 'failed' : 'partial';
         const findings = dedupe([...det, ...llm]);
         const summary = `${det.length} automatic check finding(s) and ${llm.length} reviewer finding(s)${modelReview === 'skipped' ? ' (no model review in this round)' : modelReview === 'failed' ? ' (the model review failed; only the automatic checks ran)' : ''}. ${summaries.join(' ')}`.trim().slice(0, 900);
-        ctx.emit('review.completed', { agent: name, round: p.round, findings, summary, modelReview, scores, skipped }, self.participant);
+        ctx.emit('review.completed', { agent: name, round: p.round, findings, summary, modelReview, scores, skipped, templateQuality }, self.participant);
       }),
     },
   ]);
-}
-
-// ---- A24 Fixer ---------------------------------------------------------------------------------------------------------------------------
-
-export function buildFixer(env: F4Env): PhaseAgent {
-  const { ctx, settings, tools } = env;
-  const name = CREATIVE_INFO.fixer.name;
-  const owners = { copywriter: CREATIVE_INFO.copywriter.name, landing: CREATIVE_INFO.landing.name, layout: CREATIVE_INFO.layout.name, visual: CREATIVE_INFO.visual.name };
-
-  interface Outcome {
-    ok: boolean;
-    note: string;
-    before?: string | null;
-    after?: string | null;
-  }
-  interface State {
-    round: number;
-    plan: ReturnType<typeof planRepairs>;
-    findings: ReviewFindingRecord[];
-    waiting: Set<string>;
-    outcomes: Map<string, Outcome>;
-    opIds: Map<string, string>; // opKey -> operation id
-    timer?: NodeJS.Timeout;
-    wave: 1 | 2;
-    seq: number;
-  }
-  let st: State | null = null;
-
-  return new PhaseAgent(env, { key: 'fixer', name, instruction: 'Fixer. Turns review findings into repair requests for the owners of the deliverables; makes no model call.', capabilities: ['creative-production', 'repair', 'revision-requests', 'deterministic'] }, (self) => {
-    const nextId = () => `O${st!.round}.${++st!.seq}`;
-
-    const armTimer = () => {
-      st!.timer = ctx.setTimer(settings.repairTimeoutMs + 5_000, () => {
-        if (!st) return;
-        for (const id of st.waiting) st.outcomes.set(id, { ok: false, note: 'The owner did not answer in time.' });
-        st.waiting.clear();
-        advance();
-      });
-    };
-
-    const send = (owner: string, operations: { id: string }[]) => {
-      for (const o of operations) st!.waiting.add(o.id);
-      ctx.emit('revision.requested', { agent: owner, round: st!.round, wave: st!.wave, operations }, self.participant);
-    };
-
-    const complete = () => {
-      const s = st!;
-      const round = s.round;
-      if (s.timer) ctx.clearTimer(s.timer);
-      const results = s.plan.byFinding.map((fp) => {
-        const opId = fp.opKey ? s.opIds.get(fp.opKey) : undefined;
-        const o = opId ? s.outcomes.get(opId) : undefined;
-        const variantId = fp.opKey?.startsWith('copy:') ? fp.opKey.slice(5) : null;
-        const v = variantId ? env.board.variants.find((x) => x.id === variantId) : undefined;
-        const prev = v?.history[v.history.length - 1];
-        const status = fp.operation === 'none' ? ('skipped' as const) : o?.ok ? ('applied' as const) : ('failed' as const);
-        return {
-          round: s.round,
-          findingId: fp.findingId,
-          operation: fp.operation,
-          owner: fp.owner,
-          status,
-          before: prev ? `${prev.headline} — ${prev.body}`.slice(0, 300) : (o?.before ?? null),
-          after: v && prev ? `${v.headline} — ${v.body}`.slice(0, 300) : (o?.after ?? null),
-          note: fp.operation === 'none' ? fp.note : (o?.note ?? 'No answer.'),
-        };
-      });
-      st = null;
-      ctx.emit('revision.completed', { agent: name, round, results }, self.participant);
-    };
-
-    /** Wave 1 -> wave 2 -> done. Wave 2 (layouts) reads the board AFTER wave 1 was committed by the coordinator. */
-    const advance = () => {
-      const s = st;
-      if (!s || s.waiting.size) return;
-      if (s.timer) ctx.clearTimer(s.timer);
-      if (s.wave === 1) {
-        s.wave = 2;
-        const okCopy = [...s.plan.copy.keys()].filter((v) => s.outcomes.get(s.opIds.get(`copy:${v}`) ?? '')?.ok);
-        const okImages = [...s.plan.images.keys()].filter((c) => s.outcomes.get(s.opIds.get(`image:${c}`) ?? '')?.ok);
-        const ops = layoutOperations(env.board.snapshot(), s.plan, { variantIds: okCopy, conceptIds: okImages }, nextId);
-        if (ops.length) {
-          for (const o of ops) s.opIds.set(`layout:${layoutKey(o.conceptId, o.format, o.variantId, o.variationId)}`, o.id);
-          // armed BEFORE sending: an owner that answers at once completes the round inside send()
-          armTimer();
-          send(owners.layout, ops);
-          return;
-        }
-      }
-      complete();
-    };
-
-    return [
-      {
-        // Review -> Fixer: the findings arrive through shared state; the Fixer picks the repair for each one.
-        specification: new OnEventTypes(['fix.requested']),
-        processor: guarded(ctx.guard(name), ({ event }) => {
-          const p = event.payload as { round: number; findingIds: string[] };
-          const findings = env.board.findings.filter((f) => p.findingIds.includes(f.id));
-          // regenerating one image of a concept that has several is not defined: with several originals per concept, repairs never buy images
-          const canRegenerate = settings.allowRegeneration && !settings.variations && !!tools.images?.regenerationAllowed;
-          const plan = planRepairs(env.board.snapshot(), findings, { canRegenerate, formats: settings.formats, owners });
-          st = { round: p.round, plan, findings, waiting: new Set(), outcomes: new Map(), opIds: new Map(), wave: 1, seq: 0 };
-          const copyOps: CopyOp[] = [];
-          if (plan.copy.size) {
-            const op: CopyOp = { id: nextId(), kind: 'revise_copy', findingIds: [...new Set([...plan.copy.values()].flatMap((s) => [...s]))], variantIds: [...plan.copy.keys()] };
-            for (const v of plan.copy.keys()) st.opIds.set(`copy:${v}`, op.id);
-            copyOps.push(op);
-          }
-          const landingOps: LandingOp[] = [];
-          if (plan.landing.size) {
-            const op: LandingOp = { id: nextId(), kind: 'revise_landing', findingIds: [...plan.landing] };
-            st.opIds.set('landing', op.id);
-            landingOps.push(op);
-          }
-          const imageOps: ImageOp[] = [...plan.images].map(([conceptId, ids]) => {
-            const op: ImageOp = { id: nextId(), kind: 'regenerate_image', conceptId, findingIds: [...ids] };
-            st!.opIds.set(`image:${conceptId}`, op.id);
-            return op;
-          });
-          let ctaApplied: Record<string, unknown> | null = null; // emitted LAST: it may finish the whole round, which clears the state
-          if (plan.ctaAlign.size) {
-            // the landing call to action takes the type most of the ads use (a deterministic repair; nothing is reworded)
-            const count = new Map<string, number>();
-            for (const v of env.board.variants) count.set(v.ctaType, (count.get(v.ctaType) ?? 0) + 1);
-            const toType = [...count].sort((a, b) => b[1] - a[1])[0]?.[0];
-            const opId = nextId();
-            st.opIds.set('cta:landing', opId);
-            st.waiting.add(opId);
-            ctaApplied = { owner: owners.landing, round: st.round, operationIds: [opId], status: toType ? 'applied' : 'failed', note: toType ? `Landing call to action aligned with the ads: ${toType}.` : 'The ads have no call to action to align with.', patch: toType ? { kind: 'landing', changes: [], removals: [], ctaObjective: toType, results: [{ id: opId, ok: true, note: `The landing page now asks for "${toType}", like most ads.` }] } : { results: [{ id: opId, ok: false, note: 'No call to action found in the ads.' }] } };
-          }
-          if (copyOps.length) send(owners.copywriter, copyOps);
-          if (landingOps.length) send(owners.landing, landingOps);
-          if (imageOps.length) send(owners.visual, imageOps);
-          // a synchronous answer may already have completed the round (st is then null)
-          const live = st as State | null;
-          if (live && live.waiting.size) armTimer();
-          else if (live) advance();
-          if (ctaApplied) ctx.emit('revision.applied', ctaApplied as never, self.participant);
-        }),
-      },
-      {
-        specification: new OnEventTypes(['revision.applied']),
-        processor: guarded(ctx.guard(name), ({ event }) => {
-          const s = st;
-          const p = event.payload as { round: number; operationIds: string[]; status: 'applied' | 'failed'; note: string; patch: { results?: { id: string; ok: boolean; note: string; before?: string | null; after?: string | null }[] } | null };
-          if (!s || p.round !== s.round) return;
-          for (const id of p.operationIds) {
-            if (!s.waiting.has(id)) continue;
-            const r = p.patch?.results?.find((x) => x.id === id);
-            s.outcomes.set(id, r ?? { ok: p.status === 'applied', note: p.note });
-            s.waiting.delete(id);
-          }
-          advance();
-        }),
-      },
-    ];
-  });
 }

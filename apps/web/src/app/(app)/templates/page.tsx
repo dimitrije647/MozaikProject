@@ -21,7 +21,7 @@ export default function TemplatesPage() {
   return (
     <div className="space-y-6">
       <SectionHeader
-        eyebrow="Hybrid Production"
+        eyebrow="Campaign design"
         title="Template collections"
         description="Ten complete design languages. A collection fixes the typography, shapes, buttons, picture treatment and decoration of every creative of a campaign; you choose one in the campaign design."
       />

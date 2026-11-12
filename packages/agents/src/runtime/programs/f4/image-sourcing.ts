@@ -10,7 +10,7 @@ import { formatClassOf } from '../../../templates/schema';
 import type { BrandImage, F4Env, LibraryImageInfo } from './env';
 
 /**
- * NO AI HYBRID: THE PICTURES OF A CAMPAIGN, sourced by the Visual Researcher after the concepts exist and before any template is chosen.
+ * THE PICTURES OF A CAMPAIGN, sourced by the Visual Researcher after the concepts and the deliverables plan exist and before any template is chosen.
  *
  *   1. the approved library of the project (uploads, approved website/repository pictures, licensed pictures the user added) is checked AGAIN
  *      against the rights gate: a picture that may not be exported never reaches a template, whatever the caller passed in
@@ -53,7 +53,7 @@ const defaultInfo = (img: BrandImage): LibraryImageInfo => ({ rights: uploadRigh
 export function allocateApprovedOnly(env: F4Env): ImageAllocation | null {
   const hy = env.hybrid;
   const plan = env.board.hybridPlan;
-  if (!hy || !plan) return null;
+  if (!plan) return null;
   const eligible = hy.brandImages.filter((img) => exportEligibility((img.library ?? defaultInfo(img)).rights).eligible);
   if (!eligible.length) return null;
   return allocateImages({
@@ -63,13 +63,13 @@ export function allocateApprovedOnly(env: F4Env): ImageAllocation | null {
       const info = img.library ?? defaultInfo(img);
       return { id: img.id, score: 1 - i / (eligible.length + 1), text: info.text, width: info.analysis?.width ?? info.width, height: info.analysis?.height ?? info.height, analysis: info.analysis };
     }),
-    maxPerConcept: env.settings.hybrid?.imagery.maxSourcesPerConcept ?? 3,
+    maxPerConcept: env.settings.visual.imagery.maxSourcesPerConcept,
   });
 }
 
-export async function sourceImages(env: F4Env, o: { refused: () => number }): Promise<SourcingOutcome> {
-  const hs = env.settings.hybrid!;
-  const hy = env.hybrid!;
+export async function sourceImages(env: F4Env, direction: { imageSubjects: string[]; mood: string[] } | null = null): Promise<SourcingOutcome> {
+  const hs = env.settings.visual;
+  const hy = env.hybrid;
   const plan = env.board.hybridPlan!;
   const notes: string[] = [];
   const providers: ImageryBlock['providers'] = [];
@@ -127,8 +127,8 @@ export async function sourceImages(env: F4Env, o: { refused: () => number }): Pr
         valueProposition: env.visualBrief.valueProposition,
         audience: env.visualBrief.audience.primary,
         objective: env.visualBrief.campaignGoal,
-        imageSubjects: env.board.direction?.imageSubjects ?? [],
-        mood: env.board.direction?.mood ?? [],
+        imageSubjects: direction?.imageSubjects ?? [],
+        mood: direction?.mood ?? [],
         formatClasses: classes,
         concepts: concepts.map((c) => ({ name: c.name, visualIdea: c.visualIdea, keyMessage: c.keyMessage })),
         collectionId: collection?.id,
@@ -256,7 +256,7 @@ export async function sourceImages(env: F4Env, o: { refused: () => number }): Pr
     mode: 'no_ai_hybrid',
     aiImagesGenerated: 0,
     imageRequests: 0,
-    refusedAttempts: o.refused(),
+    refusedAttempts: 0,
     discovered: discovered + hy.discoveredBefore,
     approved: finalLibrary.length,
     autoAdded,

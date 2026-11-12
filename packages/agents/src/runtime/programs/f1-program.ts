@@ -6,20 +6,17 @@ import { DEFAULT_BUDGET, InferenceGateway, type InferenceBudget, type UsageSnaps
 import { capOutputTokens } from '../../ai/pricing';
 import {
   AGENT_INFO,
-  ANALYST_KEYS,
   F1BoardStore,
   SourceStore,
-  type AgentKey,
-  type AnalystKey,
   type CrosscheckRecord,
   type F1Plan,
   type Finding,
   type ParticipantStatus,
   type SourceRecord,
 } from '../../discovery/f1/board';
-import { analyzedSections, type AnalyzedSections, type PolicyIssue, finalizeReportV2 } from '../../discovery/f1/policy';
-import { reviewMessage, synthesizerMessage, type SynthDigest } from '../../discovery/f1/prompts';
-import { AgentOutput, CrosscheckAnswer, ProductDiscoveryReportV2 } from '../../discovery/f1/schemas';
+import { type AnalyzedSections, type PolicyIssue, finalizeReportV2 } from '../../discovery/f1/policy';
+import { synthesizerMessage, type SynthDigest } from '../../discovery/f1/prompts';
+import { AgentOutput, ProductDiscoveryReportV2 } from '../../discovery/f1/schemas';
 import { inputCorpus, type DiscoveryInput } from '../../discovery/input';
 import { REPORT_V2_VERSION } from '../../discovery/f1/schemas';
 import type { AgentOutcome } from '../../factory/events';
@@ -28,7 +25,7 @@ import { GitHubRepositoryTool, parseGitHubUrl } from '../../tools/github';
 import { ImagePreparationTool, type ImageInput } from '../../tools/images';
 import { createWebExtractFromEnv } from '../../tools/web-extract';
 import { WebFetchTool } from '../../tools/web-fetch';
-import { createWebSearchFromEnv, type WebSearchTool } from '../../tools/web-search';
+import { createWebSearchFromEnv } from '../../tools/web-search';
 import { ParticipantRegistry } from '../participant-registry';
 import { createTextTransport, type InferenceCredentials } from '../providers';
 import { OnEventTypes, guarded, type RunContext, type RunProgram } from '../run-context';
@@ -36,7 +33,7 @@ import { clamp } from './smoke-program';
 import { F1Agent } from './f1/agent';
 import { PhaseCoordinator } from './f1/coordinator';
 import type { F1Env, F1Settings, F1Tools } from './f1/env';
-import { prepareFiles, prepareInput, prepareRepo, prepareText, prepareVisual, prepareWeb, type Prep } from './f1/roles';
+import { prepareResearch, type ResearchSteps } from './f1/roles';
 
 const PHASE = 'F1_PRODUCT_DISCOVERY' as const;
 
@@ -47,22 +44,16 @@ export interface DiscoveryRunConfig {
   /** Uploaded documents / images (already authorized by the caller; bytes are loaded lazily). */
   documents?: DocumentInput[];
   images?: ImageInput[];
-  /** Hard cap on provider calls for the whole run (retries, reviews and repairs count). Default 16. */
+  /** Hard cap on provider calls for the whole run (retries and repairs count). Default 6: one analysis, one synthesis, room for repairs. */
   maxModelCalls?: number;
-  /** `max_output_tokens` for analysts. Reviews use less, the synthesizer up to twice as much. Default 3000. */
+  /** `max_output_tokens` for the analysis call. The synthesis call may use up to twice as much. Default 3000. */
   maxOutputTokens?: number;
   /** The approved spending limit in US dollars for THIS run; null/absent = none. Enforced before every paid request. */
   spendCapUsd?: number | null;
   /** The campaign-wide spend ledger shared by every phase (the factory passes it). Absent = this run gets a ledger of its own with `spendCapUsd`. */
   ledger?: SpendBudget;
-  /** Deeper work where it adds something (more cross-check passes; F4: a concept critique before the images). */
-  depth?: boolean;
-  /** Maximum number of cross-check requests (each costs one model call). Default 4. */
-  maxReviews?: number;
-  /** Deadline per analyst, including tool retrieval and the model call. Default 150 s. */
+  /** Deadline of the research task (all tool retrieval and the analysis call). Default 150 s. */
   agentTimeoutMs?: number;
-  /** Deadline per cross-check review. Default 90 s. */
-  reviewTimeoutMs?: number;
   callTimeoutMs?: number;
   /** Scales the clock of long structured answers with their output cap (default: on, unless callTimeoutMs is fixed). Tests may tune it. */
   generation?: Partial<GenerationTimeout>;
@@ -92,6 +83,7 @@ export interface ReportMeta {
   participants: ParticipantStatus[];
   sources: SourceRecord[];
   findings: Finding[];
+  /** Always [] since V4 (one Business Researcher, no cross-checks); kept so stored reports keep their shape. */
   crosschecks: CrosscheckRecord[];
   summaries: Record<string, string>;
   policyIssues: PolicyIssue[];
@@ -110,34 +102,44 @@ export type ReportSink = (report: ProductDiscoveryReportV2, meta: ReportMeta) =>
 
 type PreSource = Pick<SourceRecord, 'kind' | 'label' | 'status'> & { url?: string | null; error?: string | null; text?: string };
 
-/** Which agents run, which are skipped and why. Pure and deterministic. */
-export function planF1(input: DiscoveryInput, files: { documents: DocumentInput[]; images: ImageInput[]; checkUrl: (u: string) => { ok: true } | { ok: false; message: string } }): { plan: F1Plan; pre: PreSource[] } {
-  const plan: F1Plan = { activated: [], skipped: [] };
-  const pre: PreSource[] = [{ kind: 'user_input', label: 'Project intake and notes', status: 'retrieved', text: inputCorpus(input) }];
-  const on = (key: AgentKey, reason: string) => plan.activated.push({ agent: AGENT_INFO[key].name, key, reason });
-  const off = (key: AgentKey, reason: string) => plan.skipped.push({ agent: AGENT_INFO[key].name, key, reason });
+export interface F1Planned {
+  plan: F1Plan;
+  pre: PreSource[];
+  /** The gather steps the Business Researcher runs. */
+  steps: ResearchSteps;
+  /** Sources the user did not supply (or that were rejected before anything ran), with the reason. */
+  notGathered: { label: string; reason: string }[];
+}
 
-  on('input', 'Always runs: reads the project intake');
-  on('text', 'Always runs: independent reading of the supplied text');
+/** Which gather steps the Business Researcher runs, which are left out and why. Pure and deterministic. */
+export function planF1(input: DiscoveryInput, files: { documents: DocumentInput[]; images: ImageInput[]; checkUrl: (u: string) => { ok: true } | { ok: false; message: string } }): F1Planned {
+  const pre: PreSource[] = [{ kind: 'user_input', label: 'Project intake and notes', status: 'retrieved', text: inputCorpus(input) }];
+  const steps: ResearchSteps = { web: false, repo: false, files: false, images: false };
+  const reads: string[] = ['the project intake'];
+  const notGathered: { label: string; reason: string }[] = [];
 
   const site = input.availableSources.websiteUrl;
-  if (!site) off('web', 'No website URL was provided');
+  if (!site) notGathered.push({ label: 'Website', reason: 'No website URL was provided' });
   else {
     const c = files.checkUrl(site);
-    if (c.ok) on('web', `Website provided: ${site}`);
-    else {
-      off('web', `The website URL was rejected: ${c.message}`);
+    if (c.ok) {
+      steps.web = true;
+      reads.push(`the website ${site}`);
+    } else {
+      notGathered.push({ label: site, reason: `The website URL was rejected: ${c.message}` });
       pre.push({ kind: 'website', label: site, url: site, status: 'failed', error: c.message });
     }
   }
 
   const repo = input.availableSources.githubUrl;
-  if (!repo) off('repo', 'No repository URL was provided');
+  if (!repo) notGathered.push({ label: 'Repository', reason: 'No repository URL was provided' });
   else {
     const parsed = parseGitHubUrl(repo);
-    if (parsed) on('repo', `Public GitHub repository provided: ${parsed.owner}/${parsed.repo}`);
-    else {
-      off('repo', 'The repository URL is not a valid github.com/<owner>/<repo> URL');
+    if (parsed) {
+      steps.repo = true;
+      reads.push(`the public GitHub repository ${parsed.owner}/${parsed.repo}`);
+    } else {
+      notGathered.push({ label: repo, reason: 'The repository URL is not a valid github.com/<owner>/<repo> URL' });
       pre.push({ kind: 'repository', label: repo, url: repo, status: 'failed', error: 'Not a valid github.com/<owner>/<repo> URL.' });
     }
   }
@@ -146,30 +148,25 @@ export function planF1(input: DiscoveryInput, files: { documents: DocumentInput[
   const known = new Set([...files.documents, ...files.images].map((f) => f.name));
   const unsupported = input.availableSources.uploads.filter((u) => !known.has(u.name) || (!files.images.some((i) => i.name === u.name) && !detectFormat(u.name)));
   for (const u of unsupported) pre.push({ kind: 'document', label: u.name, status: 'unsupported', error: 'Unsupported file type. Supported documents: PDF, DOCX, TXT, Markdown, JSON, CSV; images: PNG, JPEG, WebP, GIF.' });
-  if (docs.length) on('files', `${docs.length} supported document(s) uploaded`);
-  else off('files', unsupported.length ? 'The uploaded files are not supported document types' : 'No documents were uploaded');
+  if (docs.length) {
+    steps.files = true;
+    reads.push(`${docs.length} uploaded document(s)`);
+  } else notGathered.push({ label: 'Documents', reason: unsupported.length ? 'The uploaded files are not supported document types' : 'No documents were uploaded' });
 
-  if (files.images.length) on('visual', `${files.images.length} image(s) uploaded`);
-  else off('visual', 'No images were uploaded');
+  if (files.images.length) {
+    steps.images = true;
+    reads.push(`${files.images.length} uploaded image(s)`);
+  } else notGathered.push({ label: 'Images', reason: 'No images were uploaded' });
 
-  on('synthesizer', 'Always runs after the cross-checks');
-  return { plan, pre };
+  const plan: F1Plan = { activated: [{ agent: AGENT_INFO.researcher.name, key: 'researcher', reason: `Always runs: reads ${reads.join(', ')}` }], skipped: [] };
+  return { plan, pre, steps, notGathered };
 }
 
 // ---- the program -------------------------------------------------------------------------------------
 
-const PREPARE: Record<AnalystKey, (env: F1Env, agent: F1Agent) => Promise<Prep>> = {
-  input: prepareInput,
-  text: prepareText,
-  web: prepareWeb,
-  repo: prepareRepo,
-  files: prepareFiles,
-  visual: prepareVisual,
-};
-
 /**
- * F1 Product Discovery with up to seven REAL Mozaik agents, a deterministic Phase Coordinator and
- * the Factory Orchestrator. See README "F1 Product Discovery" for the event flow.
+ * F1 Business Research: ONE real Mozaik agent (the Business Researcher: deterministic gathering, one analysis call, one synthesis
+ * call), a deterministic Phase Coordinator and the Factory Orchestrator.
  */
 export class F1Program implements RunProgram {
   readonly defaultTimeoutMs: number;
@@ -180,7 +177,7 @@ export class F1Program implements RunProgram {
   private readonly documents: DocumentInput[];
   private readonly images: ImageInput[];
   private readonly store = new SourceStore();
-  private readonly planned: { plan: F1Plan; pre: PreSource[] };
+  private readonly planned: F1Planned;
   private env!: F1Env;
 
   constructor(
@@ -196,7 +193,7 @@ export class F1Program implements RunProgram {
       spend: scopeFor(config.ledger, config.spendCapUsd, 'F1'),
       // a cut-off answer is asked again with a larger cap (up to what the model supports) instead of failing the agent
       escalateTo: capOutputTokens(config.model, 16000).tokens,
-      maxModelCalls: clamp(config.maxModelCalls, 1, 40, 16),
+      maxModelCalls: clamp(config.maxModelCalls, 1, 40, 6),
       maxOutputTokens: synthTokens,
       callTimeoutMs: clamp(config.callTimeoutMs, 50, 300_000, DEFAULT_BUDGET.callTimeoutMs),
       generation,
@@ -211,14 +208,10 @@ export class F1Program implements RunProgram {
     this.settings = {
       model: config.model,
       analystTokens,
-      reviewTokens: Math.min(1800, analystTokens),
       synthTokens,
       maxModelCalls: budget.maxModelCalls,
-      maxReviews: clamp(config.maxReviews, 0, 8, 4),
-      depth: config.depth === true,
       agentTimeoutMs: clamp(config.agentTimeoutMs, 50, 600_000, 150_000),
       synthTimeoutMs: clamp(config.agentTimeoutMs, 50, 600_000, 150_000),
-      reviewTimeoutMs: clamp(config.reviewTimeoutMs, 50, 600_000, 90_000),
       maxWebPages: clamp(config.maxWebPages, 1, 8, 4),
       fixtureSources: config.fixtureSources === true,
     };
@@ -292,20 +285,9 @@ export class F1Program implements RunProgram {
       this.store.add({ kind: p.kind, label: p.label, url: p.url ?? null, status: p.status, live: false, fixture: false, httpStatus: null, bytes: null, error: p.error ?? null, producer: 'Phase Coordinator' }, p.text),
     );
 
-    // The participant registry is where agents plug in: every role registers a factory; the plan decides who joins.
+    // The participant registry is where agents plug in: the one role registers its factory; the plan decides that it joins.
     const registry = new ParticipantRegistry();
-    const agents = new Map<AgentKey, F1Agent>();
-    for (const key of Object.keys(AGENT_INFO) as AgentKey[]) {
-      registry.register({
-        phase: PHASE,
-        name: AGENT_INFO[key].name,
-        create: () => {
-          const agent = key === 'synthesizer' ? this.buildSynthesizer(env) : this.buildAnalyst(env, key as AnalystKey);
-          agents.set(key, agent);
-          return agent.participant;
-        },
-      });
-    }
+    registry.register({ phase: PHASE, name: AGENT_INFO.researcher.name, create: () => this.buildResearcher(env).participant });
     const activated = new Set(plan.activated.map((a) => a.agent));
     const joined = registry.forPhase(PHASE).filter((r) => activated.has(r.name)).map((r) => r.create({ runId: ctx.runId, phase: PHASE, state: ctx.state }));
 
@@ -313,92 +295,61 @@ export class F1Program implements RunProgram {
     return [coordinator.participant, ...joined];
   }
 
-  // ---- analysts (A1 to A6) -----------------------------------------------------------------------
+  // ---- the Business Researcher (A1): gather -> analysis -> (phase.ready) -> synthesis ------------------------------------------
 
-  private buildAnalyst(env: F1Env, key: AnalystKey): F1Agent {
+  private buildResearcher(env: F1Env): F1Agent {
     const { ctx, settings } = env;
-    const name = AGENT_INFO[key].name;
-    const failTask = (agent: F1Agent, error: ReturnType<typeof toSafeError> | { code: never; message: string }) => {
+    const name = AGENT_INFO.researcher.name;
+    const failTask = (agent: F1Agent, error: ReturnType<typeof toSafeError>) => {
       agent.closeTask();
-      ctx.emit('task.completed', { agent: name, outcome: 'failed', error: error as never }, agent.participant);
+      ctx.emit('task.completed', { agent: name, outcome: 'failed', error }, agent.participant);
     };
 
-    return new F1Agent(env, key, (self) => [
+    return new F1Agent(env, 'researcher', (self) => [
       {
+        // STEP 1: every activated gather step, then ONE analysis call over the combined evidence
         specification: new OnEventTypes(['task.assigned']),
         processor: guarded(ctx.guard(name), async ({ event }) => {
           if ((event.payload as { agent: string }).agent !== name) return;
           const opened = self.openTask(settings.agentTimeoutMs, () => ctx.emit('task.completed', { agent: name, outcome: 'failed', error: toSafeError('timeout') }, self.participant));
           if (!opened) return;
 
-          const prep = await PREPARE[key](env, self);
+          const prep = await prepareResearch(env, self, this.planned.steps);
           if (!self.isTaskOpen() || ctx.isClosed()) return; // timed out or run ended while retrieving
-          if (prep.kind === 'skip') {
-            self.closeTask();
-            return ctx.emit('task.completed', { agent: name, outcome: 'skipped', reason: prep.reason }, self.participant);
-          }
-          if (prep.kind === 'fail') return failTask(self, prep.error);
+          if (prep.kind === 'fail') return failTask(self, prep.error as ReturnType<typeof toSafeError>);
 
           self.runJob({
             kind: 'analysis',
             message: prep.message,
             images: prep.images,
             schema: AgentOutput,
-            schemaName: `${key}_findings`,
+            schemaName: 'researcher_findings',
             maxOutputTokens: settings.analystTokens,
             onSuccess: (out) => {
               self.closeTask();
               ctx.emit('finding.posted', { agent: name, summary: out.summary, findings: out.findings, missingInformation: out.missingInformation }, self.participant);
               ctx.emit('task.completed', { agent: name, outcome: 'succeeded' }, self.participant);
             },
-            onFailure: (error) => failTask(self, error),
+            onFailure: (error) => failTask(self, error as ReturnType<typeof toSafeError>),
           });
         }),
       },
       {
-        // Cross-check: this agent reviews ANOTHER agent's claims using what it analyzed itself.
-        specification: new OnEventTypes(['crosscheck.requested']),
-        processor: guarded(ctx.guard(name), ({ event }) => {
-          const p = event.payload as { requestId: string; producer: string; reviewer: string; claims: never[] };
-          if (p.reviewer !== name) return;
-          self.runJob({
-            kind: 'review',
-            message: reviewMessage(p.requestId, p.producer, p.claims, env.input.language),
-            schema: CrosscheckAnswer,
-            schemaName: 'crosscheck_answer',
-            maxOutputTokens: settings.reviewTokens,
-            timeoutMs: settings.reviewTimeoutMs,
-            onSuccess: (out) => ctx.emit('crosscheck.answered', { requestId: p.requestId, producer: p.producer, reviewer: name, status: 'answered', answers: out.answers }, self.participant),
-            onFailure: (error) => ctx.emit('crosscheck.answered', { requestId: p.requestId, producer: p.producer, reviewer: name, status: 'failed', answers: [], error }, self.participant),
-          });
-        }),
-      },
-    ]);
-  }
-
-  // ---- synthesizer (A7) --------------------------------------------------------------------------
-
-  private buildSynthesizer(env: F1Env): F1Agent {
-    const { ctx, settings } = env;
-    const name = AGENT_INFO.synthesizer.name;
-    return new F1Agent(env, 'synthesizer', (self) => [
-      {
+        // STEP 2: the report and Product Manifest from the SHARED BOARD (written by the coordinator from the agent's events)
         specification: new OnEventTypes(['phase.ready']),
         processor: guarded(ctx.guard(name), () => {
-          // Reads the SHARED BOARD (written by the coordinator from the agents' events).
           const snap = env.board.snapshot();
-          const failed = snap.participantStatuses.filter((s) => s.state === 'failed' || s.state === 'timed_out');
-          const partial = failed.length > 0;
+          // partial = a source the user DID supply could not be read (a source the user did not supply is not a failure)
+          const failedSources = snap.sources.some((s) => s.status === 'failed' && s.kind !== 'user_input' && s.kind !== 'search_result' && s.producer !== 'Phase Coordinator');
           const digest: SynthDigest = {
             input: env.input,
-            plan: { activated: snap.plan?.activated ?? [], skipped: snap.plan?.skipped ?? [] },
+            plan: { activated: snap.plan?.activated ?? [], skipped: this.planned.notGathered.map((n) => ({ agent: n.label, reason: n.reason })) },
             statuses: snap.participantStatuses.map((s) => ({ agent: s.agent, state: s.state, reason: s.error?.message ?? s.reason })),
             sources: snap.sources.map((s) => ({ id: s.id, kind: s.kind, label: s.label, status: s.status, live: s.live, fixture: s.fixture, error: s.error })),
             findings: snap.findings,
             summaries: snap.summaries,
-            crosschecks: snap.crosschecks.map((c) => ({ claimId: c.claimId, producer: c.producer, reviewer: c.reviewer, verdict: c.verdict, rationale: c.rationale, correction: c.correction, status: c.status })),
             missing: [...new Set(snap.missingInformation.map((m) => m.text))].slice(0, 24),
-            partial,
+            partial: failedSources,
           };
           self.openTask(settings.synthTimeoutMs, () => {
             ctx.emit('task.completed', { agent: name, outcome: 'failed', error: toSafeError('timeout') }, self.participant);
@@ -413,21 +364,21 @@ export class F1Program implements RunProgram {
             onSuccess: (draft) => {
               self.closeTask();
               const final = env.board.snapshot();
-              const { report, issues, analyzed } = finalizeReportV2(draft, final, env.input, { partial, palette: env.palette });
+              const { report, issues, analyzed } = finalizeReportV2(draft, final, env.input, { partial: digest.partial, palette: env.palette });
               const usage = env.gateway.usage();
               const meta: ReportMeta = {
                 schemaVersion: REPORT_V2_VERSION,
                 model: settings.model,
                 provider: env.gateway.provider,
                 generatedAt: new Date().toISOString(),
-                partial,
+                partial: digest.partial,
                 usage,
-                budget: { maxModelCalls: settings.maxModelCalls, analystTokens: settings.analystTokens, reviewTokens: settings.reviewTokens, synthTokens: settings.synthTokens },
+                budget: { maxModelCalls: settings.maxModelCalls, analystTokens: settings.analystTokens, reviewTokens: 0, synthTokens: settings.synthTokens },
                 plan: final.plan ?? { activated: [], skipped: [] },
                 participants: final.participantStatuses.map((s) => (s.agent === name ? { ...s, state: 'done' as const, error: null } : s)),
                 sources: final.sources,
                 findings: final.findings,
-                crosschecks: final.crosschecks,
+                crosschecks: [],
                 summaries: final.summaries,
                 policyIssues: [...env.policyIssues, ...issues],
                 analyzed,
@@ -452,13 +403,12 @@ export class F1Program implements RunProgram {
 
   private notAnalyzed(sources: SourceRecord[], analyzed: AnalyzedSections): { label: string; reason: string }[] {
     const out: { label: string; reason: string }[] = [];
-    const plan = this.planned.plan;
-    for (const s of plan.skipped) out.push({ label: s.agent, reason: s.reason });
+    for (const s of this.planned.notGathered) out.push(s);
     for (const s of sources.filter((x) => x.status !== 'retrieved' && x.kind !== 'user_input')) out.push({ label: s.label, reason: `${s.status}${s.error ? `: ${s.error}` : ''}` });
     for (const p of this.input.availableSources.socialProfiles) out.push({ label: `${p.platform}: ${p.url}`, reason: 'Social profiles are listed but not retrieved in F1.' });
-    if (!analyzed.website && this.input.availableSources.websiteUrl && !out.some((o) => o.label.includes('Web'))) out.push({ label: this.input.availableSources.websiteUrl, reason: 'The website was not analyzed.' });
+    if (!analyzed.website && this.input.availableSources.websiteUrl && !out.some((o) => o.label === this.input.availableSources.websiteUrl)) out.push({ label: this.input.availableSources.websiteUrl, reason: 'The website was not analyzed.' });
     return out;
   }
 }
 
-export { ANALYST_KEYS, F1BoardStore };
+export { F1BoardStore };

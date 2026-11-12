@@ -1,58 +1,44 @@
 import type { SafeProviderError } from '../ai/errors';
 import type { CrosscheckRecord, ParticipantStatus, SourceRecord } from '../discovery/f1/board';
 import type { EvidenceStatus } from '../discovery/schemas';
-import type { FindingKind } from '../audit/board';
-import { CHANNELS, channelById, channelOfScoutName, scoutName, type ChannelId } from './channels';
-import type { LlmStrategyFinding } from './schemas';
+import { CHANNELS, type ChannelId } from './channels';
+import type { LlmStrategyFinding, StrategyFindingKind } from './schemas';
 
 /**
- * The F3 shared board: typed in-memory state of one Market Research & Strategy run.
- * Same single-writer rule as F1/F2: only the Strategy Coordinator mutates it, in response to Mozaik events.
- * Never holds credentials.
+ * The F3 shared board: typed in-memory state of one Strategy run.
+ * Single-writer rule: only the Strategy Coordinator mutates it, in response to Mozaik events. Never holds credentials.
+ *
+ * V4: ONE agent, the Marketing Strategist (A2). It gathers the competitor pages and the holiday calendar with deterministic
+ * tools, writes its research findings (audience, competitors, the five social channels, timing) in one model call and the
+ * campaign strategy from those committed findings in a second one. The earlier researchers, Channel Scouts and cross-checks
+ * are gone; strategies saved before V4 keep their stored shape (their agent names are plain data).
  */
-export const BASE_KEYS = ['audience', 'competitor', 'seasonal', 'strategist'] as const;
+export const BASE_KEYS = ['strategist'] as const;
 export type BaseKey = (typeof BASE_KEYS)[number];
-/** Base researchers that run first (the Channel Scouts depend on them). */
-export const RESEARCHER_KEYS = ['audience', 'competitor', 'seasonal'] as const;
-export type ResearcherKey = (typeof RESEARCHER_KEYS)[number];
 
 export const STRATEGY_INFO: Record<BaseKey, { code: string; name: string; role: string; area: StrategyArea }> = {
-  audience: { code: 'A14', name: 'Audience Researcher', role: 'Customer segments, needs and barriers (as hypotheses unless evidenced)', area: 'audience' },
-  competitor: { code: 'A15', name: 'Competitor Researcher', role: 'Real competitors from retrieved sources and their observable positioning', area: 'competitor' },
-  seasonal: { code: 'A17', name: 'Seasonal Intelligence', role: 'Time-sensitive and seasonal opportunities', area: 'seasonal' },
-  strategist: { code: 'A18', name: 'Campaign Strategist', role: 'Combines F1, F2 and the research into the campaign strategy', area: 'strategy' },
+  strategist: { code: 'A2', name: 'Marketing Strategist', role: 'Researches the audience, competitors, channels and timing from authorized sources, then writes positioning, key messages, content pillars and the channel strategy', area: 'strategy' },
 };
-export const SCOUT_CODE = 'A16';
 export const STRATEGY_COORDINATOR_NAME = 'Strategy Coordinator';
 
 export type StrategyArea = 'audience' | 'competitor' | 'channel' | 'seasonal' | 'strategy';
 
-export type StrategyAgentKind = { key: BaseKey } | { key: 'scout'; channel: ChannelId };
-/** Resolves a participant name to its role (scouts are named "<Channel> Scout"). */
-export function strategyRoleByName(name: string): StrategyAgentKind | undefined {
-  for (const k of BASE_KEYS) if (STRATEGY_INFO[k].name === name) return { key: k };
-  const channel = channelOfScoutName(name);
-  return channel ? { key: 'scout', channel } : undefined;
-}
-export const areaOf = (name: string): StrategyArea => {
-  const r = strategyRoleByName(name);
-  return !r ? 'strategy' : r.key === 'scout' ? 'channel' : STRATEGY_INFO[r.key].area;
-};
-const codeOf = (name: string) => {
-  const r = strategyRoleByName(name);
-  return !r ? '--' : r.key === 'scout' ? SCOUT_CODE : STRATEGY_INFO[r.key].code;
-};
+/** The research area of a finding follows from the typed detail it carries (one agent writes all areas). */
+export const areaOfFinding = (f: Pick<LlmStrategyFinding, 'segment' | 'competitor' | 'channel' | 'opportunity'>): StrategyArea =>
+  f.segment ? 'audience' : f.competitor ? 'competitor' : f.channel ? 'channel' : f.opportunity ? 'seasonal' : 'strategy';
+
+const codeOf = (name: string) => (name === STRATEGY_INFO.strategist.name ? STRATEGY_INFO.strategist.code : '--');
 
 export type StrategySourceType = LlmStrategyFinding['sourceType'];
 
-/** A StrategicFinding: one evidence-bearing statement of one participant, with provenance. */
+/** A StrategicFinding: one evidence-bearing statement, with provenance. */
 export interface StrategyFinding {
   id: string;
   agent: string;
   area: StrategyArea;
-  /** Set for Channel Scout findings. */
+  /** Set for channel evaluations. */
   channel: ChannelId | null;
-  kind: FindingKind;
+  kind: StrategyFindingKind;
   title: string;
   statement: string;
   classification: EvidenceStatus;
@@ -68,11 +54,13 @@ export interface StrategyFinding {
   competitor: LlmStrategyFinding['competitor'];
   channelEval: LlmStrategyFinding['channel'];
   opportunity: LlmStrategyFinding['opportunity'];
+  /** Always not_requested for V4 runs (there is no second analyst to cross-check); older stored strategies carry real values. */
   crosscheck: { status: 'not_requested' | 'pending' | 'agreed' | 'disputed' | 'corrected' | 'insufficient'; reviewers: string[] };
   adjustment: string | null;
   at: string;
 }
 
+/** LEGACY: the Channel Scout selection of strategies saved before V4. New runs store an empty list. */
 export interface ScoutDecision {
   channel: ChannelId;
   name: string;
@@ -89,11 +77,13 @@ export interface StrategyPlan {
 
 export interface StrategyBoard {
   plan: StrategyPlan | null;
+  /** LEGACY, always empty for V4 runs. */
   scoutDecisions: ScoutDecision[];
   sources: SourceRecord[];
   findings: StrategyFinding[];
   missingInformation: { agent: string; text: string }[];
   summaries: Record<string, string>;
+  /** LEGACY, always empty for V4 runs. */
   crosschecks: CrosscheckRecord[];
   participantStatuses: ParticipantStatus[];
 }
@@ -107,7 +97,7 @@ export class StrategyBoardStore implements StrategyBoard {
   readonly summaries: Record<string, string> = {};
   readonly crosschecks: CrosscheckRecord[] = [];
   readonly participantStatuses: ParticipantStatus[] = [];
-  private counters = new Map<string, number>();
+  private counter = 0;
 
   setStatus(agent: string, patch: Partial<Omit<ParticipantStatus, 'agent' | 'code'>> & { error?: SafeProviderError | null }) {
     let s = this.participantStatuses.find((p) => p.agent === agent);
@@ -123,13 +113,9 @@ export class StrategyBoardStore implements StrategyBoard {
     if (!this.sources.some((s) => s.id === r.id)) this.sources.push(r);
   }
 
-  /** A14-1, A15-2, A17-1, A16-IG-1 ... Unique per participant. */
-  nextFindingId(agent: string) {
-    const role = strategyRoleByName(agent);
-    const prefix = !role ? 'F' : role.key === 'scout' ? `${SCOUT_CODE}-${channelById(role.channel)!.short}` : STRATEGY_INFO[role.key].code;
-    const n = (this.counters.get(prefix) ?? 0) + 1;
-    this.counters.set(prefix, n);
-    return `${prefix}-${n}`;
+  /** A2-1, A2-2 ... (the Marketing Strategist's code). */
+  nextFindingId(_agent: string) {
+    return `${STRATEGY_INFO.strategist.code}-${++this.counter}`;
   }
 
   findingsBy(agent: string) {
@@ -150,4 +136,4 @@ export class StrategyBoardStore implements StrategyBoard {
   }
 }
 
-export { CHANNELS, scoutName };
+export { CHANNELS };

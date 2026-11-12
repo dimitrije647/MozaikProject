@@ -10,10 +10,6 @@ export const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,99}$/;
 class SetModelDto {
   @IsString() @Matches(MODEL_ID_PATTERN, { message: 'model must be a valid OpenAI model id' }) model: string;
 }
-class TestImageModelDto {
-  /** "auto" = the first current GPT Image model the key lists. */
-  @IsString() @Matches(/^(auto|gpt-image-[A-Za-z0-9._-]{1,40}|dall-e-[23])$/, { message: 'imageModel must be "auto" or an image model id' }) imageModel: string;
-}
 class TestConnectionDto {
   @IsOptional() @IsString() @Matches(MODEL_ID_PATTERN, { message: 'model must be a valid OpenAI model id' }) model?: string;
 }
@@ -45,12 +41,6 @@ export class OpenAiController {
     return this.svc.testConnection(u.id, dto.model);
   }
 
-  /** Makes ONE real image request (billed by OpenAI), only when explicitly requested. The image is discarded. */
-  @Post('image-test')
-  @HttpCode(200)
-  imageTest(@CurrentUser() u: AuthUser, @Body() dto: TestImageModelDto) {
-    return this.svc.testImageModel(u.id, dto.imageModel);
-  }
 }
 
 @Module({

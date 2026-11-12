@@ -99,9 +99,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </nav>
 
       <div className="mt-auto rounded-2xl bg-ink p-4 text-cream-100">
-        <p className="font-serif text-lg leading-snug">Discovery is live.</p>
+        <p className="font-serif text-lg leading-snug">One click, one campaign.</p>
         <p className="mt-1 text-xs text-muted-dark">
-          Run Product Discovery from any project workspace with your own OpenAI key. More agents are coming.
+          Open a project and press Generate campaign: posts for five platforms, ads, a billboard and a flyer in one ZIP, on your own AI provider key.
         </p>
       </div>
     </div>

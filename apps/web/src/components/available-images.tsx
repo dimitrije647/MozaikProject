@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { AlertCircle, Check, ExternalLink, ImageOff, Search, Upload } from 'lucide-react';
-import { ProviderList } from '@/components/no-ai';
+import { ProviderList } from '@/components/image-providers';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/toast';
@@ -24,7 +24,7 @@ import {
 import { cn } from '@/lib/utils';
 
 /*
- * AVAILABLE IMAGES: the pictures a NO AI HYBRID campaign can be built from, where each one came from and under which rights. Nothing here
+ * AVAILABLE IMAGES: the pictures a campaign can be built from, where each one came from and under which rights. Nothing here
  * generates an image or calls a paid service. A website or repository picture is downloaded by the server only after the owner confirms
  * the rights; a licensed stock picture whose license needs a check is used only after the owner confirms it; social media links are
  * references only (LaunchPilot never copies platform content). The server's verdict (rights.eligible and its reason) is shown as it is.

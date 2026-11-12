@@ -20,7 +20,7 @@ export interface ChainRows {
   projectId: string;
   f1?: ChainRow | null;
   f2?: (ChainRow & { f1ReportId: string }) | null;
-  f3?: (ChainRow & { f1ReportId: string; f2AuditId: string }) | null;
+  f3?: (ChainRow & { f1ReportId: string; f2AuditId: string | null }) | null;
   /** Which reports the next phase will actually read (default: all three). */
   expect?: ReportKind[];
 }
@@ -103,7 +103,7 @@ export function checkSavedChain(rows: ChainRows): ChainCheck {
     link('The strategy brief refers to a different Product Discovery report than the saved one.', f3.report.creativeBrief.provenance.f1ReportId, rows.f1.id);
   }
   if (f3 && rows.f2) {
-    link('The strategy refers to a different Marketing Audit than the saved one.', f3.report.existingMarketing.f2AuditId, rows.f2.id);
+    link('The strategy refers to a different Marketing Audit than the saved one.', f3.report.existingMarketing?.f2AuditId, rows.f2.id);
     link('The strategy brief refers to a different Marketing Audit than the saved one.', f3.report.creativeBrief.provenance.f2AuditId, rows.f2.id);
   }
 

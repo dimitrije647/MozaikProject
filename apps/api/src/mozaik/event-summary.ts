@@ -1,7 +1,8 @@
 type Obj = Record<string, any>;
 const n = (v: unknown) => (Array.isArray(v) ? v.length : 0);
 
-/** Persisted Mozaik events worth showing as agent activity (model-loop noise such as inference.* is left out). */
+/** Persisted Mozaik events worth showing as agent activity (model-loop noise such as inference.* is left out). Events only historical runs emit
+ * (crosscheck.*, landing.proposed, visual.generated, fix.requested, template.quality.*) stay listed so old runs still read correctly. */
 export const ACTIVITY_EVENT_TYPES = [
   'factory.started', 'factory.completed', 'factory.failed', 'factory.cancelled',
   'phase.started', 'phase.ready', 'phase.completed', 'phase.failed',
@@ -37,8 +38,8 @@ export function summarizeEvent(type: string, p: Obj): string {
     case 'report.generated':
     case 'audit.completed':
     case 'strategy.completed': return 'result saved';
-    case 'copy.proposed': return `${n(p.concepts)} concept(s), ${n(p.variants)} copy variant(s) proposed`;
-    case 'landing.proposed': return 'landing page content proposed';
+    case 'copy.proposed': return `${n(p.concepts)} concept(s), ${n(p.variants)} text(s) written (posts, ads, print)`;
+    case 'landing.proposed': return 'landing page content proposed (historical run)';
     case 'visual.generated': {
       const v = p.variation as { variationName?: string; variationId?: string; status?: string; explanation?: string | null } | undefined;
       if (v) {
@@ -61,14 +62,14 @@ export function summarizeEvent(type: string, p: Obj): string {
     case 'visual.direction.published': return `${p.direction?.styleId ?? 'style'} direction published (${p.refined ? 'refined by one text-model call' : 'from the style library and the brand'}, ${(p.direction?.references ?? []).length} reference(s) recorded)`;
     case 'images.sourcing.requested': return `Sourcing pictures for ${Number(p.slots) || 0} planned creative(s) across ${Number(p.concepts) || 0} concept(s)`;
     case 'images.sourced': return String(p.summary ?? 'Pictures sourced').slice(0, 220);
-    case 'image.generation.refused': return `An image-generation request was refused before anything was sent (${Number(p.count) || 0}): NO AI HYBRID never generates images`;
+    case 'image.generation.refused': return `An image-generation request was refused before anything was sent (${Number(p.count) || 0}): LaunchPilot never generates images`;
     case 'template.selection.completed': return `${n(p.plan?.items)} template creative(s) planned from ${p.plan?.eligibleCount ?? '?'} eligible template(s) (${p.mode}${p.modelAssisted ? ', model-assisted' : ', no model call'})`;
     case 'template.quality.requested': return `${p.planned} planned template creative(s) to check`;
     case 'template.quality.completed': return p.report ? `${p.report.summary}` : `check did not run${p.error ? `: ${p.error}` : ''}`;
     case 'review.requested': return `round ${p.round}: ${n(p.scope?.variantIds)} variant(s), ${n(p.scope?.assetIds)} asset(s)${p.scope?.landing ? ', landing page' : ''}`;
     case 'review.completed': return `round ${p.round}: ${n(p.findings)} finding(s), model review ${p.modelReview}`;
-    case 'fix.requested': return `round ${p.round}: ${n(p.findingIds)} finding(s) handed to the Fixer`;
-    case 'revision.requested': return `Fixer → ${p.agent}: ${n(p.operations)} repair operation(s), wave ${p.wave}`;
+    case 'fix.requested': return `round ${p.round}: ${n(p.findingIds)} finding(s) handed to the Fixer (historical run)`;
+    case 'revision.requested': return `${p.requestedBy ?? 'Quality Reviewer'} → ${p.agent}: ${n(p.operations)} correction(s) requested${p.wave ? `, wave ${p.wave}` : ''}`;
     case 'revision.applied': return `${p.owner}: ${p.status} — ${p.note}`;
     case 'revision.completed': return `round ${p.round}: ${(p.results ?? []).filter((r: Obj) => r.status === 'applied').length} of ${n(p.results)} repair(s) applied`;
     case 'campaign.completed': return 'campaign package saved';

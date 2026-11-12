@@ -247,6 +247,7 @@ const DENSITY_CUE = {
 } as const;
 
 const CHANNEL_NOTES: Record<ChannelId, string> = {
+  x: 'Timeline images show at 16:9 or 1:1: one bold subject, short overlay text, readable at a small size.',
   instagram: 'Feed 4:5 or 1:1 and stories 9:16: subject in the middle 80%, text in the top or bottom third.',
   facebook: 'Feed images crop to 1:1 or 1.91:1: subject near the center, no fine detail at the edges.',
   linkedin: 'Landscape or square, understated and professional: one idea per image, restrained color.',

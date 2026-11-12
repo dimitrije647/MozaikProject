@@ -1,85 +1,56 @@
-import type { RunEvent, RunStatus } from './types';
+import type { FactoryActivityItem, PhaseKey } from './types';
 
-export type StepState = 'waiting' | 'working' | 'done' | 'failed' | 'stopped';
-
-export interface ProgressStep {
-  key: 'input' | 'text' | 'checker' | 'synthesizer';
-  name: string;
-  description: string;
-  state: StepState;
-  detail?: string;
-}
-
-const P = (e: RunEvent) => (e.payload ?? {}) as Record<string, any>;
-
-/**
- * Derives the agent timeline ONLY from persisted Mozaik events (the same history the backend
- * stores), never from client-side timers: what you see is what actually happened.
+/*
+ * THE MOZAIK TEAM of Campaign Production (V4) and its progress, derived ONLY from the persisted Mozaik events of the run (the same history the
+ * backend stores), never from client-side timers: what you see is what actually happened. Historical runs (pre-V4 agent names) still render:
+ * their participants are listed by the names they recorded.
  */
-export function deriveProgress(events: RunEvent[], runStatus: RunStatus | undefined): ProgressStep[] {
-  const assigned = (name: string) => events.some((e) => e.eventType === 'task.assigned' && P(e).agent === name);
-  const completed = (name: string) => events.find((e) => e.eventType === 'task.completed' && P(e).agent === name);
-  const has = (type: string) => events.some((e) => e.eventType === type);
 
-  const analyzer = (key: 'input' | 'text', name: string, description: string): ProgressStep => {
-    const done = completed(name);
-    if (done) {
-      const ok = P(done).outcome === 'succeeded';
-      return { key, name, description, state: ok ? 'done' : 'failed', detail: ok ? 'Finding posted' : P(done).error?.message ?? 'Failed' };
-    }
-    return { key, name, description, state: assigned(name) ? 'working' : 'waiting' };
-  };
+export type StepState = 'waiting' | 'working' | 'done' | 'failed' | 'skipped';
 
-  const input = analyzer('input', 'Input Analyzer', 'Understands the raw idea: category, problem, value, known facts and gaps');
-  const text = analyzer('text', 'Text Analyzer', 'Deeper reading of the text: offerings, needs, strengths, ambiguities');
-
-  const bothReported = input.state !== 'waiting' && input.state !== 'working' && text.state !== 'waiting' && text.state !== 'working';
-  const crosschecked = events.find((e) => e.eventType === 'crosscheck.answered');
-  const phaseFailed = events.find((e) => e.eventType === 'phase.failed');
-  const checker: ProgressStep = {
-    key: 'checker',
-    name: 'Evidence Cross-Checker',
-    description: 'Waits for both analyzers, enforces the evidence rules, flags contradictions',
-    state: crosschecked ? 'done' : phaseFailed && P(phaseFailed).reason === 'all_analyzers_failed' ? 'failed' : bothReported ? 'working' : 'waiting',
-    detail: crosschecked ? `${P(crosschecked).issueCount ?? 0} issue(s) flagged${P(crosschecked).partial ? ', partial input' : ''}` : undefined,
-  };
-
-  const synthDone = completed('Product Synthesizer');
-  const synthesizer: ProgressStep = {
-    key: 'synthesizer',
-    name: 'Product Synthesizer',
-    description: 'Reviews both findings and the cross-check, then writes the report',
-    state: synthDone ? (P(synthDone).outcome === 'succeeded' ? 'done' : 'failed') : crosschecked ? 'working' : 'waiting',
-    detail: synthDone && P(synthDone).outcome !== 'succeeded' ? P(synthDone).error?.message : has('report.generated') ? 'Report generated' : undefined,
-  };
-
-  const steps = [input, text, checker, synthesizer];
-  // If the run ended without finishing a step, show it as stopped rather than "working".
-  if (runStatus && runStatus !== 'RUNNING') {
-    for (const s of steps) if (s.state === 'working') s.state = 'stopped';
-  }
-  return steps;
+export interface TeamMember {
+  code: string;
+  name: string;
+  stage: PhaseKey;
+  role: string;
+  /** false = deterministic (no model call, no cost). */
+  usesModel: boolean;
 }
 
-export interface UsageSummary {
-  calls: number;
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
+export const CAMPAIGN_TEAM: TeamMember[] = [
+  { code: 'A1', name: 'Business Researcher', stage: 'discovery', role: 'Reads your intake, website, repository, documents and images; extracts evidenced facts', usesModel: true },
+  { code: 'A2', name: 'Marketing Strategist', stage: 'strategy', role: 'Positioning, key messages, content pillars and the channel strategy', usesModel: true },
+  { code: 'A3', name: 'Content Writer', stage: 'creative', role: 'Concepts, platform posts, ad and print copy, TikTok script', usesModel: true },
+  { code: 'A4', name: 'Visual Researcher', stage: 'creative', role: 'Approved and licensed pictures, rights and provenance', usesModel: false },
+  { code: 'A5', name: 'Creative Designer', stage: 'creative', role: 'Chooses templates and renders every format locally', usesModel: false },
+  { code: 'A6', name: 'Quality Reviewer', stage: 'creative', role: 'Facts, brand, rights and format checks; bounded corrections', usesModel: true },
+];
+
+/** Deterministic coordinators (no model calls). */
+export const COORDINATORS = ['Phase Coordinator', 'Strategy Coordinator', 'Creative Coordinator', 'Factory Orchestrator'];
+
+export interface MemberProgress extends TeamMember {
+  state: StepState;
+  detail: string | null;
 }
 
-/** Sums the token counts OpenAI returned, from the persisted `inference.completed` events. */
-export function usageFromEvents(events: RunEvent[]): UsageSummary {
-  const total: UsageSummary = { calls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-  for (const e of events) {
-    if (e.eventType !== 'inference.completed') continue;
-    const u = P(e).tokenUsage;
-    total.calls += 1;
-    if (u) {
-      total.inputTokens += Number(u.inputTokens) || 0;
-      total.outputTokens += Number(u.outputTokens) || 0;
-      total.totalTokens += Number(u.totalTokens) || 0;
-    }
-  }
-  return total;
+/** The state of every team member, from the run's recorded task events. */
+export function teamProgress(events: FactoryActivityItem[], runActive: boolean): MemberProgress[] {
+  return CAMPAIGN_TEAM.map((m) => {
+    const mine = events.filter((e) => e.participant === m.name || e.summary.startsWith(m.name));
+    const completed = [...mine].reverse().find((e) => e.type === 'task.completed');
+    const assigned = mine.some((e) => e.type === 'task.assigned' || e.type === 'participant.registered');
+    const idle = mine.find((e) => e.type === 'participant.idle');
+    let state: StepState = 'waiting';
+    if (completed) state = /failed|timed_out/.test(completed.summary) ? 'failed' : /skipped/.test(completed.summary) ? 'skipped' : 'done';
+    else if (idle) state = 'skipped';
+    else if (assigned || mine.length) state = runActive ? 'working' : 'failed';
+    return { ...m, state, detail: completed?.summary ?? idle?.summary ?? null };
+  });
+}
+
+/** Participants a historical run recorded that are not part of the V4 team (shown as they were, read-only). */
+export function otherParticipants(events: FactoryActivityItem[]): string[] {
+  const known = new Set([...CAMPAIGN_TEAM.map((m) => m.name), ...COORDINATORS]);
+  return [...new Set(events.map((e) => e.participant).filter((p): p is string => !!p && !known.has(p)))];
 }

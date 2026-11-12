@@ -1,6 +1,6 @@
 import type { SafeProviderError } from '../../../ai/errors';
 import type { SourceRecord } from '../../../discovery/f1/board';
-import { evidenceMessage, inputAnalyzerMessage, sourceBlock, textAnalyzerMessage, visualMessage } from '../../../discovery/f1/prompts';
+import { researcherMessage, sourceBlock } from '../../../discovery/f1/prompts';
 import type { ExtractedPage } from '../../../tools/html';
 import { readPage } from '../../../tools/page-reader';
 import { SearchError } from '../../../tools/web-search';
@@ -8,16 +8,19 @@ import type { F1Agent } from './agent';
 import type { F1Env } from './env';
 
 /**
- * The deterministic "gather" step of each analyst. Tools (HTTP, GitHub API, parsers) do the retrieval;
- * the model only ever sees the compact, delimited result. Every retrieval is published as a
- * `source.retrieved` event, success or failure, so the UI shows exactly what was and was not read.
+ * The deterministic "gather" steps of the Business Researcher. Tools (HTTP, GitHub API, parsers) do the retrieval; the model only
+ * ever sees the compact, delimited result. Every retrieval is published as a `source.retrieved` event, success or failure, so the UI
+ * shows exactly what was and was not read. A source that fails is a note, never fatal on its own.
  */
 export type Prep =
   | { kind: 'ready'; message: string; images?: { mediaType: string; base64: string }[] }
-  | { kind: 'skip'; reason: string }
   | { kind: 'fail'; error: SafeProviderError };
 
-const fail = (message: string): Prep => ({ kind: 'fail', error: { code: 'source_unavailable', message } });
+/** What one gather step contributed: evidence blocks for the model and notes on what could not be read. */
+interface Gathered {
+  blocks: string[];
+  notes: string[];
+}
 
 type NewSource = Pick<SourceRecord, 'kind' | 'label' | 'status'> & Partial<Omit<SourceRecord, 'id' | 'retrievedAt' | 'excerpt' | 'chars'>>;
 
@@ -45,15 +48,7 @@ const pageBody = (p: ExtractedPage, cap: number) =>
     .filter(Boolean)
     .join('\n');
 
-export async function prepareInput(env: F1Env): Promise<Prep> {
-  return { kind: 'ready', message: inputAnalyzerMessage(env.input) };
-}
-
-export async function prepareText(env: F1Env): Promise<Prep> {
-  return { kind: 'ready', message: textAnalyzerMessage(env.input) };
-}
-
-export async function prepareWeb(env: F1Env, agent: F1Agent): Promise<Prep> {
+async function gatherWeb(env: F1Env, agent: F1Agent): Promise<Gathered> {
   const { web, search, extract } = env.tools;
   const signal = agent.signal;
   const fixture = env.settings.fixtureSources;
@@ -140,18 +135,17 @@ export async function prepareWeb(env: F1Env, agent: F1Agent): Promise<Prep> {
     addSource(env, agent, { kind: 'search_result', label: 'Web search', status: 'skipped', error: 'No search provider is configured (set TAVILY_API_KEY). No general web search was performed.' });
   }
 
-  if (!blocks.length) return fail(`The website could not be retrieved and no search results are available. ${notes[0] ?? ''}`.trim());
-  const extra = `Retrieved ${pages} page(s) of the website.${notes.length ? `\nRetrieval problems (do not guess what these contained):\n- ${notes.join('\n- ')}` : ''}`;
-  return { kind: 'ready', message: evidenceMessage('Web Analyzer', env.input, blocks, extra) };
+  if (pages) notes.unshift(`Retrieved ${pages} page(s) of the website.`);
+  return { blocks, notes };
 }
 
-export async function prepareRepo(env: F1Env, agent: F1Agent): Promise<Prep> {
+async function gatherRepo(env: F1Env, agent: F1Agent): Promise<Gathered> {
   const fixture = env.settings.fixtureSources;
   const url = env.input.availableSources.githubUrl!;
   const res = await env.tools.github.inspect(url, agent.signal);
   if (!res.ok) {
     addSource(env, agent, { kind: 'repository', label: url, url, status: 'failed', live: true, fixture, error: res.message });
-    return fail(res.message);
+    return { blocks: [], notes: [`Repository ${url}: ${res.message}`] };
   }
   const s = res.snapshot;
   const totalBytes = Object.values(s.languages).reduce((a, b) => a + b, 0) || 1;
@@ -186,11 +180,11 @@ export async function prepareRepo(env: F1Env, agent: F1Agent): Promise<Prep> {
     const rec = addSource(env, agent, { kind: 'repository', label: m.path, status: 'retrieved', ...common }, m.text);
     blocks.push(sourceBlock(rec, m.text.slice(0, 1500)));
   }
-  const extra = `Repository inspected through the official GitHub API (${s.apiCalls} calls). Nothing was cloned or executed.${s.incomplete.length ? `\nNot retrieved (do not guess): ${s.incomplete.join(', ')}.` : ''}`;
-  return { kind: 'ready', message: evidenceMessage('Repo Analyzer', env.input, blocks, extra) };
+  const notes = [`Repository inspected through the official GitHub API (${s.apiCalls} calls). Nothing was cloned or executed.${s.incomplete.length ? ` Not retrieved (do not guess): ${s.incomplete.join(', ')}.` : ''}`];
+  return { blocks, notes };
 }
 
-export async function prepareFiles(env: F1Env, agent: F1Agent): Promise<Prep> {
+async function gatherFiles(env: F1Env, agent: F1Agent): Promise<Gathered> {
   const docs = await env.tools.documents.extractAll(env.documents, agent.signal);
   const blocks: string[] = [];
   const problems: string[] = [];
@@ -204,12 +198,16 @@ export async function prepareFiles(env: F1Env, agent: F1Agent): Promise<Prep> {
     const rec = addSource(env, agent, { kind: 'document', label: d.name, status: 'retrieved', notes: [...d.notes, ...(d.truncated ? ['Text was truncated to the size limit.'] : [])] }, full);
     blocks.push(sourceBlock(rec, `file: ${d.name}\nformat: ${d.format}${d.pages ? `\npages: ${d.pages}` : ''}\n${full.slice(0, 6000)}`));
   }
-  if (!blocks.length) return problems.length ? fail(`No uploaded document could be read. ${problems[0]}`) : { kind: 'skip', reason: 'No readable documents.' };
-  const extra = problems.length ? `Documents that could not be read (do not guess their content):\n- ${problems.join('\n- ')}` : '';
-  return { kind: 'ready', message: evidenceMessage('File Analyzer', env.input, blocks, extra) };
+  return { blocks, notes: problems.map((p) => `Document not read: ${p}`) };
 }
 
-export async function prepareVisual(env: F1Env, agent: F1Agent): Promise<Prep> {
+interface PreparedImages {
+  images: { mediaType: string; base64: string }[];
+  meta: { name: string; kind: string; width: number; height: number; palette: { hex: string; share: number }[] }[];
+  notes: string[];
+}
+
+async function gatherImages(env: F1Env, agent: F1Agent): Promise<PreparedImages> {
   const results = await env.tools.images.prepareAll(env.images, agent.signal);
   const prepared = results.filter((r) => r.prepared).map((r) => r.prepared!);
   for (const r of results) {
@@ -220,14 +218,35 @@ export async function prepareVisual(env: F1Env, agent: F1Agent): Promise<Prep> {
       addSource(env, agent, { kind: 'image', label: r.name, status: r.status === 'skipped' ? 'skipped' : 'failed', error: r.reason });
     }
   }
-  if (!prepared.length) {
-    const failed = results.find((r) => r.status === 'failed');
-    return failed ? fail(`No image could be processed. ${failed.reason}`) : { kind: 'skip', reason: results[0]?.reason ?? 'No usable images.' };
-  }
-  env.palette = [...new Set(prepared.flatMap((p) => p.palette.map((c) => c.hex)))].slice(0, 6);
-  return {
-    kind: 'ready',
-    message: visualMessage(env.input, prepared),
-    images: prepared.map((p) => ({ mediaType: p.mimeType, base64: p.base64 })),
+  const notes = results.filter((r) => !r.prepared).map((r) => `Image ${r.name} not used: ${r.reason}`);
+  if (prepared.length) env.palette = [...new Set(prepared.flatMap((p) => p.palette.map((c) => c.hex)))].slice(0, 6);
+  return { images: prepared.map((p) => ({ mediaType: p.mimeType, base64: p.base64 })), meta: prepared, notes };
+}
+
+/** Which gather steps run (decided by planF1 from what the user supplied). The project input is always analyzed. */
+export interface ResearchSteps {
+  web: boolean;
+  repo: boolean;
+  files: boolean;
+  images: boolean;
+}
+
+/**
+ * Runs every activated gather step one after the other (each publishes its own sources) and builds the ONE analysis message.
+ * The project input can always be analyzed, so it fails only when the task was stopped (deadline or cancellation) while retrieving.
+ */
+export async function prepareResearch(env: F1Env, agent: F1Agent, steps: ResearchSteps): Promise<Prep> {
+  const blocks: string[] = [];
+  const notes: string[] = [];
+  const take = (g: Gathered) => {
+    blocks.push(...g.blocks);
+    notes.push(...g.notes);
   };
+  if (steps.web) take(await gatherWeb(env, agent));
+  if (steps.repo && !agent.signal.aborted) take(await gatherRepo(env, agent));
+  if (steps.files && !agent.signal.aborted) take(await gatherFiles(env, agent));
+  const pictures: PreparedImages = steps.images && !agent.signal.aborted ? await gatherImages(env, agent) : { images: [], meta: [], notes: [] };
+  notes.push(...pictures.notes);
+  if (agent.signal.aborted) return { kind: 'fail', error: { code: 'cancelled', message: 'The research was stopped before the analysis.' } };
+  return { kind: 'ready', message: researcherMessage(env.input, blocks, { notes, images: pictures.meta }), images: pictures.images.length ? pictures.images : undefined };
 }

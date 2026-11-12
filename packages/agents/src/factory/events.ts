@@ -96,8 +96,8 @@ export interface FactoryEventPayloads {
    * A participant was created and joined the Mozaik runtime AFTER the phase started (F3 Channel Scouts).
    * Not selected candidates are announced with `participant.idle` (skipped) and their reason.
    */
-  /** F4: the Copywriter's concepts and channel copy (text only). */
-  'copy.proposed': { agent: string; summary: string; concepts: unknown[]; variants: unknown[]; missingInformation: string[] };
+  /** F4: the Content Writer's concepts, platform posts, ad and print copy (text only). `variants` only in runs made before V4. */
+  'copy.proposed': { agent: string; summary: string; concepts: unknown[]; posts?: unknown[]; ads?: unknown[]; print?: unknown[]; variants?: unknown[]; missingInformation: string[] };
   /** F4: the structured landing page content. */
   'landing.proposed': { agent: string; summary: string; content: unknown; missingInformation: string[] };
   /** F4: a base image (or brand-colored base) was produced and STORED; only the asset reference travels, never the bytes. */
@@ -110,21 +110,22 @@ export interface FactoryEventPayloads {
   'template.selection.completed': { agent: string; plan: unknown; mode: 'automatic' | 'assisted' | 'manual'; modelAssisted: boolean; note: string };
   /** F4 NO AI HYBRID: the coordinator asks the Visual Researcher to source and allocate pictures for the planned creatives (existing, website, repository, licensed). */
   'images.sourcing.requested': { slots: number; concepts: number };
-  /** F4 NO AI HYBRID: the Visual Researcher answers with the approved pictures, their rights and which picture each creative uses (no bytes). */
-  'images.sourced': { agent: string; summary: string; sourcing: unknown };
+  /** F4: the Visual Researcher answers with the visual direction, the approved pictures, their rights and which picture each creative uses (no bytes). */
+  'images.sourced': { agent: string; summary: string; sourcing: unknown; direction?: unknown };
   /** F4 NO AI HYBRID: something tried to request an AI image and the guard refused it before anything was sent. Carries no prompt and no secret. */
   'image.generation.refused': { agent: string | null; reason: 'no_ai_hybrid'; count: number };
   /** F4 Hybrid Production: the coordinator asks the Template Quality Reviewer to verify the template side of the export. */
   'template.quality.requested': { planned: number };
   'template.quality.completed': { agent: string; report: unknown; error?: string };
-  'review.requested': { round: number; scope: { variantIds: string[]; assetIds: string[]; landing: boolean } };
-  'review.completed': { agent: string; round: number; findings: unknown[]; summary: string; modelReview: 'done' | 'partial' | 'failed' | 'skipped'; /** The six acceptance criteria as scored by the reviewer (null when only images were reviewed). */ scores?: unknown; /** Review work left out, with the reason (a limit, a failure). */ skipped?: unknown[] };
+  /** F4: the Quality Reviewer checks this copy and these creatives (`landing` only in runs made before V4). */
+  'review.requested': { round: number; scope: { variantIds: string[]; assetIds: string[]; landing?: boolean } };
+  'review.completed': { agent: string; round: number; findings: unknown[]; summary: string; modelReview: 'done' | 'partial' | 'failed' | 'skipped'; /** The six acceptance criteria as scored by the reviewer (null when only images were reviewed). */ scores?: unknown; /** Review work left out, with the reason (a limit, a failure). */ skipped?: unknown[]; /** V4: the template quality report and the repair plan of this round. */ templateQuality?: unknown; repairs?: unknown };
   /** F4 (depth): the concepts are critiqued BEFORE any image is paid for. */
   'concept.review.requested': { concepts: unknown[] };
   'concept.review.completed': { agent: string; critique: unknown | null; deterministic: unknown[]; modelReview: 'done' | 'failed' | 'skipped' };
   /** F4: the coordinator hands the open findings of a round to the Fixer. */
   'fix.requested': { round: number; findingIds: string[] };
-  /** F4: the Fixer asks the owner of a deliverable to correct it (wave 1: copy/landing/image, wave 2: layouts). */
+  /** F4: the coordinator asks the owner of a deliverable to correct it, from the Quality Reviewer's repair plan (wave 1: the Content Writer's copy, wave 2: the Creative Designer's re-renders). */
   'revision.requested': { agent: string; round: number; wave: number; operations: unknown[] };
   'revision.applied': { owner: string; round: number; operationIds: string[]; status: 'applied' | 'failed'; note: string; patch: unknown };
   'revision.completed': { agent: string; round: number; results: unknown[] };

@@ -1,7 +1,8 @@
 import sharp from 'sharp';
-import { isHex } from './layout';
 
 export const NEUTRAL_PALETTE = ['#1f2937', '#0f172a'];
+
+export const isHex = (c: string) => /^#[0-9a-f]{6}$/i.test(c);
 
 const toHex = (r: number, g: number, b: number) => `#${[r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')}`;
 

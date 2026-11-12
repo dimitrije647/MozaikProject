@@ -6,68 +6,56 @@ import { DEFAULT_BUDGET, InferenceGateway, type InferenceBudget, type UsageSnaps
 import { capOutputTokens } from '../../ai/pricing';
 import type { F1Context } from '../../audit/context';
 import { SourceStore, type CrosscheckRecord, type ParticipantStatus, type SourceRecord } from '../../discovery/f1/board';
-import { reviewMessage } from '../../discovery/f1/prompts';
-import { CrosscheckAnswer } from '../../discovery/f1/schemas';
 import { conformanceIssues } from '../../contracts/report-contract';
 import type { AgentOutcome } from '../../factory/events';
-import { BASE_KEYS, STRATEGY_INFO, type BaseKey, type ScoutDecision, type StrategyBoardStore, type StrategyFinding, type StrategyPlan } from '../../strategy/board';
-import { CHANNELS, channelById, scoutName, type ChannelId } from '../../strategy/channels';
-import { ageDays, type F2Context, type StrategyFacts, type StrategyInput } from '../../strategy/context';
+import { STRATEGY_INFO, type ScoutDecision, type StrategyBoardStore, type StrategyFinding, type StrategyPlan } from '../../strategy/board';
+import { ageDays, type StrategyInput } from '../../strategy/context';
 import { finalizeStrategy, type StrategyPolicyContext, type StrategyPolicyIssue } from '../../strategy/policy';
-import { STRATEGY_INSTRUCTIONS, scoutInstruction, strategistMessage, type StrategyDigest } from '../../strategy/prompts';
+import { STRATEGY_INSTRUCTIONS, strategistMessage, type StrategyDigest } from '../../strategy/prompts';
 import { STRATEGY_REPORT_VERSION, CampaignStrategyReport, StrategyAgentOutput, StrategyDraft } from '../../strategy/schemas';
 import { HolidayTool } from '../../tools/holidays';
 import { createWebExtractFromEnv } from '../../tools/web-extract';
 import { WebFetchTool } from '../../tools/web-fetch';
 import { createWebSearchFromEnv } from '../../tools/web-search';
-import { ParticipantRegistry } from '../participant-registry';
 import { createTextTransport, type InferenceCredentials } from '../providers';
 import { OnEventTypes, guarded, type RunContext, type RunProgram } from '../run-context';
 import { PhaseAgent } from './f1/agent';
 import { StrategyCoordinator } from './f3/coordinator';
 import type { F3Env, F3Settings, F3Tools } from './f3/env';
-import { prepareAudience, prepareCompetitor, prepareScout, prepareSeasonal, type F3Prep } from './f3/roles';
+import { prepareResearch } from './f3/roles';
 import { clamp } from './smoke-program';
 
 const PHASE = 'F3_MARKET_STRATEGY' as const;
 
 export interface StrategyRunConfig {
-  /** The completed F1 report (built by the backend from the stored report). */
+  /** The completed business research (F1 report, built by the backend from the stored report). */
   f1: F1Context;
-  /** The completed F2 audit this strategy builds on (must reference that exact F1 report). */
-  f2: F2Context;
   input: StrategyInput;
   /** Explicit model id chosen by the user. Never defaulted or switched automatically. */
   model: string;
-  /** Hard cap on provider calls for the whole run (researchers, scouts, reviews, repairs, strategist). Default 24. */
+  /** Hard cap on provider calls for the whole run (research, strategy, retries and repairs). Default 6. */
   maxModelCalls?: number;
-  /** `max_output_tokens` for researchers and scouts. Reviews use less, the strategist up to three times as much. Default 2500. */
+  /** `max_output_tokens` of the research answer. The strategy may use up to three times as much. Default 3000. */
   maxOutputTokens?: number;
   /** The approved spending limit in US dollars for THIS run; null/absent = none. Enforced before every paid request. */
   spendCapUsd?: number | null;
   /** The campaign-wide spend ledger shared by every phase (the factory passes it). Absent = this run gets a ledger of its own with `spendCapUsd`. */
   ledger?: SpendBudget;
-  /** Deeper work where it adds something (more cross-check passes; F4: a concept critique before the images). */
-  depth?: boolean;
-  /** Maximum cross-check requests (each costs one model call). Default 6. */
-  maxReviews?: number;
-  /** Maximum dynamically created Channel Scouts. Default 4. */
-  maxScouts?: number;
   /** Category search queries per run (named competitors add one lookup each). Default 3. */
   maxSearches?: number;
   /** Competitor SITES read per run. Default 4. */
   maxCompetitorPages?: number;
   /** Pages read per competitor site: the home page plus relevant same-site pages (pricing, about, services). Default 3. */
   maxPagesPerCompetitor?: number;
+  /** Deadline of the research task (gathering plus its model call). Default 240 s. */
   agentTimeoutMs?: number;
-  reviewTimeoutMs?: number;
   callTimeoutMs?: number;
   /** Scales the clock of long structured answers with their output cap (default: on, unless callTimeoutMs is fixed). Tests may tune it. */
   generation?: Partial<GenerationTimeout>;
   timeoutMs?: number;
   maxRetries?: number;
   retryBaseDelayMs?: number;
-  /** Test seam: base URL of the OpenAI API (the backend only passes a value under NODE_ENV=test). */
+  /** Test seam: base URL of the provider API (the backend only passes a value under NODE_ENV=test). */
   baseUrl?: string;
   tools?: Partial<F3Tools>;
   /** TESTS ONLY: marks every source from external tools as a fixture (never real-world evidence). */
@@ -83,15 +71,19 @@ export interface StrategyReportMeta {
   generatedAt: string;
   partial: boolean;
   usage: UsageSnapshot;
+  /** maxScouts and maxReviews stay 0 (stored shape of strategies saved before V4). */
   budget: { maxModelCalls: number; maxScouts: number; maxReviews: number; analystTokens: number; reviewTokens: number; synthTokens: number };
-  /** The exact earlier-phase results this strategy used. */
+  /** The exact business-research result this strategy used. */
   f1: { reportId: string; schemaVersion: number; generatedAt: string | null; ageDays: number | null; partial: boolean };
-  f2: { auditId: string; schemaVersion: number; generatedAt: string | null; ageDays: number | null; partial: boolean };
+  /** The Marketing Audit an older strategy was built on. Always null for V4 strategies (no audit is run). */
+  f2: { auditId: string; schemaVersion: number; generatedAt: string | null; ageDays: number | null; partial: boolean } | null;
   plan: StrategyPlan;
+  /** LEGACY, always empty (no Channel Scouts in V4). */
   scoutDecisions: ScoutDecision[];
   participants: ParticipantStatus[];
   sources: SourceRecord[];
   findings: StrategyFinding[];
+  /** LEGACY, always empty (no cross-checks in V4). */
   crosschecks: CrosscheckRecord[];
   summaries: Record<string, string>;
   policyIssues: StrategyPolicyIssue[];
@@ -104,27 +96,19 @@ export interface StrategyReportMeta {
 
 export type StrategySink = (report: CampaignStrategyReport, meta: StrategyReportMeta) => Promise<void>;
 
-/** Which base participants run. Channel Scouts are NOT planned here: they are created dynamically after the research. */
-export function planF3(f1: F1Context, f2: F2Context): { plan: StrategyPlan; pre: { kind: SourceRecord['kind']; label: string; text: string }[] } {
-  const plan: StrategyPlan = { activated: [], skipped: [] };
-  const on = (key: BaseKey, reason: string) => plan.activated.push({ agent: STRATEGY_INFO[key].name, key, reason });
-  on('audience', 'Always runs: customer segments and their needs');
-  on('competitor', 'Always runs: researches competitors from retrieved sources (reports insufficient research when there are none)');
-  on('seasonal', 'Always runs: seasonal and time-sensitive opportunities');
-  on('strategist', 'Always runs after the cross-checks');
+/** The single participant of the phase and the business research it starts from. Pure and deterministic. */
+export function planF3(f1: F1Context): { plan: StrategyPlan; pre: { kind: SourceRecord['kind']; label: string; text: string }[] } {
+  const plan: StrategyPlan = { activated: [{ agent: STRATEGY_INFO.strategist.name, key: 'strategist', reason: 'Always runs: researches the audience, competitors, the five social platforms and timing, then writes the strategy' }], skipped: [] };
   return {
     plan,
-    pre: [
-      { kind: 'f1_report', label: `F1 Product Discovery report ${f1.reportId}`, text: `f1_report_id: ${f1.reportId}\nproduct: ${f1.report.productManifest.name}\nconfidence: ${f1.report.productManifest.overallConfidence}\npartial: ${f1.partial}` },
-      { kind: 'f2_audit', label: `F2 Marketing Audit ${f2.auditId}`, text: `f2_audit_id: ${f2.auditId}\nbuilt_on_f1_report: ${f2.f1ReportId}\npartial: ${f2.partial}\nmain_problems: ${f2.report.mainProblems.map((p) => p.title).join(' | ')}` },
-    ],
+    pre: [{ kind: 'f1_report', label: `Business research report ${f1.reportId}`, text: `f1_report_id: ${f1.reportId}\nproduct: ${f1.report.productManifest.name}\nconfidence: ${f1.report.productManifest.overallConfidence}\npartial: ${f1.partial}` }],
   };
 }
 
 /**
- * F3 Market Research & Strategy: Audience Researcher, Competitor Researcher and Seasonal Intelligence run first; then the
- * Strategy Coordinator DYNAMICALLY creates and joins the Channel Scouts the project needs; then bounded cross-checks; then
- * the Campaign Strategist. Same runtime, event protocol and evidence rules as F1 and F2.
+ * F3 Strategy with ONE Mozaik agent, the Marketing Strategist, and the deterministic Strategy Coordinator. The strategist gathers
+ * competitor pages and the holiday calendar with tools, makes ONE research call (findings the coordinator commits through the
+ * evidence policy) and ONE strategy call from those findings. Typically two model calls in total.
  */
 export class F3Program implements RunProgram {
   readonly defaultTimeoutMs: number;
@@ -140,14 +124,14 @@ export class F3Program implements RunProgram {
     private readonly config: StrategyRunConfig,
     private readonly sink: StrategySink,
   ) {
-    const analystTokens = capOutputTokens(config.model, clamp(config.maxOutputTokens, 800, 16000, 2500)).tokens;
+    const analystTokens = capOutputTokens(config.model, clamp(config.maxOutputTokens, 800, 16000, 3000)).tokens;
     const synthTokens = Math.min(8000, analystTokens * 3);
     const generation = resolveGeneration(config.generation, config.callTimeoutMs !== undefined);
     const budget: InferenceBudget = {
       spend: scopeFor(config.ledger, config.spendCapUsd, 'F3'),
       // a cut-off answer is asked again with a larger cap (up to what the model supports) instead of failing the agent
       escalateTo: capOutputTokens(config.model, 16000).tokens,
-      maxModelCalls: clamp(config.maxModelCalls, 1, 60, 24),
+      maxModelCalls: clamp(config.maxModelCalls, 2, 12, 6),
       maxOutputTokens: synthTokens,
       callTimeoutMs: clamp(config.callTimeoutMs, 50, 300_000, DEFAULT_BUDGET.callTimeoutMs),
       generation,
@@ -158,23 +142,18 @@ export class F3Program implements RunProgram {
     this.settings = {
       model: config.model,
       analystTokens,
-      reviewTokens: Math.min(1500, analystTokens),
       synthTokens,
       maxModelCalls: budget.maxModelCalls,
-      maxReviews: clamp(config.maxReviews, 0, 10, 6),
-      depth: config.depth === true,
-      maxScouts: clamp(config.maxScouts, 0, 6, 4),
-      agentTimeoutMs: clamp(config.agentTimeoutMs, 50, 600_000, 150_000),
+      agentTimeoutMs: clamp(config.agentTimeoutMs, 50, 600_000, 240_000),
       synthTimeoutMs: clamp(config.agentTimeoutMs, 50, 600_000, 150_000),
-      reviewTimeoutMs: clamp(config.reviewTimeoutMs, 50, 600_000, 90_000),
       maxSearches: clamp(config.maxSearches, 0, 5, 3),
       maxCompetitorPages: clamp(config.maxCompetitorPages, 0, 6, 4),
       maxPagesPerCompetitor: clamp(config.maxPagesPerCompetitor, 1, 4, 3),
       fixtureSources: config.fixtureSources === true,
       now: config.now ?? new Date(),
     };
-    // the synthesis writes the longest answer of the phase: its task deadline follows the clock of its request (and the one larger re-ask)
-    if (generation) this.settings.synthTimeoutMs = Math.max(this.settings.agentTimeoutMs, synthesisTaskTimeoutMs(synthTokens, budget.escalateTo, generation));
+    // the strategy is the longest answer of the phase: its task deadline follows the clock of its request (and the one larger re-ask)
+    if (generation) this.settings.synthTimeoutMs = Math.max(this.settings.synthTimeoutMs, synthesisTaskTimeoutMs(synthTokens, budget.escalateTo, generation));
     this.tools = {
       web: config.tools?.web ?? new WebFetchTool({ maxPages: this.settings.maxCompetitorPages * this.settings.maxPagesPerCompetitor + 2 }),
       search: config.tools?.search ?? createWebSearchFromEnv(),
@@ -182,7 +161,7 @@ export class F3Program implements RunProgram {
       holidays: config.tools?.holidays ?? new HolidayTool(),
     };
     this.defaultTimeoutMs = clamp(config.timeoutMs, 200, 1_800_000, 900_000);
-    this.planned = planF3(config.f1, config.f2);
+    this.planned = planF3(config.f1);
   }
 
   inferenceConfig(): InferenceRunnerConfig {
@@ -194,7 +173,7 @@ export class F3Program implements RunProgram {
   }
 
   kickoff(ctx: RunContext) {
-    ctx.emit('factory.started', { mode: 'market_strategy', label: 'F3 Market Research & Strategy' }, ctx.orchestrator);
+    ctx.emit('factory.started', { mode: 'market_strategy', label: 'F3 Strategy' }, ctx.orchestrator);
   }
 
   orchestratorHandlers(ctx: RunContext): SituationHandler[] {
@@ -205,7 +184,7 @@ export class F3Program implements RunProgram {
         specification: new OnEventTypes(['factory.started']),
         processor: guarded(ctx.guard(who), () => {
           ctx.state.currentPhase = PHASE;
-          ctx.emit('phase.started', { phase: PHASE, agents: plan.activated.map((a) => a.agent), plan: { ...plan, scoutsPending: true, maxScouts: this.settings.maxScouts } }, ctx.orchestrator);
+          ctx.emit('phase.started', { phase: PHASE, agents: plan.activated.map((a) => a.agent), plan }, ctx.orchestrator);
         }),
       },
       {
@@ -224,7 +203,7 @@ export class F3Program implements RunProgram {
         processor: guarded(ctx.guard(who), ({ event }) => {
           const { errors } = event.payload as { errors: AgentOutcome[] };
           const first = errors[0];
-          ctx.emit('factory.failed', { reason: 'participant_error', message: first?.error?.message ?? 'Market strategy failed', participant: first?.agent, code: first?.error?.code }, ctx.orchestrator);
+          ctx.emit('factory.failed', { reason: 'participant_error', message: first?.error?.message ?? 'The strategy failed', participant: first?.agent, code: first?.error?.code }, ctx.orchestrator);
         }),
       },
     ];
@@ -239,81 +218,44 @@ export class F3Program implements RunProgram {
       store: this.store,
       board,
       f1: this.config.f1,
-      f2: this.config.f2,
       input: this.config.input,
       settings: this.settings,
       tools: this.tools,
       facts: { competitors: null, holidays: null },
       policyIssues,
-      agents: new Map(),
-      createScout: (d) => {
-        const agent = this.buildScout(env, d.channel);
-        env.agents.set(`scout:${d.channel}`, agent);
-        return agent;
-      },
-      policyContext: (): StrategyPolicyContext => ({ store: this.store, f1: this.config.f1, f2: this.config.f2, input: this.config.input, now: this.settings.now, issues: policyIssues }),
+      policyContext: (): StrategyPolicyContext => ({ store: this.store, f1: this.config.f1, input: this.config.input, now: this.settings.now, issues: policyIssues }),
     };
     this.env = env;
     const { plan, pre } = this.planned;
-
     const preRecords = pre.map((p) => this.store.add({ kind: p.kind, label: p.label, url: null, status: 'retrieved', live: false, fixture: false, httpStatus: null, bytes: null, error: null, producer: 'Strategy Coordinator', origin: 'previous_phase' }, p.text));
-
-    const registry = new ParticipantRegistry();
-    for (const key of BASE_KEYS) {
-      registry.register({
-        phase: PHASE,
-        name: STRATEGY_INFO[key].name,
-        create: () => {
-          const agent = key === 'strategist' ? this.buildStrategist(env) : this.buildResearcher(env, key);
-          env.agents.set(key, agent);
-          return agent.participant;
-        },
-      });
-    }
-    const activated = new Set(plan.activated.map((a) => a.agent));
-    const joined = registry.forPhase(PHASE).filter((r) => activated.has(r.name)).map((r) => r.create({ runId: ctx.runId, phase: PHASE, state: ctx.state }));
     const coordinator = new StrategyCoordinator(env, plan, preRecords);
-    return [coordinator.participant, ...joined];
+    return [coordinator.participant, this.buildStrategist(env).participant];
   }
 
-  // ---- shared job wiring ---------------------------------------------------------------------------
+  // ---- the Marketing Strategist (A2): research, then strategy --------------------------------------------------------------
 
-  private agent(env: F3Env, key: string, name: string, instruction: string, capabilities: string[], handlers: ConstructorParameters<typeof PhaseAgent>[2]) {
-    return new PhaseAgent(env, { key, name, instruction, capabilities }, handlers);
-  }
-
-  /** The analysis + cross-check handlers every researcher and scout shares. */
-  private workerHandlers(env: F3Env, self: PhaseAgent, name: string, key: string, prepare: () => Promise<F3Prep>): SituationHandler[] {
+  private buildStrategist(env: F3Env): PhaseAgent {
     const { ctx, settings } = env;
-    return [
+    const name = STRATEGY_INFO.strategist.name;
+    return new PhaseAgent(env, { key: 'strategist', name, instruction: STRATEGY_INSTRUCTIONS.strategist, capabilities: ['market-strategy', 'research', 'synthesis', 'inference'] }, (self) => [
       {
+        // TASK 1: deterministic gathering, then ONE research call; the coordinator commits the findings
         specification: new OnEventTypes(['task.assigned']),
         processor: guarded(ctx.guard(name), async ({ event }) => {
           if ((event.payload as { agent: string }).agent !== name) return;
           const opened = self.openTask(settings.agentTimeoutMs, () => ctx.emit('task.completed', { agent: name, outcome: 'failed', error: toSafeError('timeout') }, self.participant));
           if (!opened) return;
-
-          const prep = await prepare();
+          const prep = await prepareResearch(env, self);
           if (!self.isTaskOpen() || ctx.isClosed()) return;
-          if (prep.kind === 'skip') {
-            self.closeTask();
-            return ctx.emit('task.completed', { agent: name, outcome: 'skipped', reason: prep.reason }, self.participant);
-          }
           if (prep.kind === 'fail') {
             self.closeTask();
             return ctx.emit('task.completed', { agent: name, outcome: 'failed', error: prep.error }, self.participant);
-          }
-          if (prep.kind === 'direct') {
-            // Nothing to analyze with a model: the deterministic result is posted as this participant's findings.
-            self.closeTask();
-            ctx.emit('finding.posted', { agent: name, summary: prep.output.summary, findings: prep.output.findings, missingInformation: prep.output.missingInformation }, self.participant);
-            return ctx.emit('task.completed', { agent: name, outcome: 'succeeded' }, self.participant);
           }
           self.runJob({
             kind: 'analysis',
             message: prep.message,
             schema: StrategyAgentOutput,
-            schemaName: `${key.replace(/[^a-z0-9_]/gi, '_')}_findings`,
+            schemaName: 'strategy_research',
             maxOutputTokens: settings.analystTokens,
             onSuccess: (out) => {
               self.closeTask();
@@ -328,59 +270,17 @@ export class F3Program implements RunProgram {
         }),
       },
       {
-        // Cross-check: this participant reviews ANOTHER participant's claims using what it examined itself.
-        specification: new OnEventTypes(['crosscheck.requested']),
-        processor: guarded(ctx.guard(name), ({ event }) => {
-          const p = event.payload as { requestId: string; producer: string; reviewer: string; claims: never[] };
-          if (p.reviewer !== name) return;
-          self.runJob({
-            kind: 'review',
-            message: reviewMessage(p.requestId, p.producer, p.claims, env.input.language) + STRATEGY_INSTRUCTIONS.reviewerNote,
-            schema: CrosscheckAnswer,
-            schemaName: 'crosscheck_answer',
-            maxOutputTokens: settings.reviewTokens,
-            timeoutMs: settings.reviewTimeoutMs,
-            onSuccess: (out) => ctx.emit('crosscheck.answered', { requestId: p.requestId, producer: p.producer, reviewer: name, status: 'answered', answers: out.answers }, self.participant),
-            onFailure: (error) => ctx.emit('crosscheck.answered', { requestId: p.requestId, producer: p.producer, reviewer: name, status: 'failed', answers: [], error }, self.participant),
-          });
-        }),
-      },
-    ];
-  }
-
-  private buildResearcher(env: F3Env, key: Exclude<BaseKey, 'strategist'>): PhaseAgent {
-    const name = STRATEGY_INFO[key].name;
-    const prepare = (self: PhaseAgent) => (key === 'audience' ? prepareAudience(env) : key === 'competitor' ? prepareCompetitor(env, self) : prepareSeasonal(env, self));
-    return this.agent(env, key, name, STRATEGY_INSTRUCTIONS[key], ['market-strategy', 'research', 'inference'], (self) => this.workerHandlers(env, self, name, key, () => prepare(self)));
-  }
-
-  /** A Channel Scout: created on demand for ONE channel, with its own memory and its own id. */
-  private buildScout(env: F3Env, channel: ChannelId): PhaseAgent {
-    const name = scoutName(channel);
-    return this.agent(env, `scout:${channel}`, name, scoutInstruction(channel), ['market-strategy', 'channel-scout', `channel:${channel}`, 'inference'], (self) => this.workerHandlers(env, self, name, `scout_${channel}`, () => prepareScout(env, self, channel)));
-  }
-
-  // ---- strategist (A18) --------------------------------------------------------------------------------
-
-  private buildStrategist(env: F3Env): PhaseAgent {
-    const { ctx, settings } = env;
-    const name = STRATEGY_INFO.strategist.name;
-    return this.agent(env, 'strategist', name, STRATEGY_INSTRUCTIONS.strategist, ['market-strategy', 'synthesis', 'inference'], (self) => [
-      {
+        // TASK 2: the strategy from the committed findings (read from the shared board)
         specification: new OnEventTypes(['phase.ready']),
         processor: guarded(ctx.guard(name), () => {
           const snap = env.board.snapshot();
-          const failed = snap.participantStatuses.filter((s) => s.state === 'failed' || s.state === 'timed_out');
-          const partial = failed.length > 0;
+          const partial = env.f1.partial;
           const digest: StrategyDigest = {
-            ctx: { f1: env.f1, f2: env.f2, input: env.input, now: settings.now },
-            plan: { activated: snap.plan?.activated ?? [], skipped: snap.plan?.skipped ?? [] },
-            scoutDecisions: snap.scoutDecisions,
+            ctx: { f1: env.f1, input: env.input, now: settings.now },
             statuses: snap.participantStatuses.map((s) => ({ agent: s.agent, state: s.state, reason: s.error?.message ?? s.reason })),
             sources: snap.sources.map((s) => ({ id: s.id, kind: s.kind, label: s.label, status: s.status, origin: s.origin ?? 'unknown', live: s.live, fixture: s.fixture, error: s.error })),
             findings: snap.findings,
-            summaries: snap.summaries,
-            crosschecks: snap.crosschecks.map((c) => ({ claimId: c.claimId, producer: c.producer, reviewer: c.reviewer, verdict: c.verdict, rationale: c.rationale, correction: c.correction, status: c.status })),
+            summary: snap.summaries[name],
             missing: [...new Set(snap.missingInformation.map((m) => m.text))].slice(0, 20),
             partial,
             facts: env.facts,
@@ -401,7 +301,6 @@ export class F3Program implements RunProgram {
               const usage = env.gateway.usage();
               const { report, issues } = finalizeStrategy(draft, final, env.policyContext(), {
                 f1: env.f1,
-                f2: env.f2,
                 input: env.input,
                 facts: env.facts,
                 now: settings.now,
@@ -415,8 +314,7 @@ export class F3Program implements RunProgram {
                 { label: 'Model calls', value: String(usage.total.calls) },
                 { label: 'Input tokens (measured)', value: String(usage.total.inputTokens) },
                 { label: 'Output tokens (measured)', value: String(usage.total.outputTokens) },
-                { label: 'Channel Scouts created', value: String(final.scoutDecisions.filter((d) => d.selected).length) },
-                { label: 'Cross-check requests', value: String(new Set(final.crosschecks.map((c) => c.requestId)).size) },
+                { label: 'Research findings', value: String(final.findings.length) },
               ];
               // BOUNDARY CHECK: the finished report must satisfy the schema its reader (F4) uses. A report that does not is still saved (the
               // analysis was paid for and is never thrown away) and the exact fields are recorded, so the problem is named before anything else is spent.
@@ -429,15 +327,15 @@ export class F3Program implements RunProgram {
                 generatedAt: new Date().toISOString(),
                 partial,
                 usage,
-                budget: { maxModelCalls: settings.maxModelCalls, maxScouts: settings.maxScouts, maxReviews: settings.maxReviews, analystTokens: settings.analystTokens, reviewTokens: settings.reviewTokens, synthTokens: settings.synthTokens },
+                budget: { maxModelCalls: settings.maxModelCalls, maxScouts: 0, maxReviews: 0, analystTokens: settings.analystTokens, reviewTokens: 0, synthTokens: settings.synthTokens },
                 f1: { reportId: env.f1.reportId, schemaVersion: env.f1.schemaVersion, generatedAt: env.f1.generatedAt, ageDays: ageDays(settings.now, env.f1.generatedAt), partial: env.f1.partial },
-                f2: { auditId: env.f2.auditId, schemaVersion: env.f2.schemaVersion, generatedAt: env.f2.generatedAt, ageDays: ageDays(settings.now, env.f2.generatedAt), partial: env.f2.partial },
+                f2: null,
                 plan: final.plan ?? { activated: [], skipped: [] },
-                scoutDecisions: final.scoutDecisions,
+                scoutDecisions: [],
                 participants: final.participantStatuses.map((s) => (s.agent === name ? { ...s, state: 'done' as const, error: null } : s)),
                 sources: final.sources,
                 findings: final.findings,
-                crosschecks: final.crosschecks,
+                crosschecks: [],
                 summaries: final.summaries,
                 policyIssues: [...env.policyIssues, ...issues],
                 aiCalls: Object.fromEntries(Object.entries(usage.perAgent).map(([k, v]) => [k, v.calls])),
@@ -459,6 +357,3 @@ export class F3Program implements RunProgram {
     ]);
   }
 }
-
-export { CampaignStrategyReport, CHANNELS, channelById };
-export type { StrategyFacts };

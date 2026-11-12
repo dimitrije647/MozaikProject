@@ -5,7 +5,7 @@ import { ApiError, api, get, post } from './api';
 import { keysVisual, keysImages } from './visual';
 
 /**
- * AVAILABLE IMAGES on the web (NO AI HYBRID): every picture a campaign could use, where it came from and under which rights. Mirrors what the
+ * AVAILABLE IMAGES on the web: every picture a campaign could use, where it came from and under which rights. Mirrors what the
  * API returns (apps/api/src/visual/image-library.service.ts). Nothing here calls an image-generation API: the library only lists, finds,
  * approves, rejects and restores pictures. A website or repository picture is downloaded by the server only after the owner attests; a stock
  * picture whose license needs a check is used only after the owner confirms it.

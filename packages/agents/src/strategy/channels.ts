@@ -1,8 +1,9 @@
 /**
- * Marketing channels F3 can evaluate. Each one can become a dedicated Channel Scout, a separate Mozaik
- * participant that is created only when the Strategy Coordinator finds the channel relevant (see scouts.ts).
+ * Marketing channel ids. New campaigns (V4) plan the five social platforms in CAMPAIGN_SOCIAL_CHANNELS; the other ids stay
+ * valid because strategies and campaigns saved earlier use them.
  */
 export const CHANNELS = [
+  { id: 'x', name: 'X', short: 'X', social: 'x' },
   { id: 'instagram', name: 'Instagram', short: 'IG', social: 'instagram' },
   { id: 'facebook', name: 'Facebook', short: 'FB', social: 'facebook' },
   { id: 'linkedin', name: 'LinkedIn', short: 'LI', social: 'linkedin' },
@@ -18,5 +19,8 @@ export type ChannelId = (typeof CHANNELS)[number]['id'];
 export const CHANNEL_IDS = CHANNELS.map((c) => c.id) as unknown as readonly [ChannelId, ...ChannelId[]];
 
 export const channelById = (id: string) => CHANNELS.find((c) => c.id === id);
-export const scoutName = (id: ChannelId) => `${channelById(id)!.name} Scout`;
-export const channelOfScoutName = (name: string): ChannelId | undefined => CHANNELS.find((c) => scoutName(c.id) === name)?.id;
+
+/** The social platforms every new campaign covers: the Marketing Strategist evaluates each one and the strategy may only recommend these. */
+export const CAMPAIGN_SOCIAL_CHANNELS = ['x', 'tiktok', 'facebook', 'instagram', 'linkedin'] as const satisfies readonly ChannelId[];
+export type CampaignSocialChannel = (typeof CAMPAIGN_SOCIAL_CHANNELS)[number];
+export const isCampaignSocialChannel = (id: string): id is CampaignSocialChannel => (CAMPAIGN_SOCIAL_CHANNELS as readonly string[]).includes(id);

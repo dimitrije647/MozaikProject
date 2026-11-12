@@ -2,25 +2,26 @@ import type { SourceRecord, SourceStore } from '../discovery/f1/board';
 import { normalizeText } from '../discovery/input';
 import type { EvidenceStatus } from '../discovery/schemas';
 import type { F1Context } from '../audit/context';
-import { STRATEGY_INFO, strategyRoleByName, type StrategyAgentKind, type StrategyBoard, type StrategyFinding } from './board';
-import { CHANNELS, type ChannelId } from './channels';
-import { STALE_AFTER_DAYS, ageDays, type F2Context, type StrategyFacts, type StrategyInput } from './context';
+import { STRATEGY_INFO, areaOfFinding, type StrategyBoard, type StrategyFinding } from './board';
+import { CAMPAIGN_SOCIAL_CHANNELS, CHANNELS, isCampaignSocialChannel, type ChannelId } from './channels';
+import { STALE_AFTER_DAYS, ageDays, type StrategyFacts, type StrategyInput } from './context';
 import { STORED_LIMITS, STRATEGY_REPORT_VERSION, type CampaignStrategyReport, type F4CreativeBrief, type LlmStrategyFinding, type StrategyDraft, type StrategyStatement } from './schemas';
 
 /**
- * The F3 evidence policy, enforced IN CODE on everything the strategy agents produce. Same classes as F1/F2:
+ * The F3 evidence policy, enforced IN CODE on everything the Marketing Strategist produces. Same classes as F1:
  *  - verified: an OBSERVATION of a measurable property of a LIVE source retrieved in this run (a competitor page's
  *    title, a public-holiday date from the calendar API) with a verbatim excerpt. Never for search snippets,
  *    user text, fixtures, model knowledge, or claims a page makes about itself.
- *  - claimed: said by a source or the user, with a verbatim excerpt or a traceable F1/F2 finding (search results are leads).
+ *  - claimed: said by a source or the user, with a verbatim excerpt or a traceable F1 finding (search results are leads).
  *  - inferred: a judgment or hypothesis. Audience segments, channel fit and seasonal patterns are inferred unless a source proves them.
  * Additionally: no invented money/percentage/ROI figures, competitors are "confirmed" only if their page was retrieved,
- * holiday dates are "public_holiday_api" only if the calendar was really queried, and nothing from an old audit is
- * carried forward as freshly verified.
+ * holiday dates are "public_holiday_api" only if the calendar was really queried, nothing from an old report is
+ * carried forward as freshly verified, and only the five campaign social channels can be recommended.
  */
 export interface StrategyPolicyIssue {
   type:
     | 'reference_normalized'
+    | 'copy_evidence_dropped'
     | 'unknown_source'
     | 'unknown_reference'
     | 'excerpt_not_found'
@@ -53,7 +54,6 @@ const isLive = (s: SourceRecord) => s.live && !s.fixture && !!s.origin && LIVE_O
 export interface StrategyPolicyContext {
   store: SourceStore;
   f1: F1Context;
-  f2: F2Context;
   /** The user's brief for this run: figures it states (a budget, a duration) are legitimate in the strategy. */
   input?: StrategyInput;
   now: Date;
@@ -77,10 +77,10 @@ export function scrubFigures(textIn: string, allowedCorpus: string): { text: str
   return { text, removed };
 }
 
-/** Everything a figure may legitimately come from: the user's brief, F1 and F2 reports and the cited source text. */
+/** Everything a figure may legitimately come from: the user's brief, the F1 report and the cited source text. */
 export function allowedCorpus(ctx: StrategyPolicyContext, extra = ''): string {
   const brief = ctx.input ? [ctx.input.budgetNote, ctx.input.marketingGoal, ctx.input.targetAudience, ctx.input.campaignDuration, ...ctx.input.geography].filter(Boolean).join(' ') : '';
-  return `${JSON.stringify(ctx.f1.report)} ${JSON.stringify(ctx.f2.report)} ${brief} ${extra}`;
+  return `${JSON.stringify(ctx.f1.report)} ${brief} ${extra}`;
 }
 
 // ---- findings ------------------------------------------------------------------------------------------------------------------
@@ -94,8 +94,9 @@ function hostOf(url: string | null | undefined): string | null {
   }
 }
 
-export function validateStrategyFinding(llm: LlmStrategyFinding, agent: string, role: StrategyAgentKind, ctx: StrategyPolicyContext): Omit<StrategyFinding, 'id' | 'crosscheck' | 'at'> {
-  const { store, f1, f2, issues } = ctx;
+/** Validates one research finding. Its area (audience, competitor, channel, seasonal) follows from the ONE typed detail it carries. */
+export function validateStrategyFinding(llm: LlmStrategyFinding, agent: string, ctx: StrategyPolicyContext): Omit<StrategyFinding, 'id' | 'crosscheck' | 'at'> {
+  const { store, f1, issues } = ctx;
   let { classification, sourceType, sourceId, locator, excerpt } = llm;
   let adjustment: string | null = null;
   const adjust = (type: StrategyPolicyIssue['type'], why: string) => {
@@ -103,12 +104,11 @@ export function validateStrategyFinding(llm: LlmStrategyFinding, agent: string, 
     issues.push({ type, agent, detail: `"${clip(llm.title)}": ${why}` });
   };
 
-  // F1/F2 finding ids cited as sourceId are references, not sources (models do this).
+  // F1 finding ids cited as sourceId are references, not sources (models do this).
   const f1Ids = new Set(f1.findings.map((f) => f.id));
-  const f2Ids = new Set(f2.findings.map((f) => f.id));
-  if (sourceId && !store.get(sourceId) && (f1Ids.has(sourceId) || f2Ids.has(sourceId))) {
-    issues.push({ type: 'reference_normalized', agent, detail: `"${clip(llm.title)}": ${sourceId} was cited as a source and is now an ${f1Ids.has(sourceId) ? 'F1' : 'F2'} reference.` });
-    sourceType = f1Ids.has(sourceId) ? 'f1_finding' : 'f2_finding';
+  if (sourceId && !store.get(sourceId) && f1Ids.has(sourceId)) {
+    issues.push({ type: 'reference_normalized', agent, detail: `"${clip(llm.title)}": ${sourceId} was cited as a source and is now an F1 reference.` });
+    sourceType = 'f1_finding';
     locator = sourceId;
     sourceId = null;
   }
@@ -118,16 +118,15 @@ export function validateStrategyFinding(llm: LlmStrategyFinding, agent: string, 
     adjust('unknown_source', `cited source ${sourceId} does not exist.`);
     sourceId = null;
   }
-  if (src) sourceType = src.kind === 'holiday_calendar' ? 'holiday_api' : src.kind === 'search_result' ? 'search_result' : src.kind === 'website' ? 'website' : src.origin === 'user_provided' ? 'user_provided' : src.kind === 'f1_report' ? 'f1_finding' : src.kind === 'f2_audit' ? 'f2_finding' : sourceType;
+  if (src) sourceType = src.kind === 'holiday_calendar' ? 'holiday_api' : src.kind === 'search_result' ? 'search_result' : src.kind === 'website' ? 'website' : src.origin === 'user_provided' ? 'user_provided' : src.kind === 'f1_report' ? 'f1_finding' : sourceType;
 
-  const f1Ref = sourceType === 'f1_finding' ? f1.findings.find((f) => f.id === locator) : undefined;
-  const f2Ref = sourceType === 'f2_finding' ? f2.findings.find((f) => f.id === locator) : undefined;
-  if ((sourceType === 'f1_finding' && !f1Ref) || (sourceType === 'f2_finding' && !f2Ref)) {
+  // no Marketing Audit exists in V4 runs: an "f2_finding" reference cannot be traced
+  const ref = sourceType === 'f1_finding' ? f1.findings.find((f) => f.id === locator) : undefined;
+  if ((sourceType === 'f1_finding' && !ref) || sourceType === 'f2_finding') {
     adjust('unknown_reference', `${sourceType === 'f1_finding' ? 'F1' : 'F2'} finding ${locator ?? '(none)'} does not exist.`);
     sourceType = 'ai_inference';
     locator = null;
   }
-  const ref = f1Ref ?? f2Ref;
 
   if (excerpt) {
     const found = src ? store.contains(src.id, excerpt) : ref ? normalizeText(`${ref.statement} ${ref.excerpt ?? ''}`).includes(normalizeText(excerpt)) && normalizeText(excerpt).length >= 6 : false;
@@ -149,9 +148,27 @@ export function validateStrategyFinding(llm: LlmStrategyFinding, agent: string, 
   if (llm.kind === 'assessment' || llm.kind === 'hypothesis') cap('inferred', `a ${llm.kind} is a judgment, not an observation: at most "inferred".`, 'verified_downgraded');
   if (llm.kind === 'claim_on_source') cap('claimed', 'a claim made by a source is at most "claimed".', 'verified_downgraded');
   if (llm.kind === 'gap') cap('unknown', 'a gap is missing data.', 'verified_downgraded');
+  // ONE typed detail per finding: it decides the area (a finding with several keeps the first in this order)
+  let segment = llm.segment;
+  let competitor = llm.competitor;
+  let channelEval = llm.channel;
+  let opportunity = llm.opportunity;
+  const details = [segment, competitor, channelEval, opportunity].filter(Boolean).length;
+  const area = areaOfFinding(llm);
+  if (details > 1) {
+    adjust('detail_mismatch', `a finding carries one typed detail; only its ${area} detail was kept.`);
+    if (area !== 'audience') segment = null;
+    if (area !== 'competitor') competitor = null;
+    if (area !== 'channel') channelEval = null;
+    if (area !== 'seasonal') opportunity = null;
+  }
+  if (channelEval && !isCampaignSocialChannel(channelEval.channel)) {
+    adjust('detail_mismatch', `${channelEval.channel} is not one of the campaign channels (${CAMPAIGN_SOCIAL_CHANNELS.join(', ')}): the evaluation cannot back a recommendation.`);
+  }
+
   // Audience, channel fit and seasonal demand are interpretations unless a source proves them.
-  if (role.key === 'audience' || role.key === 'scout') cap('inferred', 'audience and channel fit are hypotheses, not measurements.', 'verified_downgraded');
-  if (role.key === 'seasonal' && sourceType !== 'holiday_api') cap('inferred', 'seasonal patterns without a calendar source are hypotheses.', 'verified_downgraded');
+  if (area === 'audience' || area === 'channel') cap('inferred', 'audience and channel fit are hypotheses, not measurements.', 'verified_downgraded');
+  if (area === 'seasonal' && sourceType !== 'holiday_api') cap('inferred', 'seasonal patterns without a calendar source are hypotheses.', 'verified_downgraded');
 
   // 2. verified needs a live, tool-observed source with a verbatim excerpt (and never a search snippet)
   if (classification === 'verified') {
@@ -166,35 +183,19 @@ export function validateStrategyFinding(llm: LlmStrategyFinding, agent: string, 
     const traceable = (!!src && !!excerpt) || (!!ref && RANK[ref.classification as EvidenceStatus] >= RANK.claimed) || (userProvided && !!src);
     if (!traceable) {
       classification = 'inferred';
-      adjust('claim_downgraded', 'a "claimed" statement must cite a source with a verbatim excerpt or an F1/F2 finding.');
+      adjust('claim_downgraded', 'a "claimed" statement must cite a source with a verbatim excerpt or an F1 finding.');
     }
   }
   if (src?.kind === 'search_result') cap('claimed', 'a search result is only a lead.', 'verified_downgraded');
 
   // 3. never stronger than the earlier-phase finding it comes from; nothing stale is carried forward as verified
   if (ref) {
-    cap(BY_RANK[Math.max(0, RANK[ref.classification as EvidenceStatus])] ?? 'inferred', `cannot be stronger than ${sourceType === 'f1_finding' ? 'F1' : 'F2'} finding ${ref.id} (${ref.classification}).`, 'statement_capped');
-    const age = ageDays(ctx.now, sourceType === 'f1_finding' ? f1.generatedAt : f2.generatedAt);
+    cap(BY_RANK[Math.max(0, RANK[ref.classification as EvidenceStatus])] ?? 'inferred', `cannot be stronger than F1 finding ${ref.id} (${ref.classification}).`, 'statement_capped');
+    const age = ageDays(ctx.now, f1.generatedAt);
     if (age !== null && age > STALE_AFTER_DAYS && classification === 'verified') {
       classification = 'claimed';
-      adjust('stale_reference', `the ${sourceType === 'f1_finding' ? 'F1 report' : 'F2 audit'} is ${age} days old: its observations are not re-verified.`);
+      adjust('stale_reference', `the F1 report is ${age} days old: its observations are not re-verified.`);
     }
-  }
-
-  // 4. typed details belong to exactly one role
-  let segment = llm.segment;
-  let competitor = llm.competitor;
-  let channelEval = llm.channel;
-  let opportunity = llm.opportunity;
-  const want = role.key === 'audience' ? 'segment' : role.key === 'competitor' ? 'competitor' : role.key === 'scout' ? 'channel' : role.key === 'seasonal' ? 'opportunity' : null;
-  if ((segment && want !== 'segment') || (competitor && want !== 'competitor') || (channelEval && want !== 'channel') || (opportunity && want !== 'opportunity')) adjust('detail_mismatch', 'details that do not belong to this participant were removed.');
-  if (want !== 'segment') segment = null;
-  if (want !== 'competitor') competitor = null;
-  if (want !== 'channel') channelEval = null;
-  if (want !== 'opportunity') opportunity = null;
-  if (role.key === 'scout' && channelEval && channelEval.channel !== role.channel) {
-    adjust('detail_mismatch', `the evaluation was for ${channelEval.channel}, but this scout covers ${role.channel}.`);
-    channelEval = { ...channelEval, channel: role.channel };
   }
 
   // 5. competitors exist only if a page of theirs was actually retrieved in this run
@@ -247,11 +248,10 @@ export function validateStrategyFinding(llm: LlmStrategyFinding, agent: string, 
   const recommendation = clean(llm.recommendation);
   if (channelEval) channelEval = { ...channelEval, audienceFit: clean(channelEval.audienceFit) ?? channelEval.audienceFit, constraints: channelEval.constraints.map((c) => clean(c) ?? c), measurement: channelEval.measurement.map((c) => clean(c) ?? c), risks: channelEval.risks.map((c) => clean(c) ?? c) };
 
-  const area = role.key === 'scout' ? 'channel' : STRATEGY_INFO[role.key].area;
   return {
     agent,
     area,
-    channel: role.key === 'scout' ? role.channel : null,
+    channel: channelEval ? channelEval.channel : null,
     kind: llm.kind,
     title: llm.title,
     statement,
@@ -282,7 +282,6 @@ const strongest = (ids: string[], byId: Map<string, StrategyFinding>): EvidenceS
 
 export interface FinalizeArgs {
   f1: F1Context;
-  f2: F2Context;
   input: StrategyInput;
   facts: StrategyFacts;
   now: Date;
@@ -302,7 +301,7 @@ function mapStrings<T>(v: T, fn: (s: string) => string): T {
 }
 
 export function finalizeStrategy(draftIn: StrategyDraft, board: StrategyBoard, ctx: StrategyPolicyContext, args: FinalizeArgs): { report: CampaignStrategyReport; issues: StrategyPolicyIssue[] } {
-  const { f1, f2 } = args;
+  const { f1 } = args;
   const issues: StrategyPolicyIssue[] = [];
   const who = STRATEGY_INFO.strategist.name;
   const byId = new Map(board.findings.map((f) => [f.id, f]));
@@ -341,22 +340,26 @@ export function finalizeStrategy(draftIn: StrategyDraft, board: StrategyBoard, c
     return { ...s, findingIds: ids, status, caveat };
   };
 
-  // 2. recommended channels must have been evaluated by a scout, and cannot outrank that scout's own verdict
-  const evals = new Map(board.findings.filter((f) => f.channel && f.channelEval).map((f) => [f.channel as ChannelId, f]));
+  // 2. only the five campaign social channels can be recommended; each must have been evaluated in the research and cannot outrank that evaluation
+  const evals = new Map(board.findings.filter((f) => f.channel && f.channelEval && isCampaignSocialChannel(f.channel)).map((f) => [f.channel as ChannelId, f]));
   const channels: StrategyDraft['channels'] = [];
   for (const c of draft.channels) {
+    if (!isCampaignSocialChannel(c.channel)) {
+      issues.push({ type: 'channel_not_evaluated', agent: who, detail: `${c.channel} is not a campaign channel (${CAMPAIGN_SOCIAL_CHANNELS.join(', ')}), so it was removed.` });
+      continue;
+    }
     const ev = evals.get(c.channel);
     if (!ev) {
-      issues.push({ type: 'channel_not_evaluated', agent: who, detail: `${c.channel} was recommended but no Channel Scout evaluated it, so it was removed.` });
+      issues.push({ type: 'channel_not_evaluated', agent: who, detail: `${c.channel} was recommended but the research did not evaluate it, so it was removed.` });
       continue;
     }
     if (ev.channelEval!.fit === 'unsuitable' || ev.channelEval!.role === 'skip') {
-      issues.push({ type: 'channel_capped', agent: who, detail: `${c.channel} was recommended, but its scout rated it unsuitable/skip, so it was removed.` });
+      issues.push({ type: 'channel_capped', agent: who, detail: `${c.channel} was recommended, but the research rated it unsuitable/skip, so it was removed.` });
       continue;
     }
     let role = c.role;
     if ((ev.channelEval!.fit === 'weak' || ev.channelEval!.role === 'test') && role !== 'test') {
-      issues.push({ type: 'channel_capped', agent: who, detail: `${c.channel}: ${role} -> test (its scout rated the fit ${ev.channelEval!.fit}).` });
+      issues.push({ type: 'channel_capped', agent: who, detail: `${c.channel}: ${role} -> test (the research rated the fit ${ev.channelEval!.fit}).` });
       role = 'test';
     }
     channels.push({ ...c, role, findingIds: known([...c.findingIds, ev.id]) });
@@ -377,19 +380,27 @@ export function finalizeStrategy(draftIn: StrategyDraft, board: StrategyBoard, c
   }
 
   const pm = f1.report.productManifest;
-  const ageF2 = ageDays(args.now, f2.generatedAt);
   const ageF1 = ageDays(args.now, f1.generatedAt);
-  const stale = (ageF2 ?? 0) > STALE_AFTER_DAYS || (ageF1 ?? 0) > STALE_AFTER_DAYS;
+  const stale = (ageF1 ?? 0) > STALE_AFTER_DAYS;
   const ref = (f: StrategyFinding) => ({ findingId: f.id, agent: f.agent, status: f.classification, confidence: f.confidence, sourceId: f.sourceId, locator: f.locator, crosscheck: f.crosscheck.status + (f.crosscheck.reviewers.length ? ` (${f.crosscheck.reviewers.join(', ')})` : '') });
   const searchUsed = !!args.facts.competitors?.searchUsed;
 
   const palette = pm.brand?.palette ?? [];
-  const f2Claims = f2.findings.filter((f) => f.kind === 'claim_on_source').map((f) => ({ claim: f.statement.slice(0, 240), reason: `Flagged by the Marketing Audit (${f.id}): it needs evidence before it is used in advertising.` }));
-  const allClaims = [...draft.creativeBrief.claimsToAvoid, ...f2Claims].filter((c, i, a) => a.findIndex((x) => normalizeText(x.claim) === normalizeText(c.claim)) === i);
-  const claimsToAvoid = allClaims.slice(0, STORED_LIMITS.claimsToAvoid);
-  if (allClaims.length > claimsToAvoid.length) issues.push({ type: 'list_capped', agent: who, detail: `${allClaims.length - claimsToAvoid.length} claim(s) to avoid are not listed in the creative brief (it lists at most ${STORED_LIMITS.claimsToAvoid}: the strategist's first, then the ones the Marketing Audit flagged). The audit findings that flagged them stay in the F2 audit.` });
+  const claimsToAvoid = draft.creativeBrief.claimsToAvoid.filter((c, i, a) => a.findIndex((x) => normalizeText(x.claim) === normalizeText(c.claim)) === i).slice(0, STORED_LIMITS.claimsToAvoid);
+  // urgency and limitations license persuasion (P8, P5): each must rest on a real, not disputed finding, else it is dropped (never invented)
+  const evidenceOf = new Map<string, string>([...board.findings.map((f) => [f.id, f.classification] as const), ...f1.findings.map((f) => [f.id, f.classification] as const)]);
+  const evidenced = (pt: { text: string; findingId: string } | null, what: string) => {
+    if (!pt) return null;
+    const c = evidenceOf.get(pt.findingId);
+    if (c && c !== 'unknown' && c !== 'disputed' && pt.text.trim()) return pt;
+    issues.push({ type: 'copy_evidence_dropped', agent: who, detail: `The ${what} "${pt.text.slice(0, 80)}" cites ${pt.findingId}, which is ${c ? `a ${c} finding` : 'not a finding of this research'}: it was dropped, so the copy uses no ${what}.` });
+    return null;
+  };
+  const cd = draft.creativeBrief.copyDirection;
+  const copyDirection = { ...cd, urgency: evidenced(cd.urgency, 'urgency'), limitation: evidenced(cd.limitation, 'limitation'), principles: [...new Set(cd.principles)], proofPoints: cd.proofPoints.filter((p) => p.trim()) };
   const brief: F4CreativeBrief = {
     ...draft.creativeBrief,
+    copyDirection,
     claimsToAvoid,
     suggestedConceptCount: Math.min(5, Math.max(1, draft.creativeBrief.suggestedConceptCount || 3)),
     channels: draft.creativeBrief.channels.filter((c) => channels.some((x) => x.channel === c.channel)),
@@ -397,10 +408,10 @@ export function finalizeStrategy(draftIn: StrategyDraft, board: StrategyBoard, c
     language: draft.language,
     visualPalette: palette,
     visualBasis: palette.length ? 'f1_measured_palette' : 'none',
-    provenance: { f1ReportId: f1.reportId, f2AuditId: f2.auditId, strategyRunId: args.runId },
+    provenance: { f1ReportId: f1.reportId, f2AuditId: null, strategyRunId: args.runId },
   };
 
-  const limitations = buildLimitations(board, args, stale, ageF1, ageF2);
+  const limitations = buildLimitations(board, args, stale, ageF1);
   const { creativeBrief: _omit, ...rest } = draft;
   void _omit;
   const report: CampaignStrategyReport = {
@@ -433,20 +444,7 @@ export function finalizeStrategy(draftIn: StrategyDraft, board: StrategyBoard, c
       geography: pm.geography,
       f1Confidence: pm.overallConfidence,
     },
-    existingMarketing: {
-      f2AuditId: f2.auditId,
-      f2SchemaVersion: f2.schemaVersion,
-      f2GeneratedAt: f2.generatedAt,
-      ageDays: ageF2,
-      stale: (ageF2 ?? 0) > STALE_AFTER_DAYS,
-      partial: f2.partial,
-      mainProblems: f2.report.mainProblems.slice(0, 8).map((p) => ({ title: p.title, severity: p.severity, area: p.area, status: p.status })),
-      contradictions: f2.report.contradictions.slice(0, 6).map((c) => ({ topic: c.topic.slice(0, 200), detail: c.detail.slice(0, 700), status: c.status })),
-      notes: [
-        ageF2 === null ? 'The age of the audit is unknown.' : `The audit is ${ageF2} day(s) old${(ageF2 ?? 0) > STALE_AFTER_DAYS ? `: older than ${STALE_AFTER_DAYS} days, so it may not reflect the current website and profiles` : ''}.`,
-        ...(f2.partial ? ['The audit was partial: some areas were not audited.'] : []),
-      ],
-    },
+    existingMarketing: null,
     audienceResearch: board.findings.filter((f) => f.segment).map((f) => ({ segment: f.segment!, status: f.classification, statement: f.statement, reasoning: f.reasoning, ref: ref(f) })),
     competitorLandscape: {
       searchProvider: args.searchProvider,
@@ -460,9 +458,10 @@ export function finalizeStrategy(draftIn: StrategyDraft, board: StrategyBoard, c
       gaps: args.facts.competitors?.gaps ?? ['Competitor research was not performed.'],
     },
     channelEvaluation: {
-      evaluated: board.findings.filter((f) => f.channelEval).map((f) => ({ scout: f.agent, evaluation: f.channelEval!, status: f.classification, statement: f.statement, reasoning: f.reasoning, ref: ref(f) })),
-      notSelected: board.scoutDecisions.filter((d) => !d.selected).map((d) => ({ channel: d.channel, reason: d.reason, score: d.score })),
-      selection: board.scoutDecisions.map((d) => ({ channel: d.channel, selected: d.selected, score: d.score, ruleHits: d.ruleHits, reason: d.reason })),
+      // `scout` is the stored name of the evaluator field (Channel Scouts before V4; the Marketing Strategist now)
+      evaluated: [...evals.values()].map((f) => ({ scout: f.agent, evaluation: f.channelEval!, status: f.classification, statement: f.statement, reasoning: f.reasoning, ref: ref(f) })),
+      notSelected: CAMPAIGN_SOCIAL_CHANNELS.filter((c) => !evals.has(c)).map((c) => ({ channel: c, reason: 'The research produced no evaluation of this channel, so it is not recommended.', score: 0 })),
+      selection: [],
     },
     seasonalOpportunities: {
       holidayCalendar: args.facts.holidays ?? { used: false, country: null, note: 'The holiday calendar was not used.', holidays: [] },
@@ -482,19 +481,18 @@ export function finalizeStrategy(draftIn: StrategyDraft, board: StrategyBoard, c
   return { report, issues };
 }
 
-function buildLimitations(board: StrategyBoard, args: FinalizeArgs, stale: boolean, ageF1: number | null, ageF2: number | null): string[] {
+function buildLimitations(board: StrategyBoard, args: FinalizeArgs, stale: boolean, ageF1: number | null): string[] {
   const out: string[] = [];
   for (const s of board.plan?.skipped ?? []) out.push(`${s.agent} did not run: ${s.reason}.`);
   for (const p of board.participantStatuses.filter((x) => x.state === 'failed' || x.state === 'timed_out')) out.push(`${p.agent} ${p.state === 'timed_out' ? 'timed out' : 'failed'}${p.error ? `: ${p.error.message}` : ''}. Its area is incomplete.`);
   for (const s of board.sources.filter((x) => x.status !== 'retrieved')) out.push(`${s.label}: ${s.status}${s.error ? ` (${s.error})` : ''}.`);
   for (const g of args.facts.competitors?.gaps ?? []) out.push(g);
   if (args.facts.holidays && !args.facts.holidays.used) out.push(args.facts.holidays.note);
-  if (stale) out.push(`The underlying ${(ageF1 ?? 0) > STALE_AFTER_DAYS ? 'F1 report' : 'F2 audit'} is older than ${STALE_AFTER_DAYS} days (F1 ${ageF1 ?? '?'} d, F2 ${ageF2 ?? '?'} d): the website, profiles and market may have changed.`);
-  if (args.f1.partial) out.push('The F1 Product Discovery report was partial.');
-  if (args.f2.partial) out.push('The F2 Marketing Audit was partial.');
+  if (stale) out.push(`The underlying business research is older than ${STALE_AFTER_DAYS} days (${ageF1 ?? '?'} d): the website, profiles and market may have changed.`);
+  if (args.f1.partial) out.push('The business research (F1) was partial.');
   out.push('Audience segments, channel fit and seasonal demand are hypotheses until validated with real data; no market size, reach, cost-per-click, conversion rate or ROI is claimed.');
   if (args.fixtureSources) out.push('FIXTURE MODE: external sources in this run are test data, not real evidence.');
   return [...new Set(out)];
 }
 
-export { CHANNELS, strategyRoleByName };
+export { CHANNELS };

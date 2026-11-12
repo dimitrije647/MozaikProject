@@ -21,7 +21,7 @@ export type ProviderErrorCode =
   /** The approved spending limit (US dollars) of this campaign would be exceeded by the next request. */
   | 'spend_limit'
   | 'source_unavailable'
-  /** NO AI HYBRID never generates an image: the request was refused before anything was sent. */
+  /** LaunchPilot never generates an image: the request was refused before anything was sent (recorded in campaigns made before V4). */
   | 'image_generation_forbidden'
   /** The model declined the request (Claude `stop_reason: "refusal"`). Billed like any answer; not retried automatically. */
   | 'refused';
@@ -45,7 +45,7 @@ export const SAFE_PROVIDER_MESSAGES: Record<ProviderErrorCode, string> = {
   budget_exceeded: 'The per-run limit on model calls was reached, so no further calls were made.',
   spend_limit: 'The approved spending limit for this campaign would be exceeded, so no further paid request was made.',
   source_unavailable: 'The source this agent needs could not be retrieved or read.',
-  image_generation_forbidden: 'NO AI HYBRID never generates images, so the image request was refused before anything was sent to the provider.',
+  image_generation_forbidden: 'LaunchPilot never generates images, so the image request was refused before anything was sent to the provider.',
 };
 
 export class ProviderError extends Error {

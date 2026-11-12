@@ -1,7 +1,7 @@
 import type { ChannelId } from '../strategy/channels';
 
 /**
- * Creative formats the Layout Designer can export. Sizes and safe areas are CONFIGURABLE DEFAULTS, not permanent platform
+ * Creative formats the Creative Designer can export. Sizes and safe areas are CONFIGURABLE DEFAULTS, not permanent platform
  * specifications: platforms change them. The safe margins keep text and the logo away from edges and from areas the platform
  * UI typically covers (for example the top and bottom of Stories, where Meta recommends leaving roughly 14% free).
  */
@@ -19,19 +19,21 @@ export const CREATIVE_FORMATS: Record<string, CreativeFormat> = {
   instagram_square: { id: 'instagram_square', label: 'Instagram feed (square)', width: 1080, height: 1080, safe: { top: 0.07, bottom: 0.07, left: 0.08, right: 0.08 }, channels: ['instagram', 'facebook', 'organic_content', 'community', 'email', 'google_search', 'tiktok'] },
   instagram_portrait: { id: 'instagram_portrait', label: 'Instagram feed (portrait 4:5)', width: 1080, height: 1350, safe: { top: 0.07, bottom: 0.08, left: 0.08, right: 0.08 }, channels: ['instagram', 'facebook'] },
   story: { id: 'story', label: 'Instagram / Facebook Story (9:16)', width: 1080, height: 1920, safe: { top: 0.14, bottom: 0.14, left: 0.08, right: 0.08 }, channels: ['instagram', 'facebook', 'tiktok'] },
+  x_post: { id: 'x_post', label: 'X post (16:9)', width: 1600, height: 900, safe: { top: 0.08, bottom: 0.08, left: 0.06, right: 0.06 }, channels: ['x'] },
   facebook_feed: { id: 'facebook_feed', label: 'Facebook feed (landscape)', width: 1200, height: 628, safe: { top: 0.1, bottom: 0.1, left: 0.06, right: 0.06 }, channels: ['facebook'] },
   linkedin_feed: { id: 'linkedin_feed', label: 'LinkedIn feed (landscape)', width: 1200, height: 627, safe: { top: 0.1, bottom: 0.1, left: 0.06, right: 0.06 }, channels: ['linkedin'] },
   promo_16x9: { id: 'promo_16x9', label: 'General promotional graphic (16:9)', width: 1920, height: 1080, safe: { top: 0.08, bottom: 0.08, left: 0.06, right: 0.06 }, channels: ['youtube', 'linkedin', 'organic_content', 'google_search'] },
-  // Hybrid Production only: wide formats the template engine designs for (not part of the per-original layout preference below).
+  // Advertising and print deliverables (V4): web banner, display ad, flyer and billboard are drawn from the collection templates.
+  display_square: { id: 'display_square', label: 'Display ad (1:1, responsive display)', width: 1200, height: 1200, safe: { top: 0.07, bottom: 0.07, left: 0.07, right: 0.07 }, channels: ['google_search'] },
   web_banner: { id: 'web_banner', label: 'Web banner (4:1)', width: 1200, height: 300, safe: { top: 0.12, bottom: 0.12, left: 0.04, right: 0.04 }, channels: ['google_search', 'email', 'organic_content'] },
   landing_hero: { id: 'landing_hero', label: 'Landing hero (12:5)', width: 1920, height: 800, safe: { top: 0.1, bottom: 0.1, left: 0.06, right: 0.06 }, channels: ['google_search', 'email', 'organic_content', 'linkedin'] },
-  // Print-shaped formats of the campaign design (Hybrid Production, template creatives only): a portrait flyer (A-series ratio) and a 3:1 billboard.
   flyer: { id: 'flyer', label: 'Flyer (A5 portrait)', width: 1240, height: 1748, safe: { top: 0.07, bottom: 0.07, left: 0.08, right: 0.08 }, channels: ['organic_content'] },
   billboard: { id: 'billboard', label: 'Billboard (3:1)', width: 2400, height: 800, safe: { top: 0.12, bottom: 0.12, left: 0.05, right: 0.05 }, channels: ['organic_content'] },
 };
 
 /** Preferred order per channel: the first formats are the most useful for that channel. */
 const PREFERENCE: Partial<Record<ChannelId, string[]>> = {
+  x: ['x_post', 'instagram_square'],
   instagram: ['instagram_square', 'instagram_portrait', 'story'],
   facebook: ['facebook_feed', 'instagram_square', 'story'],
   linkedin: ['linkedin_feed', 'instagram_square'],
@@ -59,16 +61,5 @@ export function formatsForChannels(channels: ChannelId[], cap: number): { format
   return out;
 }
 
-/** The base image size to request so that most selected formats can be cropped from it without blurry upscaling. */
-export function baseSizeFor(formats: CreativeFormat[]): '1024x1024' | '1024x1536' | '1536x1024' {
-  const ratio = (f: CreativeFormat) => f.width / f.height;
-  const tall = formats.filter((f) => ratio(f) < 0.9).length;
-  const wide = formats.filter((f) => ratio(f) > 1.2).length;
-  if (tall > 0 && tall >= wide) return '1024x1536';
-  if (wide > 0 && wide > tall) return '1536x1024';
-  return '1024x1024';
-}
-
-/** A format can be cut from a base image without more than this much upscaling (more would look blurry). */
+/** A picture is never enlarged more than this to fill its box (more would look blurry; the renderer flags it). */
 export const MAX_UPSCALE = 1.6;
-export const upscaleFactor = (srcW: number, srcH: number, f: CreativeFormat) => Math.max(f.width / srcW, f.height / srcH);

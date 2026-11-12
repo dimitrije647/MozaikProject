@@ -25,11 +25,11 @@ const STATE: Record<PhaseState, { label: string; badge: string; dot: string; ico
 };
 
 const ICON: Record<PhaseKey, LucideIcon> = { discovery: Brain, audit: FileSearch, strategy: Compass, creative: Palette };
-const ANCHOR: Record<PhaseKey, string> = { discovery: 'phase-f1', audit: 'phase-f2', strategy: 'phase-f3', creative: 'phase-f4' };
 const CODE: Record<PhaseKey, string> = { discovery: 'F1', audit: 'F2', strategy: 'F3', creative: 'F4' };
-const PHASE_ORDER: PhaseKey[] = ['discovery', 'audit', 'strategy', 'creative'];
+/** V4: the stages of Campaign Production (the Marketing Audit is no longer run; saved audits are in the project history). */
+const PHASE_ORDER: PhaseKey[] = ['discovery', 'strategy', 'creative'];
 
-const label = (p: PipelinePhaseData) => (p.state === 'blocked' ? `Waiting for ${CODE[PHASE_ORDER[PHASE_ORDER.indexOf(p.phase) - 1]]}` : STATE[p.state].label);
+const label = (p: PipelinePhaseData) => (p.state === 'blocked' ? `Waiting for ${CODE[PHASE_ORDER[PHASE_ORDER.indexOf(p.phase) - 1]] ?? 'the previous stage'}` : STATE[p.state].label);
 const when = (iso: string | null | undefined) => (iso ? formatDate(iso) : '');
 
 export function StateBadge({ phase }: { phase: PipelinePhaseData }) {
@@ -104,22 +104,21 @@ function Body({ p, briefNote }: { p: PipelinePhaseData; briefNote?: string | nul
   );
 }
 
-const jump = (id: string) => `#${id}`;
 
-/** The five workspace cards: Product Intelligence, Audit, Strategy, Creative Output and Export, all from persisted state. */
-export function PipelineCards({ pipeline, loading, flags }: { pipeline: PipelineData | undefined; loading: boolean; flags: Record<string, boolean> | null }) {
-  if (loading && !pipeline) return <div className="grid gap-4 sm:grid-cols-2">{[0, 1, 2, 3, 4].map((i) => <div key={i} className="h-44 animate-pulse rounded-2xl bg-cream-200" />)}</div>;
+/** The workspace cards: Business Research, Marketing Strategy, Creative Production and Export, all from persisted state. */
+export function PipelineCards({ pipeline, loading, flags, projectId }: { pipeline: PipelineData | undefined; loading: boolean; flags: Record<string, boolean> | null; projectId: string }) {
+  if (loading && !pipeline) return <div className="grid gap-4 sm:grid-cols-2">{[0, 1, 2, 3].map((i) => <div key={i} className="h-44 animate-pulse rounded-2xl bg-cream-200" />)}</div>;
   if (!pipeline) return <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">The saved state of the phases could not be loaded. Reload the page; nothing was changed.</p>;
   const by = Object.fromEntries(pipeline.phases.map((p) => [p.phase, p])) as Record<PhaseKey, PipelinePhaseData>;
   const creative = by.creative;
-  const campaignId = creative.output?.id;
+  const campaignId = creative?.output?.id;
   const driveNote = flags?.enableGoogleDriveExport ? 'Google Drive hand-off is on in the brief but is not implemented; download the ZIP instead.' : null;
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       {PHASE_ORDER.map((k) => {
         const p = by[k];
+        if (!p) return null;
         const Icon = ICON[k];
-        const auditOff = k === 'audit' && flags && flags.enableSeoAudit === false && !p.output && p.state === 'not_started';
         return (
           <Card key={k} data-phase={k} data-state={p.state}>
             <CardHeader className="items-center">
@@ -135,15 +134,15 @@ export function PipelineCards({ pipeline, loading, flags }: { pipeline: Pipeline
               <StateBadge phase={p} />
             </CardHeader>
             <CardContent className="space-y-3">
-              <Body p={p} briefNote={auditOff ? 'The SEO audit is switched off in the project brief; you can still run the audit.' : null} />
+              <Body p={p} />
               <Button asChild size="sm" variant="ghost">
-                <a href={jump(ANCHOR[k])}>{p.state === 'blocked' ? `Go to ${p.code} panel` : p.output ? `Open ${p.code} results` : `Open ${p.code} panel`}</a>
+                <a href={p.output ? '#campaign-history' : `/projects/${projectId}/campaign`}>{p.output ? 'Open in the history' : 'Generate campaign'}</a>
               </Button>
             </CardContent>
           </Card>
         );
       })}
-      <Card data-phase="export" data-state={campaignId ? 'completed' : creative.state === 'running' ? 'running' : 'not_started'}>
+      <Card data-phase="export" data-state={campaignId ? 'completed' : creative?.state === 'running' ? 'running' : 'not_started'}>
         <CardHeader className="items-center">
           <CardTitle className="flex items-center gap-2.5">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-ink text-accent">
@@ -151,15 +150,15 @@ export function PipelineCards({ pipeline, loading, flags }: { pipeline: Pipeline
             </span>
             Export
           </CardTitle>
-          <Badge className={cn((campaignId ? STATE.completed : creative.state === 'running' ? STATE.running : STATE.not_started).badge)}>{campaignId ? 'Package ready' : creative.state === 'running' ? 'Producing' : 'Not available yet'}</Badge>
+          <Badge className={cn((campaignId ? STATE.completed : creative?.state === 'running' ? STATE.running : STATE.not_started).badge)}>{campaignId ? 'Package ready' : creative?.state === 'running' ? 'Producing' : 'Not available yet'}</Badge>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           {campaignId ? (
             <>
-              <p className="text-ink-700">The campaign package from F4 is saved: image binaries, campaign.json, copy, landing content and preview, review and a manifest.</p>
+              <p className="text-ink-700">The newest marketing package is saved: social posts and visuals per platform, ads, print designs, brand, sources and a README.</p>
               <p className="text-xs text-muted">
-                Saved {when(creative.output?.createdAt)}
-                {creative.output?.outdated ? ` · ${creative.output.outdated}` : ''}
+                Saved {when(creative?.output?.createdAt)}
+                {creative?.output?.outdated ? ` · ${creative.output.outdated}` : ''}
               </p>
               <Button asChild size="sm">
                 <a href={`/api/campaigns/${campaignId}/export`} download>
@@ -168,7 +167,7 @@ export function PipelineCards({ pipeline, loading, flags }: { pipeline: Pipeline
               </Button>
             </>
           ) : (
-            <p className="text-muted">{creative.state === 'running' ? 'The package is assembled when F4 finishes.' : 'The downloadable package is produced by F4 Creative Production, which needs a completed strategy. Nothing is exported before then.'}</p>
+            <p className="text-muted">{creative?.state === 'running' ? 'The package is assembled when Creative Production finishes.' : 'The downloadable package is produced by Generate campaign. Nothing is exported before then.'}</p>
           )}
           {driveNote && <p className="text-xs text-muted">{driveNote}</p>}
         </CardContent>
@@ -180,7 +179,7 @@ export function PipelineCards({ pipeline, loading, flags }: { pipeline: Pipeline
 /** The hero strip: one tile per phase with the real state. */
 export function PipelineStrip({ pipeline }: { pipeline: PipelineData | undefined }) {
   return (
-    <ol className="relative mt-10 grid gap-3 sm:grid-cols-5">
+    <ol className="relative mt-10 grid gap-3 sm:grid-cols-4">
       {[...PHASE_ORDER, 'export' as const].map((k, i) => {
         const p = k === 'export' ? null : pipeline?.phases.find((x) => x.phase === k);
         const exported = k === 'export' ? !!pipeline?.phases.find((x) => x.phase === 'creative')?.output : false;
@@ -229,10 +228,11 @@ export function ProjectPipelineBadge({ projectId, dark = false }: { projectId: s
 /** Compact F1..F4 progress for lists and headers. `dark` is for the dark hero panels. */
 export function PipelineBadge({ summary, dark = false, className }: { summary: PipelineSummaryData | null | undefined; dark?: boolean; className?: string }) {
   if (!summary) return null;
-  const title = PHASE_ORDER.map((k) => `${CODE[k]}: ${summary.states[k] === 'blocked' ? 'waiting' : summary.states[k].replace('_', ' ')}${summary.hasOutput[k] && summary.states[k] !== 'completed' ? ' (earlier result saved)' : ''}`).join(' · ');
+  const keys = PHASE_ORDER.filter((k) => summary.states[k]);
+  const title = keys.map((k) => `${CODE[k]}: ${summary.states[k] === 'blocked' ? 'waiting' : summary.states[k].replace('_', ' ')}${summary.hasOutput[k] && summary.states[k] !== 'completed' ? ' (earlier result saved)' : ''}`).join(' · ');
   return (
     <span className={cn('inline-flex items-center gap-1.5', className)} title={title} data-testid="pipeline-badge">
-      {PHASE_ORDER.map((k) => {
+      {keys.map((k) => {
         const st = summary.states[k];
         const done = summary.hasOutput[k];
         const tone = st === 'running' ? 'bg-accent text-white' : st === 'failed' ? 'bg-red-100 text-red-700' : st === 'cancelled' || st === 'interrupted' ? 'bg-amber-100 text-amber-800' : done ? 'bg-emerald-100 text-emerald-800' : dark ? 'bg-white/10 text-muted-dark' : 'bg-cream-200 text-muted';
@@ -243,7 +243,7 @@ export function PipelineBadge({ summary, dark = false, className }: { summary: P
           </span>
         );
       })}
-      <span className={cn('text-[11px]', dark ? 'text-muted-dark' : 'text-muted')}>{summary.running ? `${CODE[summary.running]} running` : `${summary.completed} of 4 phases saved`}</span>
+      <span className={cn('text-[11px]', dark ? 'text-muted-dark' : 'text-muted')}>{summary.running ? `${CODE[summary.running]} running` : `${summary.completed} of ${PHASE_ORDER.length} stages saved`}</span>
     </span>
   );
 }

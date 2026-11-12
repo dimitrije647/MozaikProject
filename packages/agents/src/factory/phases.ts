@@ -1,9 +1,6 @@
 /**
- * The four stages of the LaunchPilot marketing factory.
- *
- * CONTRACTS ONLY: no phase is executed yet. These definitions are what future agent packages
- * register against (see participant-registry.ts). The infrastructure smoke test runs with
- * `currentPhase = null` and never completes a phase.
+ * The stages of LaunchPilot's one production workflow (Campaign Production): Business Research -> Marketing Strategy -> Creative Production.
+ * F2_MARKETING_AUDIT is kept ONLY so events of historical runs keep a valid phase name; V4 never runs it and nothing requires it.
  */
 export const FACTORY_PHASES = [
   'F1_PRODUCT_DISCOVERY',
@@ -35,8 +32,8 @@ export const PHASE_CONTRACTS: Readonly<Record<FactoryPhase, PhaseContract>> = {
   F1_PRODUCT_DISCOVERY: {
     phase: 'F1_PRODUCT_DISCOVERY',
     order: 1,
-    label: 'Product Discovery',
-    description: 'Product analysis, sources and evidence.',
+    label: 'Business Research',
+    description: 'Business Researcher: the company, its offering, audience and market from authorized sources.',
     requires: [],
     produces: 'intake',
     entryEvent: 'phase.started',
@@ -45,8 +42,8 @@ export const PHASE_CONTRACTS: Readonly<Record<FactoryPhase, PhaseContract>> = {
   F2_MARKETING_AUDIT: {
     phase: 'F2_MARKETING_AUDIT',
     order: 2,
-    label: 'Marketing Audit',
-    description: 'SEO, social media, brand and messaging audit.',
+    label: 'Marketing Audit (historical, not run since V4)',
+    description: 'Historical only: runs saved before V4.',
     requires: ['F1_PRODUCT_DISCOVERY'],
     produces: 'audit',
     entryEvent: 'phase.started',
@@ -55,9 +52,9 @@ export const PHASE_CONTRACTS: Readonly<Record<FactoryPhase, PhaseContract>> = {
   F3_MARKET_STRATEGY: {
     phase: 'F3_MARKET_STRATEGY',
     order: 3,
-    label: 'Market Research & Strategy',
-    description: 'Audience, competitors, channel scouts, seasonal planner and campaign strategy.',
-    requires: ['F1_PRODUCT_DISCOVERY', 'F2_MARKETING_AUDIT'],
+    label: 'Marketing Strategy',
+    description: 'Marketing Strategist: positioning, key messages, content pillars and channel strategy.',
+    requires: ['F1_PRODUCT_DISCOVERY'],
     produces: 'market',
     entryEvent: 'phase.started',
     exitEvent: 'phase.completed',
@@ -66,8 +63,8 @@ export const PHASE_CONTRACTS: Readonly<Record<FactoryPhase, PhaseContract>> = {
     phase: 'F4_CREATIVE_PRODUCTION',
     order: 4,
     label: 'Creative Production & QA',
-    description: 'Copywriting, image generation, layout, review, correction and export.',
-    requires: ['F1_PRODUCT_DISCOVERY', 'F2_MARKETING_AUDIT', 'F3_MARKET_STRATEGY'],
+    description: 'Content Writer, Visual Researcher, Creative Designer and Quality Reviewer: copy, approved pictures, template rendering, review and export. No AI images.',
+    requires: ['F1_PRODUCT_DISCOVERY', 'F3_MARKET_STRATEGY'],
     produces: 'production',
     entryEvent: 'phase.started',
     exitEvent: 'phase.completed',

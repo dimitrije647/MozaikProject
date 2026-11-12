@@ -12,39 +12,24 @@ import type {
   ProjectDetail,
   ProjectSummary,
   ConnectionTestResult,
-  ImageTestResult,
   OpenAiModelOption,
   OpenAiStatus,
   Provider,
-  ReportFull, RunAnalysis,
-  AuditAnalysis,
-  StartStrategyInput,
-  StrategyAnalysis,
+  ReportFull,
   StrategyFull,
   StrategySummary,
   PipelineData,
   FactoryActivityItem,
-  FactoryPlan,
-  FactoryPresets,
   FactoryRunData,
-  StartFactoryInput,
-  CampaignFull,
-  CampaignReviews,
-  CampaignSummary,
-  ContinueImagesInput,
-  ContinueImagesPlan,
-  CreativeAnalysis,
-  CreativePreflight,
-  StartCreativeInput,
   AuditFull,
   AuditSummary,
-  SocialDetailInput,
   ReportSummary,
   RunEvent,
   RunView,
   SocialProfile,
   User,
 } from './types';
+import type { CampaignFullData, CampaignListItem, StartCampaignInput } from './campaign';
 
 export const keys = {
   me: ['me'] as const,
@@ -178,7 +163,7 @@ export const useChangePassword = () =>
 
 export type { Asset, FormatPref, SocialProfile };
 
-// ---- Mozaik runtime (infrastructure smoke test) ----
+// ---- Mozaik runs ----
 
 const POLL_MS = 1000;
 
@@ -190,23 +175,6 @@ export const useProjectRuns = (projectId: string) =>
     refetchInterval: (q) => (q.state.data?.some((r) => r.status === 'RUNNING') ? POLL_MS : false),
   });
 
-export const useRunEvents = (runId: string | undefined, status: string | undefined) =>
-  useQuery({
-    queryKey: keys.runEvents(runId ?? 'none', status),
-    queryFn: async () => (await get<{ items: RunEvent[] }>(`/runs/${runId}/events?limit=200`)).items,
-    enabled: !!runId,
-    refetchInterval: status === 'RUNNING' ? POLL_MS : false,
-  });
-
-export const useStartSmokeTest = (projectId: string) =>
-  useApiMutation(
-    () => post<RunView>(`/projects/${projectId}/runs/smoke-test`, { delayMs: 800 }),
-    [keys.runs(projectId)],
-  );
-
-export const useCancelRun = (projectId: string) =>
-  useApiMutation((runId: string) => post<RunView>(`/runs/${runId}/cancel`), [keys.runs(projectId), ['run-events']]);
-
 // ---- OpenAI BYOK (Settings > AI providers) ----
 
 export const useOpenAiStatus = () =>
@@ -216,7 +184,7 @@ export const useOpenAiStatus = () =>
 export const useOpenAiModels = () =>
   useQuery({
     queryKey: ['openai-models'],
-    queryFn: () => get<{ selected: string | null; models: OpenAiModelOption[]; suggestedImageModel?: string | null }>('/integrations/openai/models'),
+    queryFn: () => get<{ selected: string | null; models: OpenAiModelOption[] }>('/integrations/openai/models'),
     enabled: false,
     retry: false,
     staleTime: Infinity,
@@ -229,8 +197,6 @@ export const useSaveOpenAiModel = () =>
 export const useTestOpenAi = () =>
   useApiMutation((model?: string) => post<ConnectionTestResult>('/integrations/openai/test', model ? { model } : {}), [keys.openai, keys.credentials]);
 
-/** Makes ONE billed image request (lowest quality, smallest size). Only ever triggered by an explicit button press. */
-export const useTestImageModel = () => useApiMutation((imageModel: string) => post<ImageTestResult>('/integrations/openai/image-test', { imageModel }), []);
 
 // ---- Claude BYOK (Settings > AI providers): Claude Console API key only, never a subscription login ----
 
@@ -298,13 +264,7 @@ export const useSaveClaudeModel = () => useApiMutation((model: string) => put<Cl
 /** Makes ONE tiny paid Claude call. Only ever triggered by an explicit button press. */
 export const useTestClaude = () => useApiMutation((model?: string) => post<ConnectionTestResult>('/integrations/anthropic/test', model ? { model } : {}), [['anthropic'], keys.credentials]);
 
-// ---- Product Discovery ----
-
-export const useStartDiscovery = (projectId: string) =>
-  useApiMutation(
-    (limits: { maxModelCalls?: number; maxOutputTokens?: number; maxReviews?: number }) => post<RunView>(`/projects/${projectId}/runs/product-discovery`, limits),
-    [keys.runs(projectId), keys.reports(projectId)],
-  );
+// ---- saved results (current and historical; read-only: stages are started only by Campaign Production) ----
 
 export const useReports = (projectId: string) =>
   useQuery({ queryKey: keys.reports(projectId), queryFn: () => get<ReportSummary[]>(`/projects/${projectId}/reports`) });
@@ -312,40 +272,12 @@ export const useReports = (projectId: string) =>
 export const useReport = (reportId: string | null | undefined) =>
   useQuery({ queryKey: keys.report(reportId ?? 'none'), queryFn: () => get<ReportFull>(`/reports/${reportId}`), enabled: !!reportId });
 
-export const useRunAnalysis = (runId: string | undefined, status: string | undefined) =>
-  useQuery({
-    queryKey: keys.analysis(runId ?? 'none', status),
-    queryFn: () => get<RunAnalysis>(`/runs/${runId}/analysis`),
-    enabled: !!runId,
-    refetchInterval: status === 'RUNNING' ? POLL_MS : false,
-  });
-
-// ---- F2 Marketing Audit ----
-
-export const useStartAudit = (projectId: string) =>
-  useApiMutation(
-    (body: { f1ReportId?: string; maxModelCalls?: number; maxOutputTokens?: number; maxReviews?: number; socialDetails?: SocialDetailInput[] }) => post<RunView>(`/projects/${projectId}/runs/marketing-audit`, body),
-    [keys.runs(projectId), keys.audits(projectId)],
-  );
-
+/** HISTORICAL Marketing Audits (V4 runs none). */
 export const useAudits = (projectId: string) =>
   useQuery({ queryKey: keys.audits(projectId), queryFn: async () => (await get<{ items: AuditSummary[]; nextCursor: string | null }>(`/projects/${projectId}/audits?limit=30`)).items });
 
 export const useAudit = (auditId: string | null | undefined) =>
   useQuery({ queryKey: keys.audit(auditId ?? 'none'), queryFn: () => get<AuditFull>(`/audits/${auditId}`), enabled: !!auditId });
-
-export const useAuditAnalysis = (runId: string | undefined, status: string | undefined) =>
-  useQuery({
-    queryKey: ['audit-analysis', runId ?? 'none', status] as const,
-    queryFn: () => get<AuditAnalysis>(`/runs/${runId}/analysis`),
-    enabled: !!runId,
-    refetchInterval: status === 'RUNNING' ? POLL_MS : false,
-  });
-
-// ---- F3 Market Research & Strategy ----
-
-export const useStartStrategy = (projectId: string) =>
-  useApiMutation((body: StartStrategyInput) => post<RunView>(`/projects/${projectId}/runs/market-strategy`, body), [keys.runs(projectId), keys.strategies(projectId)]);
 
 export const useStrategies = (projectId: string) =>
   useQuery({ queryKey: keys.strategies(projectId), queryFn: async () => (await get<{ items: StrategySummary[]; nextCursor: string | null }>(`/projects/${projectId}/strategies?limit=30`)).items });
@@ -353,80 +285,16 @@ export const useStrategies = (projectId: string) =>
 export const useStrategy = (strategyId: string | null | undefined) =>
   useQuery({ queryKey: keys.strategy(strategyId ?? 'none'), queryFn: () => get<StrategyFull>(`/strategies/${strategyId}`), enabled: !!strategyId });
 
-export const useStrategyAnalysis = (runId: string | undefined, status: string | undefined) =>
-  useQuery({
-    queryKey: ['strategy-analysis', runId ?? 'none', status] as const,
-    queryFn: () => get<StrategyAnalysis>(`/runs/${runId}/strategy-analysis`),
-    enabled: !!runId,
-    refetchInterval: status === 'RUNNING' ? POLL_MS : false,
-  });
-
-// ---- F4 Creative Production ----
-
-export const useStartCreative = (projectId: string) =>
-  useApiMutation((body: StartCreativeInput) => post<RunView>(`/projects/${projectId}/runs/creative-production`, body), [keys.runs(projectId), keys.campaigns(projectId)]);
-
-/** The preflight spends nothing (only GET /models); it returns the exact chain, settings and expected call counts. */
-export const useCreativePreflight = (projectId: string) =>
-  useMutation<CreativePreflight, ApiError, StartCreativeInput>({ mutationFn: (body) => post<CreativePreflight>(`/projects/${projectId}/runs/creative-production/preflight`, body) });
-
 export const useCampaigns = (projectId: string) =>
-  useQuery({
-    queryKey: keys.campaigns(projectId),
-    queryFn: async () => (await get<{ items: CampaignSummary[]; nextCursor: string | null }>(`/projects/${projectId}/campaigns?limit=30`)).items,
-    // an image-only continuation that is still generating shows up here: keep the list fresh until it is saved (a row left 'running' by a crash is ignored after an hour)
-    refetchInterval: (q) => (q.state.data?.some((c) => c.status === 'running' && Date.now() - Date.parse(c.createdAt) < 3_600_000) ? 3 * POLL_MS : false),
-  });
+  useQuery({ queryKey: keys.campaigns(projectId), queryFn: async () => (await get<{ items: CampaignListItem[]; nextCursor: string | null }>(`/projects/${projectId}/campaigns?limit=30`)).items });
 
-export const useCampaign = (campaignId: string | null | undefined, status?: string) =>
-  useQuery({
-    queryKey: [...keys.campaign(campaignId ?? 'none'), status] as const,
-    queryFn: () => get<CampaignFull>(`/campaigns/${campaignId}`),
-    enabled: !!campaignId,
-    refetchInterval: status === 'RUNNING' ? 2 * POLL_MS : false,
-  });
-
-/** The free preflight of "Generate the missing images": the missing images, what is reused and the estimate. Spends nothing. */
-export const useContinueImagesPreflight = (campaignId: string) =>
-  useMutation<ContinueImagesPlan, ApiError, ContinueImagesInput>({ mutationFn: (body) => post<ContinueImagesPlan>(`/campaigns/${campaignId}/continue-images/preflight`, body) });
-
-/** Starts a NEW campaign (a revision) that requests ONLY the missing images. Billed by OpenAI: only ever triggered by an explicit, confirmed button press. */
-export const useContinueImages = (projectId: string, campaignId: string) =>
-  useApiMutation((body: ContinueImagesInput) => post<RunView>(`/campaigns/${campaignId}/continue-images`, body), [keys.campaigns(projectId), keys.runs(projectId)]);
-
-/** One Mozaik run (GET /runs/:id), polled while it is RUNNING: the progress of an image-only continuation. */
-export const useRun = (runId: string | null | undefined) =>
-  useQuery({
-    queryKey: ['run', runId ?? 'none'] as const,
-    queryFn: () => get<RunView>(`/runs/${runId}`),
-    enabled: !!runId,
-    refetchInterval: (q) => (!q.state.data || q.state.data.status === 'RUNNING' ? 2 * POLL_MS : false),
-  });
-
-export const useCampaignReviews = (campaignId: string | null | undefined, status?: string) =>
-  useQuery({ queryKey: ['campaign-reviews', campaignId ?? 'none', status] as const, queryFn: () => get<CampaignReviews>(`/campaigns/${campaignId}/reviews`), enabled: !!campaignId });
-
-export const useCreativeAnalysis = (runId: string | undefined, status: string | undefined) =>
-  useQuery({
-    queryKey: ['creative-analysis', runId ?? 'none', status] as const,
-    queryFn: () => get<CreativeAnalysis>(`/runs/${runId}/creative-analysis`),
-    enabled: !!runId,
-    refetchInterval: status === 'RUNNING' ? POLL_MS : false,
-  });
-
-/** The whole persisted history of one run (F4 runs emit more events than the default page). */
-export const useRunEventsFull = (runId: string | undefined, status: string | undefined) =>
-  useQuery({
-    queryKey: ['run-events-full', runId ?? 'none', status] as const,
-    queryFn: async () => (await get<{ items: RunEvent[] }>(`/runs/${runId}/events?limit=500`)).items,
-    enabled: !!runId,
-    refetchInterval: status === 'RUNNING' ? POLL_MS : false,
-  });
+export const useCampaign = (campaignId: string | null | undefined) =>
+  useQuery({ queryKey: keys.campaign(campaignId ?? 'none'), queryFn: () => get<CampaignFullData>(`/campaigns/${campaignId}`), enabled: !!campaignId });
 
 // ---- Persisted pipeline state ----
 
 /**
- * The persisted state of F1 to F4 for a project (saved runs and results). It refetches whenever the run list changes (a run
+ * The persisted state of the Campaign Production stages for a project (saved runs and results). It refetches whenever the run list changes (a run
  * started, finished, failed or was cancelled) and polls while a phase is running, so the cards never show stale placeholders.
  */
 export const usePipeline = (projectId: string) => {
@@ -440,18 +308,13 @@ export const usePipeline = (projectId: string) => {
   });
 };
 
-// ---- Full campaign (F1 -> F2 -> F3 -> F4) ----
+// ---- Campaign Production: the one workflow (Business Research -> Marketing Strategy -> Creative Production) ----
 
 const ACTIVE_FACTORY = ['queued', 'running'];
 
-export const useFactoryPresets = () => useQuery({ queryKey: ['factory-presets'], queryFn: () => get<FactoryPresets>('/factory/presets'), staleTime: Infinity });
-
-/** The plan the user confirms. Spends nothing (only the free model list is read). */
-export const useFactoryPreflight = (projectId: string) =>
-  useMutation<FactoryPlan, ApiError, StartFactoryInput>({ mutationFn: (body) => post<FactoryPlan>(`/projects/${projectId}/factory/preflight`, body) });
-
+/** "Generate Campaign": starts the paid run (only after the user reviewed the free plan and approved one budget). */
 export const useStartFactory = (projectId: string) =>
-  useApiMutation((body: StartFactoryInput) => post<FactoryRunData>(`/projects/${projectId}/factory`, body), [keys.factoryRuns(projectId), keys.runs(projectId)]);
+  useApiMutation((body: StartCampaignInput) => post<FactoryRunData>(`/projects/${projectId}/factory`, body), [keys.factoryRuns(projectId), keys.runs(projectId), keys.campaigns(projectId)]);
 
 export const useFactoryRuns = (projectId: string) =>
   useQuery({

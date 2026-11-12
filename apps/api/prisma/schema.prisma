@@ -344,15 +344,15 @@ model MarketingAuditReport {
 }
 
 /// F3 Market Research & Strategy output. One per run; reruns create new rows, nothing is overwritten.
-/// Always tied to the exact F1 report and F2 audit it was built on.
+/// Always tied to the exact F1 report it was built on. Strategies made before V4 also name the F2 audit they used; V4 runs no audit (null).
 model MarketingStrategyReport {
   id            String   @id @default(cuid())
   projectId     String
   runId         String   @unique
   /// The completed F1 Product Discovery report this strategy used (exact version).
   f1ReportId    String
-  /// The completed F2 Marketing Audit this strategy used (exact version).
-  f2AuditId     String
+  /// The completed F2 Marketing Audit this strategy used (historical, pre-V4). null for V4 strategies: no audit is run any more.
+  f2AuditId     String?
   schemaVersion Int
   language      String
   /// Model id the user selected for the run (as sent to OpenAI).
@@ -368,7 +368,7 @@ model MarketingStrategyReport {
   project  Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
   run      CampaignRun            @relation(fields: [runId], references: [id], onDelete: Cascade)
   f1Report ProductDiscoveryReport @relation(fields: [f1ReportId], references: [id], onDelete: NoAction)
-  f2Audit  MarketingAuditReport   @relation(fields: [f2AuditId], references: [id], onDelete: NoAction)
+  f2Audit  MarketingAuditReport?  @relation(fields: [f2AuditId], references: [id], onDelete: NoAction)
   campaigns CreativeCampaign[]
 
   @@index([projectId, createdAt])
@@ -384,7 +384,8 @@ model CreativeCampaign {
   projectId      String
   runId          String   @unique
   f1ReportId     String
-  f2AuditId      String
+  /// historical (pre-V4) only; null for V4 campaigns, which are built on F1 and F3 alone
+  f2AuditId      String?
   f3StrategyId   String
   schemaVersion  Int
   language       String
@@ -407,7 +408,7 @@ model CreativeCampaign {
   project    Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
   run        CampaignRun             @relation(fields: [runId], references: [id], onDelete: Cascade)
   f1Report   ProductDiscoveryReport  @relation(fields: [f1ReportId], references: [id], onDelete: NoAction)
-  f2Audit    MarketingAuditReport    @relation(fields: [f2AuditId], references: [id], onDelete: NoAction)
+  f2Audit    MarketingAuditReport?   @relation(fields: [f2AuditId], references: [id], onDelete: NoAction)
   f3Strategy MarketingStrategyReport @relation(fields: [f3StrategyId], references: [id], onDelete: NoAction)
   assets     CampaignAsset[]
 

@@ -4,25 +4,16 @@ import { getCollection } from '../collections/registry';
 import { REFERENCE_KINDS, PERMISSION_STATUS, STYLE_IDS } from '../templates/schema';
 
 /**
- * Settings of the Hybrid Production preset: a small number of ORIGINAL AI images plus many template-rendered creatives built from them.
- * Everything here is chosen by the user (or defaulted by the preset) and echoed back in the campaign package; nothing changes silently.
- */
-export const HYBRID_DEFAULTS = {
-  originals: 5,
-  templateCreatives: 15,
-  concepts: 5,
-} as const;
-
-export const HYBRID_LIMITS = { maxOriginals: 40, maxTemplateCreatives: 60, maxConcepts: 5 } as const;
-
-/** NO AI HYBRID: 5 concepts x 4 template creatives = 20 finished creatives, no AI image at all. */
-export const NO_AI_DEFAULTS = { originals: 0, templateCreatives: 20, concepts: 5 } as const;
-
-/**
- * Where the pictures of a campaign come from and what may be requested. `generation: 'forbidden'` is NO AI HYBRID: no image-generation request of
- * any kind is ever made (enforced at the API, in the factory plan, in the F4 program, in the Visual Creator and in the OpenAI client itself).
+ * The visual settings of a campaign: the approved campaign design (template collection and palette), the facts only the user can give,
+ * the references the user attached and how pictures are sourced. There is ONE production workflow and it NEVER generates an image: every
+ * creative is rendered locally from a collection template, the approved palette and approved real pictures (or typography). The number of
+ * creatives is not set here: it follows from the deliverables plan (hybrid/deliverables.ts).
+ *
+ * The name "HybridSettings" is historical (campaigns saved before V4 store these settings under `hybrid`); older stored settings still parse:
+ * fields that no longer exist (originals, templateCreatives, allowTemplateFallback, directionRefine...) are ignored when read.
  */
 export const ImagerySettings = z.object({
+  /** Always "forbidden" for new campaigns. "allowed" only appears in campaigns saved before V4. */
   generation: z.enum(['allowed', 'forbidden']),
   /** fully automatic authorized-stock mode: pictures whose license is CLEARED by the provider are added during the run without a click */
   autoStock: z.boolean(),
@@ -32,10 +23,7 @@ export const ImagerySettings = z.object({
   allowPaidSearch: z.boolean(),
 });
 export type ImagerySettings = z.infer<typeof ImagerySettings>;
-export const DEFAULT_IMAGERY: ImagerySettings = { generation: 'allowed', autoStock: false, maxSourcesPerConcept: 3, allowPaidSearch: false };
-
-/** true = this campaign never generates images */
-export const isNoAi = (h: { imagery?: { generation?: string } } | null | undefined): boolean => h?.imagery?.generation === 'forbidden';
+export const DEFAULT_IMAGERY: ImagerySettings = { generation: 'forbidden', autoStock: false, maxSourcesPerConcept: 3, allowPaidSearch: false };
 
 /** Facts only the USER can provide. A template that needs one (an offer, a date, a quote...) is simply not chosen without it: nothing is invented. */
 export const HybridFacts = z.object({
@@ -62,74 +50,47 @@ export const HybridReference = z.object({
 export type HybridReference = z.infer<typeof HybridReference>;
 
 export const HybridSettings = z.object({
-  /** Original AI images (one provider request each). Default 5. */
-  originals: z.number().int().min(0).max(HYBRID_LIMITS.maxOriginals),
-  /** Template-rendered creatives built locally from the originals and the brand assets (no provider request). Default 15. */
-  templateCreatives: z.number().int().min(0).max(HYBRID_LIMITS.maxTemplateCreatives),
   /**
-   * LEGACY. The visual style used to be chosen here. It is now decided by the campaign design below; when a design exists this field is
-   * rewritten to the style of the design's collection (so nothing downstream can see a second, contradicting choice). Without a design
-   * (campaigns made before collections) it keeps its old meaning: 'auto' lets the deterministic matcher choose from the style library.
+   * LEGACY. Used only when no design exists (campaigns made before collections): 'auto' lets the deterministic matcher choose from the style
+   * library. With a design it is rewritten to the style of the design's collection.
    */
   style: z.union([z.literal('auto'), z.enum(STYLE_IDS)]),
-  /**
-   * THE CAMPAIGN DESIGN: the ONE approved visual configuration (template collection, palette, formats, picture sourcing). null = the campaign
-   * was configured before collections existed and keeps the older behaviour.
-   */
+  /** THE CAMPAIGN DESIGN: the ONE approved visual configuration (template collection, palette, picture sourcing). */
   design: CampaignDesign.nullable(),
-  /** automatic = deterministic scoring; assisted = the same, then ONE text-model call may re-rank a shortlist (validated); manual = only the user's overrides, the rest automatic. */
+  /** automatic = deterministic scoring; manual = the user's overrides, the rest automatic. ("assisted" only in older campaigns; read as automatic.) */
   selection: z.enum(['automatic', 'assisted', 'manual']),
   /** slotId -> templateId. Validated against availability and compatibility; an invalid override is reported, never silently swapped. */
   overrides: z.record(z.string(), z.string()),
   /** Template ids the user starred: a soft preference in the scoring. */
   preferredTemplates: z.array(z.string()).max(60),
-  /** When an original image could not be generated: true = render the concept's creatives with image-less templates (labelled FALLBACK); false = leave them out and say so. */
-  allowTemplateFallback: z.boolean(),
-  /** One text-model call that may refine the visual direction (validated; the deterministic brief is the fallback). */
-  directionRefine: z.boolean(),
-  /** The user wants to review the visual direction before the run (the start request then must confirm it). Never blocks a running campaign. */
-  reviewDirection: z.boolean(),
-  directionApproved: z.boolean(),
   inspiration: z.enum(['style_library', 'brand_assets', 'references']),
   references: z.array(HybridReference).max(12),
   facts: HybridFacts,
-  /** Image sourcing and the NO AI HYBRID guarantee. Campaigns saved before it existed read as `allowed` with the earlier behaviour. */
   imagery: ImagerySettings.default(DEFAULT_IMAGERY),
 });
 export type HybridSettings = z.infer<typeof HybridSettings>;
 
-export const HYBRID_PRESET: HybridSettings = {
-  originals: HYBRID_DEFAULTS.originals,
-  templateCreatives: HYBRID_DEFAULTS.templateCreatives,
+/** The visual settings of a new campaign before the user changes anything. */
+export const DEFAULT_HYBRID_SETTINGS: HybridSettings = {
   style: 'auto',
   design: null,
   selection: 'automatic',
   overrides: {},
   preferredTemplates: [],
-  allowTemplateFallback: false,
-  directionRefine: true,
-  reviewDirection: false,
-  directionApproved: false,
   inspiration: 'style_library',
   references: [],
   facts: {},
   imagery: { ...DEFAULT_IMAGERY },
 };
 
-/** NO AI HYBRID: the Hybrid settings with the guarantee switched on (originals 0, 20 template creatives). */
-export const NO_AI_PRESET: HybridSettings = {
-  ...HYBRID_PRESET,
-  originals: NO_AI_DEFAULTS.originals,
-  templateCreatives: NO_AI_DEFAULTS.templateCreatives,
-  imagery: { ...DEFAULT_IMAGERY, generation: 'forbidden' },
-};
-
-/** Merges a partial user patch into the defaults, clamping numbers; unknown keys are ignored. Throws a plain Error with a user-facing message when a value is invalid. */
-export function mergeHybrid(patch: unknown, preset: HybridSettings = HYBRID_PRESET): HybridSettings {
+/**
+ * Merges a partial user patch into the defaults; unknown keys are ignored. Image generation is ALWAYS forbidden in the result, whatever the
+ * patch says (there is no image generator in the pipeline any more). Throws a plain Error with a user-facing message when a value is invalid.
+ */
+export function mergeHybrid(patch: unknown, base: HybridSettings = DEFAULT_HYBRID_SETTINGS): HybridSettings {
   const p = (patch && typeof patch === 'object' ? patch : {}) as Record<string, unknown>;
-  // a patch that says "no image generation" starts from NO AI HYBRID's own defaults (0 originals, 20 creatives), not from Hybrid Production's
-  const base = structuredClone(preset === HYBRID_PRESET && isNoAi(p as { imagery?: { generation?: string } }) ? NO_AI_PRESET : preset);
-  const merged = { ...base, ...Object.fromEntries(Object.entries(p).filter(([k, v]) => k in base && v !== undefined && v !== null)) };
+  const start = structuredClone(base);
+  const merged = { ...start, ...Object.fromEntries(Object.entries(p).filter(([k, v]) => k in start && v !== undefined && v !== null)) };
   // a reference sent by a client has an id, a kind and maybe a link; its label and permission are filled in here and decided by the server later
   if (Array.isArray(p.references)) {
     merged.references = (p.references as Record<string, unknown>[]).map((r) => ({ id: r?.id, kind: r?.kind, label: typeof r?.label === 'string' ? r.label : '', url: typeof r?.url === 'string' ? r.url : null, permission: typeof r?.permission === 'string' ? r.permission : 'link_only_not_analyzed' })) as never;
@@ -137,21 +98,23 @@ export function mergeHybrid(patch: unknown, preset: HybridSettings = HYBRID_PRES
   // the design is validated on its own (it carries its own rules); an invalid one is refused, never repaired or replaced
   if (p.design !== undefined && p.design !== null) {
     const d = parseDesign(p.design);
-    if (!d.ok) throw new Error(`Hybrid settings are not valid: ${d.message}`);
+    if (!d.ok) throw new Error(`Campaign design is not valid: ${d.message}`);
     merged.design = d.design;
   }
-  // imagery is merged field by field so a client may send only what it changes; an unknown value is refused by the schema below
-  if (p.imagery !== undefined && p.imagery !== null && typeof p.imagery === 'object') merged.imagery = { ...base.imagery, ...Object.fromEntries(Object.entries(p.imagery as Record<string, unknown>).filter(([k, v]) => k in base.imagery && v !== undefined && v !== null)) } as never;
-  merged.facts = { ...base.facts, ...(typeof p.facts === 'object' && p.facts ? Object.fromEntries(Object.entries(p.facts as Record<string, unknown>).filter(([, v]) => typeof v === 'string' && v.trim())) : {}) };
+  if (p.imagery !== undefined && p.imagery !== null && typeof p.imagery === 'object') merged.imagery = { ...start.imagery, ...Object.fromEntries(Object.entries(p.imagery as Record<string, unknown>).filter(([k, v]) => k in start.imagery && v !== undefined && v !== null)) } as never;
+  merged.facts = { ...start.facts, ...(typeof p.facts === 'object' && p.facts ? Object.fromEntries(Object.entries(p.facts as Record<string, unknown>).filter(([, v]) => typeof v === 'string' && v.trim())) : {}) };
   const parsed = HybridSettings.safeParse(merged);
   if (!parsed.success) {
     const i = parsed.error.issues[0];
-    throw new Error(`Hybrid settings are not valid: ${i?.path.join('.') || 'value'} ${i?.message ?? ''}`.trim());
+    throw new Error(`Campaign settings are not valid: ${i?.path.join('.') || 'value'} ${i?.message ?? ''}`.trim());
   }
   const out = parsed.data;
-  // THE GUARANTEE: a campaign that never generates images cannot also ask for generated ones. Refused, never silently changed.
-  if (out.imagery.generation === 'forbidden' && out.originals > 0) throw new Error('Hybrid settings are not valid: NO AI HYBRID makes no AI images, so originals must be 0.');
-  // one choice only: with a design, the old style field simply mirrors the collection's style
-  if (out.design) out.style = getCollection(out.design.collectionId)!.styleId;
+  out.imagery = { ...out.imagery, generation: 'forbidden' };
+  if (out.selection === 'assisted') out.selection = 'automatic';
+  // the design is the ONE place the automatic stock choice is made
+  if (out.design) {
+    out.style = getCollection(out.design.collectionId)!.styleId;
+    out.imagery = { ...out.imagery, autoStock: out.design.autoStock === true };
+  }
   return out;
 }

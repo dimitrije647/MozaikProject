@@ -1,8 +1,5 @@
 import { ProductDiscoveryReportV2 } from '../discovery/f1/schemas';
 import { readStoredReport, type ReadNotes, type ReportFailure } from '../contracts/report-contract';
-import type { PageSpeedOutcome } from '../tools/pagespeed';
-import type { PresenceFacts } from '../tools/presence';
-import type { SiteAudit } from '../tools/seo';
 
 /**
  * What F2 receives from F1: a compact, read-only view of ONE completed F1 report (its Product Manifest, its
@@ -62,34 +59,4 @@ export function readF1Report(row: { id: string; schemaVersion: number; reportJso
 export function buildF1Context(row: { id: string; schemaVersion: number; reportJson: unknown; metadataJson: unknown }): F1Context | null {
   const r = readF1Report(row);
   return r.ok ? r.context : null;
-}
-
-// ---- data the tools collected for one F2 run ----------------------------------------------------------
-
-export type SocialAccess = 'live_api' | 'user_provided' | 'export' | 'fixture' | 'unavailable' | 'not_supplied' | 'invalid';
-
-export interface SocialRow {
-  platform: string;
-  url: string | null;
-  access: SocialAccess;
-  note: string;
-  metrics: { label: string; value: string }[];
-}
-
-/** Profile details the USER typed in (not retrieved from any platform). */
-export interface SocialDetails {
-  platform: string;
-  url?: string | null;
-  bio?: string | null;
-  followers?: number | null;
-  postsPerMonth?: number | null;
-  notes?: string | null;
-}
-
-export interface AuditFacts {
-  site: SiteAudit | null;
-  siteError: string | null;
-  pagespeed: PageSpeedOutcome | null;
-  social: SocialRow[];
-  presence: PresenceFacts | null;
 }

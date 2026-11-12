@@ -1,12 +1,11 @@
 import { Injectable, UnprocessableEntityException } from '@nestjs/common';
-import { TEMPLATE_LIBRARY, extractPalette, isImageBuffer, isNoAi, mergeHybrid, type BrandImage, type HybridReference, type HybridSettings } from '@launchpilot/agents';
+import { TEMPLATE_LIBRARY, extractPalette, isImageBuffer, mergeHybrid, type BrandImage, type HybridReference, type HybridSettings } from '@launchpilot/agents';
 import { ImageLibraryService } from '../visual/image-library.service';
 import { PrismaService } from '../common/prisma.service';
 import { StorageDriver } from '../storage/storage.service';
 import { readAll } from './campaign-assets';
 
 /** Brand images and references are read from the project's own storage only; these bounds keep one campaign from loading unbounded data. */
-export const MAX_BRAND_IMAGES = 6;
 export const MAX_REFERENCE_IMAGES = 6;
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const RASTER = /^image\/(png|jpe?g|webp)$/i;
@@ -27,7 +26,7 @@ export interface HybridInputs {
 }
 
 /**
- * Everything the Hybrid preset reads from the project, behind the project's tenant boundary: brand images and uploaded reference images
+ * Everything a campaign design reads from the project, behind the project's tenant boundary: brand images and uploaded reference images
  * come only from this project's own assets; links are validated and kept as text, never fetched; Pinterest items are link-only.
  */
 @Injectable()
@@ -53,11 +52,8 @@ export class HybridInputsService {
     }
     this.checkOverrides(hybrid);
 
-    const assets = await this.prisma.projectAsset.findMany({ where: { projectId, type: { in: ['image', 'reference'] }, mimeType: { startsWith: 'image/' } }, orderBy: { createdAt: 'desc' }, select: { id: true, type: true, originalName: true, mimeType: true, filePath: true, fileSize: true } });
+    const assets = await this.prisma.projectAsset.findMany({ where: { projectId, type: 'reference', mimeType: { startsWith: 'image/' } }, orderBy: { createdAt: 'desc' }, select: { id: true, type: true, originalName: true, mimeType: true, filePath: true, fileSize: true } });
     const usable = (a: { mimeType: string; fileSize: number }) => RASTER.test(a.mimeType) && a.fileSize > 0 && a.fileSize <= MAX_IMAGE_BYTES;
-    // a picture the owner REJECTED (in the image gallery or in Get Content) is not used as a brand picture
-    const rejected = new Set((await this.prisma.projectImage.findMany({ where: { projectId, status: 'rejected', assetId: { not: null } }, select: { assetId: true } }).catch(() => [])).map((r) => r.assetId));
-    const brandRows = assets.filter((a) => a.type === 'image' && usable(a) && !rejected.has(a.id)).slice(0, MAX_BRAND_IMAGES);
     const refRows = new Map(assets.filter((a) => a.type === 'reference' && usable(a)).map((a) => [a.id, a]));
 
     // references: the server decides what each kind may do; the permission sent by the client is not trusted
@@ -105,20 +101,10 @@ export class HybridInputsService {
     }
     hybrid = { ...hybrid, references };
 
-    // NO AI HYBRID: the pictures are the project's image LIBRARY (approved and rights-cleared only), not every image that was ever uploaded
-    if (isNoAi(hybrid)) {
-      const lib = await this.library.loadApproved(projectId, { withData });
-      for (const s of lib.skipped.slice(0, 4)) warnings.push(`A picture is not used: ${s}`);
-      return { hybrid, brandImages: lib.images, brandImageCount: lib.count, referencePalettes: palettes, warnings };
-    }
-    let brandImages: BrandImage[] = [];
-    if (withData) {
-      for (const a of brandRows) {
-        const data = await readAll(this.storage.read(a.filePath)).catch(() => null);
-        if (data && isImageBuffer(data)) brandImages.push({ id: a.id, name: a.originalName.slice(0, 120), data });
-      }
-    } else brandImages = [];
-    return { hybrid, brandImages, brandImageCount: brandRows.length, referencePalettes: palettes, warnings };
+    // the pictures of a campaign are the project's image LIBRARY: approved and rights-cleared only, never every image that was ever uploaded
+    const lib = await this.library.loadApproved(projectId, { withData });
+    for (const s of lib.skipped.slice(0, 4)) warnings.push(`A picture is not used: ${s}`);
+    return { hybrid, brandImages: lib.images, brandImageCount: lib.count, referencePalettes: palettes, warnings };
   }
 
   /** Overrides are validated before anything runs: the slot must look like a slot and the template must exist in the library. */

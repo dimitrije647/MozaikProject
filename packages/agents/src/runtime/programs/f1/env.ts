@@ -22,18 +22,13 @@ export interface F1Tools {
 
 export interface F1Settings {
   model: string;
-  /** Output cap for analysts. Reviews use a smaller cap, the synthesizer a larger one. */
+  /** Output cap of the analysis call; the synthesis call may use a larger one. */
   analystTokens: number;
-  reviewTokens: number;
   synthTokens: number;
   /** How long the synthesis task may take (follows the clock of its request when the clocks scale). */
   synthTimeoutMs: number;
   maxModelCalls: number;
-  maxReviews: number;
-  /** Deeper work: after the usual one-review-per-producer round, claims that were not reviewed yet are reviewed by ANOTHER agent (up to maxReviews). */
-  depth: boolean;
   agentTimeoutMs: number;
-  reviewTimeoutMs: number;
   maxWebPages: number;
   /** Test fixtures: marks every source from external tools as "fixture" (never real-world evidence). */
   fixtureSources: boolean;
@@ -51,6 +46,6 @@ export interface F1Env {
   documents: DocumentInput[];
   images: ImageInput[];
   policyIssues: PolicyIssue[];
-  /** Measured palette of analyzed images (hex), set by the Visual Analyzer's tool step. */
+  /** Measured palette of analyzed images (hex), set by the Business Researcher's image step. */
   palette: string[];
 }

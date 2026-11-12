@@ -1,5 +1,5 @@
 /**
- * The persisted state of a project's four factory phases, derived ONLY from what is stored: the newest CampaignRun of each mode
+ * The persisted state of a project's Campaign Production stages, derived ONLY from what is stored: the newest CampaignRun of each mode
  * and the newest COMPLETED output (report, audit, strategy, campaign). Nothing here is a guess and nothing is stored: a phase is
  * "completed" only if a run finished and its output exists; a failed rerun never hides an earlier completed output (both are shown).
  */
@@ -7,11 +7,11 @@ export type PhaseKey = 'discovery' | 'audit' | 'strategy' | 'creative';
 export type PhaseState = 'not_started' | 'blocked' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export type RunState = 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'INTERRUPTED';
 
+/** V4: the stages of Campaign Production. The Marketing Audit (F2) is no longer run; saved audits stay readable in the campaign history. */
 export const PHASES: { key: PhaseKey; code: 'F1' | 'F2' | 'F3' | 'F4'; mode: string; title: string; needs: PhaseKey | null; needsText: string }[] = [
-  { key: 'discovery', code: 'F1', mode: 'product_discovery', title: 'Product Intelligence', needs: null, needsText: '' },
-  { key: 'audit', code: 'F2', mode: 'marketing_audit', title: 'Marketing Audit', needs: 'discovery', needsText: 'Needs a completed Product Discovery (F1) report.' },
-  { key: 'strategy', code: 'F3', mode: 'market_strategy', title: 'Market Research & Strategy', needs: 'audit', needsText: 'Needs a completed Marketing Audit (F2).' },
-  { key: 'creative', code: 'F4', mode: 'creative_production', title: 'Creative Production', needs: 'strategy', needsText: 'Needs a completed Market Research & Strategy (F3) report.' },
+  { key: 'discovery', code: 'F1', mode: 'product_discovery', title: 'Business Research', needs: null, needsText: '' },
+  { key: 'strategy', code: 'F3', mode: 'market_strategy', title: 'Marketing Strategy', needs: 'discovery', needsText: 'Needs a completed Business Research (F1) report.' },
+  { key: 'creative', code: 'F4', mode: 'creative_production', title: 'Creative Production', needs: 'strategy', needsText: 'Needs a completed Marketing Strategy (F3).' },
 ];
 
 export interface RunFact {
@@ -104,7 +104,7 @@ export function derivePipeline(projectId: string, runs: RunFact[], outputs: Part
     } else {
       state = upstreamOk ? 'not_started' : 'blocked';
     }
-    const blockedBy = state === 'blocked' ? (upstreamOut && !upstreamOut.usable ? 'The Product Discovery report is from an earlier version without a Product Manifest. Run Product Discovery again.' : def.needsText) : null;
+    const blockedBy = state === 'blocked' ? (upstreamOut && !upstreamOut.usable ? 'The Product Discovery report is from an earlier version without a Product Manifest. Generate a campaign to refresh the business research.' : def.needsText) : null;
 
     let outdated: string | null = null;
     if (out && def.needs && upstreamOut && out.upstreamId && out.upstreamId !== upstreamOut.id) {

@@ -1,8 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { defaultAuditAnalysis, defaultAuditReport } from './fake-audit';
 import { defaultStrategyAnalysis, defaultStrategyDraft } from './fake-strategy';
-import { defaultDirectionRefinement, defaultTemplatePicks, defaultConceptCritique, defaultCopy, defaultCopyRevision, defaultCreativeReview, defaultLanding, defaultLandingRevision, defaultVisual, fakeImageBase64 } from './fake-creative';
+import { defaultCopy, defaultCopyRevision, defaultCreativeReview, fakeImageBase64 } from './fake-creative';
 import { parseSources } from './prompt-parse';
 
 export { parseSources, type PromptSource } from './prompt-parse';
@@ -15,7 +14,7 @@ import type { AgentOutput, CrosscheckAnswer, LlmFinding, ProductDiscoveryReportV
  * nothing is billed. Default answers are valid for the F1 schemas and are built from the prompt the
  * request actually carried, so they cite real source ids and excerpts.
  */
-export type FakeAgent = 'input' | 'text' | 'web' | 'repo' | 'files' | 'visual' | 'synthesizer' | 'seo' | 'social' | 'brand' | 'messaging' | 'presence' | 'auditor' | 'audience' | 'competitor' | 'seasonal' | 'scout' | 'strategist' | 'copywriter' | 'landing' | 'vcreator' | 'creviewer' | 'vresearcher' | 'tselector' | 'image' | 'other';
+export type FakeAgent = 'researcher' | 'input' | 'text' | 'web' | 'repo' | 'files' | 'visual' | 'synthesizer' | 'audience' | 'competitor' | 'seasonal' | 'scout' | 'strategist' | 'copywriter' | 'creviewer' | 'image' | 'other';
 export type FakeKind = 'analysis' | 'review' | 'synthesis' | 'test' | 'image';
 
 export interface FakeRequest {
@@ -65,6 +64,7 @@ export interface FakeOpenAIOptions {
 }
 
 const ROLE_MARKERS: [string, FakeAgent][] = [
+  ['You are the Business Researcher (A1)', 'researcher'],
   ['You are the Input Analyzer', 'input'],
   ['You are the Text Analyzer', 'text'],
   ['You are the Web Analyzer', 'web'],
@@ -72,23 +72,14 @@ const ROLE_MARKERS: [string, FakeAgent][] = [
   ['You are the File Analyzer', 'files'],
   ['You are the Visual Analyzer', 'visual'],
   ['You are the Product Synthesizer', 'synthesizer'],
-  ['You are the SEO Auditor', 'seo'],
-  ['You are the Social Media Auditor', 'social'],
-  ['You are the Brand Auditor', 'brand'],
-  ['You are the Messaging Auditor', 'messaging'],
-  ['You are the Presence Auditor', 'presence'],
-  ['You are the Audit Synthesizer', 'auditor'],
   ['You are the Audience Researcher', 'audience'],
   ['You are the Competitor Researcher', 'competitor'],
   ['You are Seasonal Intelligence', 'seasonal'],
   ['Scout (A16)', 'scout'],
-  ['You are the Campaign Strategist', 'strategist'],
-  ['You are the Copywriter (A19)', 'copywriter'],
-  ['You are the Landing Content Builder (A22)', 'landing'],
-  ['You are the Visual Creator (A20)', 'vcreator'],
-  ['You are the Content & Brand Reviewer (A23)', 'creviewer'],
-  ['You are the Visual Researcher of a marketing team', 'vresearcher'],
-  ['You are the Template Selector of a marketing team', 'tselector'],
+  ['You are the Marketing Strategist', 'strategist'],
+  // F4 (V4): 'copywriter' = the Content Writer, 'creviewer' = the Quality Reviewer
+  ['You are the Content Writer (A3)', 'copywriter'],
+  ['You are the Quality Reviewer (A6)', 'creviewer'],
 ];
 
 const items = (body: Record<string, any> | null): any[] => (Array.isArray(body?.input) ? body!.input : []);
@@ -204,6 +195,13 @@ export function defaultAnalysis(agent: FakeAgent, userText: string): AgentOutput
         findings: [F({ category: 'visual', statement: 'The imagery uses a restrained colour palette.', classification: 'inferred', sourceType: 'image', locator: 'image 1', importance: 'medium' })],
         missingInformation: [],
       };
+    case 'researcher': {
+      // V4: ONE Business Researcher reads every source at once; its default answer is the union of what the earlier analysts found
+      const parts = (['input', 'web', 'repo', 'files'] as FakeAgent[]).map((a) => defaultAnalysis(a, userText));
+      if (/image\(s\) are attached to this message/.test(userText)) parts.push(defaultAnalysis('visual', userText));
+      const findings = parts.flatMap((p) => p.findings).filter((f) => !f.sourceId || sources.some((x) => x.id === f.sourceId));
+      return { summary: 'What the authorized sources say about the business.', findings: findings.slice(0, 30), missingInformation: [...new Set(parts.flatMap((p) => p.missingInformation))].slice(0, 12) };
+    }
     default:
       return { summary: '', findings: [], missingInformation: [] };
   }
@@ -275,14 +273,10 @@ export function defaultReportV2(userText: string, overrides: Partial<ProductDisc
 
 function defaultAnswer(kind: FakeKind, agent: FakeAgent, userText: string, channel: string | null = null): string {
   if (kind === 'review') return JSON.stringify(defaultReview(userText));
-  if (agent === 'copywriter') return JSON.stringify(userText.includes('Revise ONLY the listed variants') ? defaultCopyRevision(userText) : defaultCopy(userText));
-  if (agent === 'landing') return JSON.stringify(userText.includes('Fix the landing page content findings') ? defaultLandingRevision(userText) : defaultLanding(userText));
-  if (agent === 'vcreator') return JSON.stringify(defaultVisual(userText));
-  if (agent === 'vresearcher') return JSON.stringify(defaultDirectionRefinement(userText));
-  if (agent === 'tselector') return JSON.stringify(defaultTemplatePicks(userText));
-  if (agent === 'creviewer') return JSON.stringify(userText.includes('<concepts_to_critique>') ? defaultConceptCritique(userText) : defaultCreativeReview());
-  if (kind === 'synthesis') return JSON.stringify(agent === 'strategist' ? defaultStrategyDraft(userText) : agent === 'auditor' ? defaultAuditReport(userText) : defaultReportV2(userText));
-  if (kind === 'analysis') return JSON.stringify(['audience', 'competitor', 'seasonal', 'scout'].includes(agent) ? defaultStrategyAnalysis(agent as never, userText, channel) : ['seo', 'social', 'brand', 'messaging', 'presence'].includes(agent) ? defaultAuditAnalysis(agent as never, userText) : defaultAnalysis(agent, userText));
+  if (agent === 'copywriter') return JSON.stringify(userText.includes('Revise ONLY the listed copy') ? defaultCopyRevision(userText) : defaultCopy(userText));
+  if (agent === 'creviewer') return JSON.stringify(defaultCreativeReview());
+  if (kind === 'synthesis') return JSON.stringify(agent === 'strategist' ? defaultStrategyDraft(userText) : defaultReportV2(userText));
+  if (kind === 'analysis') return JSON.stringify(['audience', 'competitor', 'seasonal', 'scout', 'strategist'].includes(agent) ? defaultStrategyAnalysis(agent as never, userText, channel) : defaultAnalysis(agent, userText));
   return 'OK';
 }
 
@@ -352,8 +346,8 @@ export class FakeOpenAI {
     const users = userMessages(body);
     const userText = users.join('\n');
     const lastUserText = users[users.length - 1] ?? '';
-    const creative = ['copywriter', 'landing', 'vcreator', 'creviewer', 'vresearcher', 'tselector'].includes(agent);
-    const kind: FakeKind = isImage ? 'image' : !isResponses || agent === 'other' ? 'test' : creative ? (lastUserText.includes('<crosscheck_request>') ? 'review' : 'analysis') : userText.includes('<crosscheck_request>') ? 'review' : agent === 'synthesizer' || agent === 'auditor' || agent === 'strategist' ? 'synthesis' : 'analysis';
+    const creative = ['copywriter', 'creviewer'].includes(agent);
+    const kind: FakeKind = isImage ? 'image' : !isResponses || agent === 'other' ? 'test' : creative ? (lastUserText.includes('<crosscheck_request>') ? 'review' : 'analysis') : userText.includes('<crosscheck_request>') ? 'review' : agent === 'synthesizer' || (agent === 'strategist' && lastUserText.includes('Write the campaign strategy')) || (agent === 'researcher' && userText.includes('STEP 2. Write the Product Discovery report')) ? 'synthesis' : 'analysis';
     const countKey = `${agent}:${kind}`;
     if (isResponses || isImage) this.counts.set(countKey, (this.counts.get(countKey) ?? 0) + 1);
     const header = (k: string) => (typeof req.headers[k] === 'string' ? (req.headers[k] as string) : null);

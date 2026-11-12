@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { AlertCircle, CheckCircle2, ExternalLink, Search } from 'lucide-react';
+import { AlertCircle, CheckCircle2 } from 'lucide-react';
 import { AvailableImages } from '@/components/available-images';
 import { CollectionCard } from '@/components/collection-card';
 import { GetContent } from '@/components/get-content';
@@ -12,14 +12,10 @@ import { useToast } from '@/components/ui/toast';
 import { CLASS_LABELS, type FormatClass } from '@/lib/hybrid';
 import { post } from '@/lib/api';
 import {
-  FORMAT_OPTION_KEYS,
   PALETTE_ROLES,
-  SOURCING_LABELS,
   contrastRatio,
   designPreviewUrl,
-  useAddLicensedImage,
   useCollections,
-  useDiscoverImages,
   useNewDesign,
   usePaletteSuggestion,
   useProjectDesign,
@@ -29,7 +25,6 @@ import {
   type CollectionId,
   type DesignEvaluation,
   type DesignPalette,
-  type ImageSourcing,
   type PaletteRole,
   type PaletteSuggestionData,
 } from '@/lib/visual';
@@ -40,8 +35,6 @@ import { cn } from '@/lib/utils';
  * object (`design`) that the campaign setup owns, saves as a draft per project (so a refresh keeps it) and sends with the start request.
  * Nothing in this file calls an API that spends money: previews are drawn by the server's renderer, discovery uses only free search providers.
  */
-
-const DEFAULT_FORMATS = ['instagram_post', 'instagram_story', 'website_banner'] as const;
 
 function useDebounced<T>(value: T, ms: number): T {
   const [v, setV] = React.useState(value);
@@ -81,19 +74,11 @@ export interface CampaignDesignProps {
   projectId: string;
   design: CampaignDesignData | null;
   onChange: (d: CampaignDesignData | null) => void;
-  /** original AI images requested (the picture plan is judged against it) */
-  originals: number;
-  imageOn: boolean;
-  /** the free plan's own words about where the pictures come from, once a plan review exists for exactly these settings */
-  sourcePlan?: { summary: string; warnings: string[]; suggestions: { id: string; message: string; set: { originals: number }; fewerRequests: number; savesUsd: number | null }[] } | null;
-  onApplyOriginals?: (n: number) => void;
   /** A collection the user came here to use (from the Templates page): applied once, after the saved draft was loaded. */
   initialCollection?: CollectionId | null;
-  /** NO AI HYBRID: the picture step is the AVAILABLE IMAGES gallery (existing and licensed pictures) instead of the AI-versus-existing sourcing choice. */
-  noAi?: boolean;
 }
 
-export function CampaignDesign({ projectId, design, onChange, originals, imageOn, sourcePlan, onApplyOriginals, initialCollection, noAi }: CampaignDesignProps) {
+export function CampaignDesign({ projectId, design, onChange, initialCollection }: CampaignDesignProps) {
   const toast = useToast();
   const collections = useCollections();
   const projectDesign = useProjectDesign(projectId);
@@ -163,8 +148,8 @@ export function CampaignDesign({ projectId, design, onChange, originals, imageOn
     try {
       if (!design) {
         const fresh = await newDesign.mutateAsync(id);
-        let d = fresh.design;
-        if (!d.formats.length) d = { ...d, formats: [...DEFAULT_FORMATS] };
+        // V4: no formats are chosen here; the deliverables plan produces every format the collection can draw
+        const d = { ...fresh.design, formats: [] };
         setEvaluation({ check: fresh.check, paletteFit: fresh.paletteFit, formats: fresh.formats, canConfirm: fresh.canConfirm });
         const s = await runSuggestion(id, false, null);
         onChange(s ? applySuggestion(d, s.suggestion) : d);
@@ -206,20 +191,14 @@ export function CampaignDesign({ projectId, design, onChange, originals, imageOn
     setSuggestion({ suggestion: s, analyzedAt: analyzedAt ?? new Date().toISOString(), cached: true, sources: { website: null, repository: null } });
     return [...design.overridden];
   };
-  const toggleFormat = (k: (typeof FORMAT_OPTION_KEYS)[number]) => design && patch({ formats: design.formats.includes(k) ? design.formats.filter((x) => x !== k) : [...design.formats, k] });
 
-  const fit = evaluation?.formats;
   const check = evaluation?.check;
   const liveRatio = design ? contrastRatio(design.palette.text, design.palette.background) : 21;
   const min = current?.paletteRules.minTextContrast ?? 4.5;
   const errors = [...(check?.errors ?? [])];
   if (design && liveRatio < min && !errors.some((e) => /text color/.test(e))) errors.unshift(`The text color has a contrast of ${liveRatio.toFixed(1)}:1 against the background; at least ${min}:1 is needed to be readable.`);
   const paletteNotes = [...(check?.warnings ?? []), ...(evaluation?.paletteFit.notes.filter((n) => !errors.includes(n)) ?? []), ...notes];
-  const canConfirm = !!design && errors.length === 0 && (fit ? fit.ok : true);
-  const supports = (optKey: string) => {
-    const opt = collections.data?.formatOptions.find((o) => o.key === optKey);
-    return !current || !opt || opt.formatIds.some((id) => current.supportedFormats.some((f) => f.id === id));
-  };
+  const canConfirm = !!design && errors.length === 0;
   const previewTemplates = current ? current.templates.filter((t) => t.classes.includes(previewClass) && t.requires.every((r) => r === 'image' || r === 'logo' || r === 'headline' || r === 'support' || r === 'cta' || r === 'eyebrow' || r === 'brand')).slice(0, 6) : [];
 
   return (
@@ -252,7 +231,7 @@ export function CampaignDesign({ projectId, design, onChange, originals, imageOn
       {/* GET CONTENT (optional): finds the logo, photographs and brand colors in the sources the user supplied; free, starts no campaign and blocks nothing */}
       <GetContent projectId={projectId} design={design} onUsePalette={applyContentPalette} />
 
-      {noAi && !design && (
+      {!design && (
         <section data-testid="design-step-pictures" className="space-y-2">
           <AvailableImages projectId={projectId} autoStock={false} onAutoStock={null} />
         </section>
@@ -279,83 +258,11 @@ export function CampaignDesign({ projectId, design, onChange, originals, imageOn
             />
           </Step>
 
-          <Step id="formats" letter="C" title="Choose output formats" hint="The creatives are made in exactly these formats. A format the collection cannot draw is marked and blocks the start until you change it.">
-            <div data-testid="format-options" className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-4">
-              {collections.data?.formatOptions.map((o) => {
-                const on = design.formats.includes(o.key);
-                const ok = supports(o.key);
-                return (
-                  <label key={o.key} data-testid={`format-${o.key}`} className={cn('flex cursor-pointer items-start gap-2 rounded-xl border px-3 py-2 text-xs', on ? 'border-accent bg-accent-soft/40' : 'border-cream-300 bg-cream-50', !ok && 'border-amber-300')}>
-                    <input type="checkbox" className="mt-0.5" checked={on} onChange={() => toggleFormat(o.key)} />
-                    <span>
-                      <strong className="text-ink">{o.label}</strong>
-                      {!ok && <span className="block text-amber-900">Not supported by {current.name}</span>}
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-            {design.formats.length === 0 && <p className="text-xs text-muted">No format chosen: the formats follow the channels of your strategy.</p>}
-            {fit && fit.messages.length > 0 && (
-              <div data-testid="format-fit" className={cn('space-y-1 rounded-xl border px-3 py-2 text-xs', fit.ok ? 'border-amber-300 bg-amber-50 text-amber-950' : 'border-red-300 bg-red-50 text-red-900')}>
-                {fit.messages.map((m) => (
-                  <p key={m}>{m}</p>
-                ))}
-                {!fit.ok && (
-                  <>
-                    <p className="font-medium">Your options (nothing is changed for you):</p>
-                    <ul className="list-disc pl-5">
-                      {fit.options.collections.length > 0 && <li>Choose a collection that supports every format: {fit.options.collections.map((c) => c.name).join(', ')}.</li>}
-                      {fit.options.plan.map((p) => (
-                        <li key={p}>{p}</li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-              </div>
-            )}
-          </Step>
+          <section data-testid="design-step-pictures" className="space-y-2">
+            <AvailableImages projectId={projectId} letter="C" autoStock={design.autoStock === true} onAutoStock={(on) => patch({ autoStock: on })} />
+          </section>
 
-          {noAi ? (
-            <section data-testid="design-step-pictures" className="space-y-2">
-              <AvailableImages projectId={projectId} letter="D" autoStock={design.autoStock === true} onAutoStock={(on) => patch({ autoStock: on })} />
-            </section>
-          ) : (
-          <Step id="pictures" letter="D" title="Picture sources" hint="Where the pictures of the creatives come from. The number of original AI images stays exactly what you set above.">
-            <div className="grid gap-2 md:grid-cols-3">
-              {(Object.keys(SOURCING_LABELS) as ImageSourcing[]).map((m) => (
-                <label key={m} className="flex cursor-pointer items-start gap-2 text-sm">
-                  <input type="radio" name="image-sourcing" data-testid={`sourcing-${m}`} className="mt-1" checked={design.imageSourcing === m} onChange={() => patch({ imageSourcing: m })} />
-                  <span>
-                    <strong>{SOURCING_LABELS[m].title}</strong>
-                    <span className="block text-xs text-muted">{SOURCING_LABELS[m].text}</span>
-                  </span>
-                </label>
-              ))}
-            </div>
-            <p data-testid="source-plan" className="text-xs text-ink-600">
-              {sourcePlan ? `Plan: ${sourcePlan.summary}.` : `${imageOn ? originals : 0} paid image request${(imageOn ? originals : 0) === 1 ? '' : 's'} for original AI images (review the plan for the full picture-source plan).`}
-            </p>
-            {sourcePlan?.warnings.map((w) => (
-              <p key={w} className="text-xs text-amber-900">
-                {w}
-              </p>
-            ))}
-            {sourcePlan?.suggestions.map((s) => (
-              <div key={s.id} data-testid="source-suggestion" className="flex flex-wrap items-center gap-2 rounded-xl bg-cream-100 px-3 py-2 text-xs">
-                <span className="min-w-0 flex-1">{s.message}{s.savesUsd !== null ? ` It would save about $${s.savesUsd.toFixed(2)}.` : ''}</span>
-                {onApplyOriginals && (
-                  <Button type="button" size="sm" variant="outline" onClick={() => onApplyOriginals(s.set.originals)}>
-                    Use {s.set.originals} AI image{s.set.originals === 1 ? '' : 's'}
-                  </Button>
-                )}
-              </div>
-            ))}
-            <DiscoveryPanel projectId={projectId} />
-          </Step>
-          )}
-
-          <Step id="preview" letter="E" title="Free preview" hint={noAi ? 'Drawn right now by LaunchPilot\'s own renderer with your palette and logo (or brand name). The text and the picture are illustrative samples; nothing is generated and nothing is sent to OpenAI.' : 'Drawn right now by LaunchPilot\'s own renderer with your palette and logo (or brand name). The text and the picture are illustrative samples; nothing is sent to OpenAI.'}>
+          <Step id="preview" letter="D" title="Free preview" hint="Drawn right now by LaunchPilot's own renderer with your palette and logo (or brand name). The text and the picture are illustrative samples; nothing is generated and nothing is sent to any AI provider.">
             <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Preview format">
               {current.supportedClasses.map((cls) => (
                 <button key={cls} type="button" role="tab" aria-selected={previewClass === cls} data-testid={`preview-class-${cls}`} onClick={() => setPreviewClass(cls)} className={cn('rounded-full border px-3 py-1 text-xs', previewClass === cls ? 'border-accent bg-accent-soft/50 font-medium text-ink' : 'border-cream-300 bg-cream-50 text-muted hover:text-ink')}>
@@ -382,117 +289,13 @@ export function CampaignDesign({ projectId, design, onChange, originals, imageOn
               <CheckCircle2 className="h-4 w-4" /> {design.confirmed ? 'Design confirmed' : 'Use this design for the campaign'}
             </Button>
             <span className="text-xs text-muted">
-              {design.confirmed ? `${current.name}, your palette and ${design.formats.length || 'the strategy'} format${design.formats.length === 1 ? '' : 's'} are locked in for the next review. Any change asks you to confirm again.` : canConfirm ? 'Confirm to continue to the plan and the budget.' : 'Fix the problems above to confirm.'}
+              {design.confirmed ? `${current.name} and your palette are locked in for the next review. Any change asks you to confirm again.` : canConfirm ? 'Confirm to continue to the plan and the budget.' : 'Fix the problems above to confirm.'}
             </span>
           </div>
         </>
       )}
       {!design && !collections.isLoading && <p className="text-xs text-muted">Choose a collection to see its palette, formats and previews.</p>}
     </section>
-  );
-}
-
-// ---- web visual discovery (free providers only) ----------------------------------------------------------------------------------------------------
-
-function DiscoveryPanel({ projectId }: { projectId: string }) {
-  const toast = useToast();
-  const discover = useDiscoverImages(projectId);
-  const add = useAddLicensedImage(projectId);
-  const [checked, setChecked] = React.useState<Record<string, boolean>>({});
-  const data = discover.data;
-  const key = (c: { provider: string; id: string }) => `${c.provider}:${c.id}`;
-  return (
-    <details data-testid="discovery" className="rounded-xl border border-cream-300/80 bg-cream-50 px-3 py-2 text-sm">
-      <summary className="flex cursor-pointer select-none items-center gap-1.5 text-muted hover:text-ink">
-        <Search className="h-3.5 w-3.5" /> Find licensed pictures on the web (optional, free)
-      </summary>
-      <div className="mt-3 space-y-3 text-xs">
-        <p className="text-muted">
-          <strong className="text-ink">Only pictures whose license allows advertising use can be added to the project.</strong> Results from search engines and Pinterest are shown for inspiration only: they are never downloaded, never used in a creative and never sent to AI. Nothing is added unless you choose it.
-        </p>
-        <Button type="button" size="sm" variant="outline" data-testid="discover-run" loading={discover.isPending} onClick={() => discover.mutate({}, { onError: (e) => toast.error(e.message) })}>
-          <Search className="h-3.5 w-3.5" /> Search for my business
-        </Button>
-        {data && (
-          <div className="space-y-3" data-testid="discovery-results">
-            <ul className="space-y-0.5">
-              {data.providers.map((p) => (
-                <li key={p.id} data-testid={`provider-${p.id}`}>
-                  <strong>{p.label}</strong>: {p.status === 'ok' ? `${p.count} result${p.count === 1 ? '' : 's'}` : p.status === 'not_configured' ? `not configured. ${p.message ?? ''}` : (p.message ?? p.status)}
-                </li>
-              ))}
-            </ul>
-            {data.intents.length > 0 && <p className="text-muted">Searched for: {data.intents.map((i) => `“${i.query}”`).join(', ')}</p>}
-            {data.notes.map((n) => (
-              <p key={n} className="text-amber-900">
-                {n}
-              </p>
-            ))}
-            {data.licensed.length > 0 && (
-              <div>
-                <p className="mb-1 font-medium text-ink">Licensed pictures</p>
-                <ul className="grid gap-2 sm:grid-cols-2">
-                  {data.licensed.map((c) => (
-                    <li key={key(c)} data-testid="licensed-candidate" className="flex gap-2 rounded-xl bg-cream-100 p-2">
-                      {c.thumbnailUrl && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={c.thumbnailUrl} alt={c.title} referrerPolicy="no-referrer" className="h-16 w-16 shrink-0 rounded-md object-cover" />
-                      )}
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <p className="truncate font-medium text-ink" title={c.title}>
-                          {c.title}
-                        </p>
-                        <p className="text-muted">
-                          {c.license.license} · {c.provider}
-                          {c.creator ? ` · ${c.creator}` : ''}
-                        </p>
-                        <Badge className={cn('px-2 py-0.5 text-[10px]', c.license.status === 'cleared' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-900')}>{c.license.status === 'cleared' ? 'License allows advertising use' : 'Check the license at the source'}</Badge>
-                        <a href={c.pageUrl} target="_blank" rel="noreferrer noopener" className="ml-2 inline-flex items-center gap-0.5 text-accent underline">
-                          source <ExternalLink className="h-3 w-3" />
-                        </a>
-                        {c.license.status === 'needs_review' && (
-                          <label className="flex items-start gap-1.5 text-[11px]">
-                            <input type="checkbox" checked={!!checked[key(c)]} onChange={(e) => setChecked((x) => ({ ...x, [key(c)]: e.target.checked }))} /> I checked the license on the source page.
-                          </label>
-                        )}
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          disabled={c.license.status === 'needs_review' && !checked[key(c)]}
-                          loading={add.isPending && add.variables?.id === c.id}
-                          onClick={() => add.mutate({ provider: c.provider, id: c.id, reviewConfirmed: c.license.status === 'needs_review' }, { onSuccess: () => toast.success('Picture added to the project with its credit.'), onError: (e) => toast.error(e.message) })}
-                        >
-                          Add to project
-                        </Button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {data.references.length > 0 && (
-              <div>
-                <p className="mb-1 font-medium text-ink">Reference only (inspiration)</p>
-                <ul className="space-y-1">
-                  {data.references.map((c) => (
-                    <li key={key(c) + c.pageUrl} data-testid="reference-candidate" className="flex flex-wrap items-center gap-2 rounded-lg bg-cream-100 px-2 py-1.5">
-                      <Badge className="bg-cream-200 px-2 py-0.5 text-[10px] text-ink-600">Reference only</Badge>
-                      <span className="min-w-0 flex-1 truncate" title={c.title}>
-                        {c.title} {c.platform ? `· ${c.platform}` : ''}
-                      </span>
-                      <a href={c.pageUrl} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-0.5 text-accent underline">
-                        open <ExternalLink className="h-3 w-3" />
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </details>
   );
 }
 

@@ -25,12 +25,10 @@ import {
   type CampaignRuntime,
   type DiscoveryRunConfig,
   type InferenceCredentials,
-  type AuditReportMeta,
   type CampaignStrategyReport,
   type StrategyReportMeta,
   type StrategyRunConfig,
   checkSavedChain,
-  type AuditRunConfig,
   type DocumentInput,
   type MarketingAuditReport,
   type ImageInput,
@@ -39,28 +37,10 @@ import {
   type SmokeTestOptions,
   buildCampaignZip,
   creditsText,
-  buildOriginalsZip,
-  buildCreativesZip,
-  creativesZipFileName,
-  originalsZipFileName,
   zipFileName,
-  renderLandingHtml,
   derivePalette,
-  estimateCreativeRun,
-  capOutputTokens,
-  forecastAllocation,
-  planHybrid,
-  designFormatIds,
-  isNoAi,
-  imageCostEstimate,
-  imageModelWarning,
-  missingSlots,
-  prepareContinuationSeed,
-  reconstructImageResults,
-  OpenAIClient,
   CampaignPackage,
   CAMPAIGN_SCHEMA_VERSION,
-  CHANNEL_IDS,
   type ChannelId,
   type CreativeInput,
   type CreativeReportMeta,
@@ -76,12 +56,9 @@ import { ProjectsService } from '../projects/projects.service';
 import { ApiCredentialsService } from '../api-credentials/api-credentials.module';
 import { EventWriter } from './event-writer';
 import { CAMPAIGN_RUNTIME } from './types/runtime.token';
-import { estimateCost, type CostEstimate } from './cost-estimate';
-import { chooseImageModel } from './image-model-choice';
 import { chainException } from './report-errors';
 import { VisualService } from '../visual/visual.service';
-import type { ContinueImagesDto } from './dto/factory.dto';
-import { ListAuditsQueryDto, ListEventsQueryDto, StartAuditDto, StartCreativeDto, StartDiscoveryDto, StartSmokeTestDto, StartStrategyDto } from './dto/mozaik.dto';
+import { ListAuditsQueryDto, ListEventsQueryDto, StartSmokeTestDto } from './dto/mozaik.dto';
 
 const RESULT_TO_DB: Record<CampaignRunResult['status'], RunStatus> = {
   completed: RunStatus.COMPLETED,
@@ -92,15 +69,43 @@ const RESULT_TO_DB: Record<CampaignRunResult['status'], RunStatus> = {
 
 const RUN_LABELS: Record<string, string> = {
   smoke_test: 'Infrastructure Smoke Test',
-  product_discovery: 'Product Discovery',
-  marketing_audit: 'Marketing Audit',
-  market_strategy: 'Market Research & Strategy',
+  product_discovery: 'Business Research',
+  marketing_audit: 'Marketing Audit (historical)',
+  market_strategy: 'Marketing Strategy',
   creative_production: 'Creative Production',
 };
 
 type RunMode = 'smoke_test' | 'product_discovery' | 'marketing_audit' | 'market_strategy' | 'creative_production';
 type RunWithReport = CampaignRun & { report?: { id: string } | null; audit?: { id: string } | null; strategy?: { id: string } | null; campaign?: { id: string } | null };
 const withReport = { report: { select: { id: true } }, audit: { select: { id: true } }, strategy: { select: { id: true } }, campaign: { select: { id: true } } } as const;
+
+/** What Campaign Production hands the strategy stage (the campaign configuration; never a model or a provider). */
+export interface StrategyStartOptions {
+  f1ReportId: string;
+  objective: string | null;
+  targetAudience: string | null;
+  competitorUrls: string[];
+  useHolidayCalendar: boolean;
+  maxModelCalls?: number;
+  maxOutputTokens?: number;
+}
+
+/** What Campaign Production hands the creative stage. */
+export interface CreativeStartOptions {
+  strategyId: string;
+  channels: string[];
+  concepts: number;
+  objective: string | null;
+  audience: string | null;
+  /** The user's writing-style override (tone, humor, preferred and forbidden words); null/absent = inferred from the research. */
+  voice?: { tone: 'professional' | 'conversational' | 'playful' | 'premium' | 'technical' | null; humor: boolean | null; preferredTerms: string[]; avoid: string[] } | null;
+  /** The campaign design (collection, palette, formats, picture sourcing, facts, references); normalized by the server. */
+  design: unknown;
+  maxRepairRounds?: number;
+  visionReviews?: number;
+  maxModelCalls?: number;
+  maxOutputTokens?: number;
+}
 
 interface ActiveEntry {
   handle: CampaignRunHandle;
@@ -306,14 +311,13 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Product Discovery (F1): real Mozaik agents using the USER's OpenAI key and an explicitly chosen
-   * model. Requires an intentional call; nothing here runs on page load.
+   * Business Research (F1): the Business Researcher on the user's own provider key and saved model. Started only by Campaign Production.
    * `testHooks` (timeouts etc.) is for tests only and is not reachable through HTTP.
    */
-  async startProductDiscovery(userId: string, projectId: string, dto: StartDiscoveryDto = {}, testHooks: Partial<DiscoveryRunConfig> = {}, opts: { factoryRunId?: string; spendCapUsd?: number | null; ledger?: SpendBudget; depth?: boolean } = {}) {
+  async startProductDiscovery(userId: string, projectId: string, o: { maxModelCalls?: number; maxOutputTokens?: number } = {}, testHooks: Partial<DiscoveryRunConfig> = {}, opts: { factoryRunId?: string; spendCapUsd?: number | null; ledger?: SpendBudget } = {}) {
     const project = await this.projects.assertOwned(userId, projectId);
 
-    const { credentials, model, baseUrl } = await this.textProviderFor(userId, dto.model, 'Product Discovery');
+    const { credentials, model, baseUrl } = await this.textProviderFor(userId, 'Business Research');
 
     const [intake, socials, assets, notes] = await Promise.all([
       this.prisma.productIntake.findUnique({ where: { projectId } }),
@@ -343,12 +347,10 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
             model,
             documents,
             images,
-            maxModelCalls: dto.maxModelCalls,
-            maxOutputTokens: dto.maxOutputTokens,
-            maxReviews: dto.maxReviews,
+            maxModelCalls: o.maxModelCalls,
+            maxOutputTokens: o.maxOutputTokens,
             spendCapUsd: opts.spendCapUsd ?? null,
             ledger: opts.ledger,
-            depth: opts.depth === true,
             baseUrl,
             ...testHooks,
           },
@@ -377,7 +379,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
    * chosen model. Every phase, the factory and every continuation resolve through here, so a run never mixes providers and nothing is switched
    * silently: a missing key/model or a model of the other provider is refused BEFORE anything is sent.
    */
-  async textProviderFor(userId: string, modelOverride: string | undefined, what: string) {
+  async textProviderFor(userId: string, what: string) {
     const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { defaultAiProvider: true } });
     const provider = (user.defaultAiProvider ?? 'openai') as AiProvider;
     if (!(TEXT_AGENT_PROVIDERS as readonly string[]).includes(provider)) {
@@ -386,7 +388,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     const name = provider === 'anthropic' ? 'Claude' : 'OpenAI';
     const cred = await this.credentials.getDecryptedCredential(userId, provider);
     if (!cred) throw new UnprocessableEntityException(`${what} needs your ${name} API key. Add it under Settings > AI providers.`);
-    const model = modelOverride ?? cred.model;
+    const model = cred.model;
     if (!model) throw new UnprocessableEntityException(`Choose ${provider === 'anthropic' ? 'a Claude' : 'an OpenAI'} model first (Settings > AI providers). LaunchPilot never picks one for you.`);
     if ((provider === 'anthropic') !== isClaudeModel(model)) {
       throw new UnprocessableEntityException(`The model "${model}" is not ${provider === 'anthropic' ? 'a Claude' : 'an OpenAI'} model, and LaunchPilot never switches providers on its own. Pick a ${name} model, or change the default provider under Settings > AI providers.`);
@@ -395,77 +397,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     return { credentials, model, provider, baseUrl: provider === 'anthropic' ? resolveAnthropicBaseUrl() : resolveOpenAIBaseUrl() };
   }
 
-  /**
-   * F2 Marketing Audit. Diagnostic only, built on ONE completed F1 report (the newest, or the one chosen).
-   * Nothing runs without this explicit call; a missing F1 report is never fabricated.
-   * `testHooks` (timeouts, test tools) is for tests only and is not reachable through HTTP.
-   */
-  async startMarketingAudit(userId: string, projectId: string, dto: StartAuditDto = {}, testHooks: Partial<AuditRunConfig> = {}, opts: { factoryRunId?: string; spendCapUsd?: number | null; ledger?: SpendBudget; depth?: boolean } = {}) {
-    const project = await this.projects.assertOwned(userId, projectId);
-    const f1Row = dto.f1ReportId
-      ? await this.prisma.productDiscoveryReport.findFirst({ where: { id: dto.f1ReportId, projectId, project: { userId } } })
-      : await this.prisma.productDiscoveryReport.findFirst({ where: { projectId, schemaVersion: { gte: 2 }, run: { status: RunStatus.COMPLETED } }, orderBy: { createdAt: 'desc' } });
-    if (dto.f1ReportId && !f1Row) throw new NotFoundException('Product Discovery report not found');
-    if (!f1Row) throw new UnprocessableEntityException('Marketing Audit needs a completed Product Discovery (F1) report. Run Product Discovery first.');
-    // free check before anything is requested: the report must be readable by this version (exact report and field are named if not)
-    const f1Check = checkSavedChain({ projectId, f1: f1Row, expect: ['F1'] });
-    if (!f1Check.ok) throw chainException('Marketing Audit', f1Check);
-    const f1 = f1Check.contexts.f1!;
-
-    const { credentials, model, baseUrl } = await this.textProviderFor(userId, dto.model, 'Marketing Audit');
-    const [intake, socials, assets, notes] = await Promise.all([
-      this.prisma.productIntake.findUnique({ where: { projectId } }),
-      this.prisma.socialProfile.findMany({ where: { projectId } }),
-      this.prisma.projectAsset.findMany({ where: { projectId } }),
-      this.prisma.workspaceNote.findMany({ where: { projectId }, orderBy: { updatedAt: 'desc' } }),
-    ]);
-    const base = buildDiscoveryInput({ project, intake, socialProfiles: socials, assets, notes });
-    const { documents, images } = this.loadAssets(assets);
-    const input = {
-      projectName: intake?.productName ?? project.name,
-      language: base.language,
-      websiteUrl: intake?.websiteUrl?.trim() || null,
-      socialProfiles: socials.map((s) => ({ platform: s.platform, url: s.url })),
-      socialDetails: (dto.socialDetails ?? []).map((d) => ({ platform: d.platform, url: d.url ?? null, bio: d.bio ?? null, followers: d.followers ?? null, postsPerMonth: d.postsPerMonth ?? null, notes: d.notes ?? null })),
-      styleNotes: intake?.stylePreference?.trim() || null,
-    };
-
-    return this.launchRun({
-      factoryRunId: opts.factoryRunId,
-      userId,
-      projectId,
-      mode: 'marketing_audit',
-      provider: credentials.provider,
-      start: (run, writer) =>
-        this.runtime.startRun({
-          runId: run.id,
-          projectId,
-          userId,
-          mode: 'marketing_audit',
-          manifest: this.buildManifest(project, intake),
-          credentials,
-          audit: { f1, input, model, documents, images, maxModelCalls: dto.maxModelCalls, maxOutputTokens: dto.maxOutputTokens, maxReviews: dto.maxReviews, spendCapUsd: opts.spendCapUsd ?? null, ledger: opts.ledger, depth: opts.depth === true, baseUrl, ...testHooks },
-          onEvent: writer.push,
-          // Saved BEFORE the run is marked COMPLETED (the runtime waits for this promise).
-          onAudit: async (report: MarketingAuditReport, meta: AuditReportMeta) => {
-            await this.prisma.marketingAuditReport.create({
-              data: {
-                projectId,
-                runId: run.id,
-                f1ReportId: f1.reportId,
-                schemaVersion: report.schemaVersion,
-                language: report.language,
-                model: meta.model,
-                reportJson: redact(report) as unknown as Prisma.InputJsonValue,
-                metadataJson: redact(meta) as unknown as Prisma.InputJsonValue,
-              },
-            });
-          },
-        }),
-    });
-  }
-
-  /** Audit summaries for a project, newest first, with cursor pagination. */
+  /** HISTORICAL audit summaries (V4 runs no audit; saved ones stay readable), newest first, with cursor pagination. */
   async listAudits(userId: string, projectId: string, query: ListAuditsQueryDto = {}) {
     await this.projects.assertOwned(userId, projectId);
     const limit = query.limit ?? 20;
@@ -479,7 +411,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     return {
       items: page.map((r) => {
         const report = r.reportJson as unknown as Partial<MarketingAuditReport>;
-        const meta = r.metadataJson as unknown as Partial<AuditReportMeta>;
+        const meta = (r.metadataJson ?? {}) as Record<string, any>;
         return {
           id: r.id,
           runId: r.runId,
@@ -519,45 +451,33 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * F3 Market Research & Strategy. Built on ONE completed F2 audit (the newest, or the one chosen) and the F1 report
-   * that audit was built on. Nothing runs without this explicit call; missing or mismatched prerequisites are refused,
-   * never fabricated or silently combined across projects.
-   * `testHooks` (timeouts, test tools, the clock) is for tests only and is not reachable through HTTP.
+   * Marketing Strategy (F3): the Marketing Strategist on ONE completed business research report, with this campaign's objective and audience.
+   * Started only by Campaign Production. `testHooks` (timeouts, test tools, the clock) is for tests only and is not reachable through HTTP.
    */
-  async startMarketStrategy(userId: string, projectId: string, dto: StartStrategyDto = {}, testHooks: Partial<StrategyRunConfig> = {}, opts: { factoryRunId?: string; spendCapUsd?: number | null; ledger?: SpendBudget; depth?: boolean } = {}) {
+  async startMarketStrategy(userId: string, projectId: string, o: StrategyStartOptions, testHooks: Partial<StrategyRunConfig> = {}, opts: { factoryRunId?: string; spendCapUsd?: number | null; ledger?: SpendBudget } = {}) {
     const project = await this.projects.assertOwned(userId, projectId);
-    const auditRow = dto.auditId
-      ? await this.prisma.marketingAuditReport.findFirst({ where: { id: dto.auditId, projectId, project: { userId } } })
-      : await this.prisma.marketingAuditReport.findFirst({ where: { projectId, run: { status: RunStatus.COMPLETED } }, orderBy: { createdAt: 'desc' } });
-    if (dto.auditId && !auditRow) throw new NotFoundException('Marketing audit not found');
-    if (!auditRow) {
-      const hasF1 = await this.prisma.productDiscoveryReport.count({ where: { projectId, schemaVersion: { gte: 2 } } });
-      throw new UnprocessableEntityException(hasF1 ? 'Market Strategy needs a completed Marketing Audit (F2). Run the Marketing Audit first.' : 'Market Strategy needs a completed Product Discovery (F1) report and a Marketing Audit (F2). Run Product Discovery and the Marketing Audit first.');
-    }
-    // The audit points at the F1 report it was built on; that report must belong to the SAME project.
-    const f1Row = await this.prisma.productDiscoveryReport.findFirst({ where: { id: auditRow.f1ReportId, projectId, project: { userId } } });
-    if (!f1Row) throw new UnprocessableEntityException('The selected audit refers to a Product Discovery report that does not belong to this project.');
-    const check = checkSavedChain({ projectId, f1: f1Row, f2: auditRow, expect: ['F1', 'F2'] });
-    if (!check.ok) throw chainException('Market Strategy', check);
+    const f1Row = await this.prisma.productDiscoveryReport.findFirst({ where: { id: o.f1ReportId, projectId, project: { userId } } });
+    if (!f1Row) throw new NotFoundException('Business research report not found');
+    const check = checkSavedChain({ projectId, f1: f1Row, expect: ['F1'] });
+    if (!check.ok) throw chainException('Marketing Strategy', check);
     const f1 = check.contexts.f1!;
-    const f2 = check.contexts.f2!;
 
-    const { credentials, model, baseUrl } = await this.textProviderFor(userId, dto.model, 'Market Strategy');
+    const { credentials, model, baseUrl } = await this.textProviderFor(userId, 'Marketing Strategy');
     const [intake, socials] = await Promise.all([this.prisma.productIntake.findUnique({ where: { projectId } }), this.prisma.socialProfile.findMany({ where: { projectId } })]);
     const base = buildDiscoveryInput({ project, intake, socialProfiles: socials, assets: [], notes: [] });
     const input = {
       projectName: intake?.productName ?? project.name,
       language: base.language,
       geography: [...new Set([...f1.report.productManifest.geography, ...(intake?.targetMarket ? [intake.targetMarket] : [])].map((g) => g.trim()).filter(Boolean))].slice(0, 6),
-      targetAudience: intake?.targetAudience?.trim() || null,
-      marketingGoal: dto.goal?.trim() || intake?.marketingGoal?.trim() || null,
+      targetAudience: o.targetAudience ?? (intake?.targetAudience?.trim() || null),
+      marketingGoal: o.objective ?? (intake?.marketingGoal?.trim() || null),
       campaignDuration: intake?.campaignDuration?.trim() || null,
-      budgetNote: dto.budgetNote?.trim() || null,
+      budgetNote: null,
       websiteUrl: intake?.websiteUrl?.trim() || null,
       socialProfiles: socials.map((s) => ({ platform: s.platform, url: s.url })),
-      competitorUrls: (dto.competitorUrls ?? []).map((u) => u.trim()).filter(Boolean),
-      competitorNames: [...new Set((dto.competitorNames ?? []).map((n) => n.trim()).filter(Boolean))].slice(0, 5),
-      useHolidayCalendar: dto.useHolidayCalendar ?? intake?.enableSeasonalCalendar ?? false,
+      competitorUrls: o.competitorUrls,
+      competitorNames: [],
+      useHolidayCalendar: o.useHolidayCalendar,
     };
 
     return this.launchRun({
@@ -574,7 +494,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
           mode: 'market_strategy',
           manifest: this.buildManifest(project, intake),
           credentials,
-          strategy: { f1, f2, input, model, maxModelCalls: dto.maxModelCalls, maxScouts: dto.maxScouts, maxReviews: dto.maxReviews, maxOutputTokens: dto.maxOutputTokens, spendCapUsd: opts.spendCapUsd ?? null, ledger: opts.ledger, depth: opts.depth === true, baseUrl, ...testHooks },
+          strategy: { f1, input, model, maxModelCalls: o.maxModelCalls, maxOutputTokens: o.maxOutputTokens, spendCapUsd: opts.spendCapUsd ?? null, ledger: opts.ledger, baseUrl, ...testHooks },
           onEvent: writer.push,
           // Saved BEFORE the run is marked COMPLETED (the runtime waits for this promise).
           onStrategy: async (report: CampaignStrategyReport, meta: StrategyReportMeta) => {
@@ -583,7 +503,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
                 projectId,
                 runId: run.id,
                 f1ReportId: f1.reportId,
-                f2AuditId: f2.auditId,
+                f2AuditId: null,
                 schemaVersion: report.schemaVersion,
                 language: report.language,
                 model: meta.model,
@@ -623,7 +543,6 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
           partial: report.partial ?? false,
           executiveSummary: report.executiveSummary ?? '',
           usage: meta?.usage?.total ?? null,
-          scouts: meta?.scoutDecisions?.filter((d) => d.selected).length ?? null,
           findings: meta?.findings?.length ?? null,
         };
       }),
@@ -692,7 +611,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     }
     const savedAudit = await this.prisma.marketingAuditReport.findFirst({ where: { runId } });
     if (savedAudit) {
-      const m = savedAudit.metadataJson as unknown as Partial<AuditReportMeta>;
+      const m = (savedAudit.metadataJson ?? {}) as Record<string, any>;
       return {
         runId, status: run.status, source: 'report' as const, reportId: savedAudit.id, kind: 'audit' as const,
         plan: m.plan ?? null, participants: m.participants ?? [], sources: m.sources ?? [], findings: m.findings ?? [],
@@ -755,150 +674,52 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
   // ---- F4 Creative Production -------------------------------------------------------------------------------------
 
   /**
-   * Resolves the F1 -> F2 -> F3 chain, the user's credentials and models and the effective settings of a creative run WITHOUT
-   * starting anything or spending anything (the only request is GET /models, which is free). `startCreativeProduction`
-   * reuses it, so what the preflight showed is exactly what runs.
+   * Resolves the F1 -> F3 chain, the user's text provider and model and the inputs of a creative run WITHOUT starting or spending anything.
+   * `startCreativeProduction` reuses it, so what the preflight showed is exactly what runs. Historical strategies (built on an F2 audit) work too:
+   * the audit is simply not read any more.
    */
-  private async resolveCreative(userId: string, projectId: string, dto: StartCreativeDto) {
+  private async resolveCreative(userId: string, projectId: string, o: CreativeStartOptions) {
     const project = await this.projects.assertOwned(userId, projectId);
-    const strategyRow = dto.strategyId
-      ? await this.prisma.marketingStrategyReport.findFirst({ where: { id: dto.strategyId, projectId, project: { userId } } })
-      : await this.prisma.marketingStrategyReport.findFirst({ where: { projectId, run: { status: RunStatus.COMPLETED } }, orderBy: { createdAt: 'desc' } });
-    if (dto.strategyId && !strategyRow) throw new NotFoundException('Strategy not found');
-    if (!strategyRow) throw new UnprocessableEntityException('Creative Production needs a completed Market Research & Strategy (F3) report. Run Product Discovery, the Marketing Audit and the Strategy first.');
-    // The strategy names the exact audit and report it was built on; both must belong to THIS project (never mixed across projects).
-    const [f1Row, f2Row] = await Promise.all([
-      this.prisma.productDiscoveryReport.findFirst({ where: { id: strategyRow.f1ReportId, projectId, project: { userId } } }),
-      this.prisma.marketingAuditReport.findFirst({ where: { id: strategyRow.f2AuditId, projectId, project: { userId } } }),
-    ]);
-    if (!f1Row || !f2Row || f2Row.f1ReportId !== f1Row.id) throw new UnprocessableEntityException('The selected strategy refers to a Product Discovery report or Marketing Audit that does not belong to this project.');
-    // ONE free check of the whole chain: each report read through the shared contract, ownership and lineage verified. If a report cannot be
-    // read, the message names the report, the field and whether anything has to run again (it never says "older format, run it again" by default).
-    const chain = checkSavedChain({ projectId, f1: f1Row, f2: f2Row, f3: strategyRow });
+    const strategyRow = await this.prisma.marketingStrategyReport.findFirst({ where: { id: o.strategyId, projectId, project: { userId } } });
+    if (!strategyRow) throw new NotFoundException('Strategy not found');
+    const f1Row = await this.prisma.productDiscoveryReport.findFirst({ where: { id: strategyRow.f1ReportId, projectId, project: { userId } } });
+    if (!f1Row) throw new UnprocessableEntityException('The strategy refers to a business research report that does not belong to this project.');
+    // ONE free check of the chain: each report read through the shared contract, ownership and lineage verified
+    const chain = checkSavedChain({ projectId, f1: f1Row, f3: strategyRow, expect: ['F1', 'F3'] });
     if (!chain.ok) throw chainException('Creative Production', chain);
     const f1 = chain.contexts.f1!;
-    const f2 = chain.contexts.f2!;
     const f3 = chain.contexts.f3!;
 
-    const { credentials, model, baseUrl } = await this.textProviderFor(userId, dto.model, 'Creative Production');
-    // NO AI HYBRID: refused (never silently changed) when anything asks for an image; no image model is looked up, so no image model is ever chosen
-    const noAi = isNoAi(dto.hybrid as never);
-    if (noAi) {
-      const asks: string[] = [];
-      if (dto.imageModel?.trim()) asks.push('an image model was selected');
-      if ((dto.maxImages ?? 0) > 0) asks.push(`${dto.maxImages} image request(s) were allowed`);
-      if ((dto.maxRegenerations ?? 0) > 0) asks.push('image regeneration was allowed');
-      if (dto.variations === true) asks.push('several original images per concept were requested');
-      if (Number((dto.hybrid as { originals?: unknown } | undefined)?.originals ?? 0) > 0) asks.push('original AI images were requested');
-      if (asks.length) throw new UnprocessableEntityException(`NO AI HYBRID never generates images, so this request was refused: ${asks.join('; ')}. Nothing was sent to OpenAI.`);
-    }
-    // Claude writes text only: an AI-image campaign on Claude is refused here, never quietly sent to OpenAI
-    if (credentials.provider !== 'openai' && !noAi && (dto.imageModel?.trim() || (dto.maxImages ?? 0) > 0 || dto.variations === true)) {
-      throw new UnprocessableEntityException('Claude generates no images, and LaunchPilot never switches providers on its own. Use Real Content Production (no AI images) with Claude, or make OpenAI the default provider for an AI-image campaign.');
-    }
-    // "auto" picks a current GPT Image model from the key's own list; a retired or unlisted model is refused BEFORE anything is spent
-    const requestedImageModel = noAi ? null : dto.imageModel?.trim() || null;
-    const choice = chooseImageModel(requestedImageModel, requestedImageModel ? await this.listModelIds(credentials.apiKey) : null, new Date(), dto.imageModelStrategy ?? 'economy', dto.imageQuality ?? 'low');
-    if (choice.blocker) throw new UnprocessableEntityException(choice.blocker.message);
-    const imageModel = choice.model;
-    const imageModelCheck = { available: choice.available, note: choice.note, requested: requestedImageModel, mode: choice.mode, strategy: choice.strategy, reason: choice.reason, alternatives: choice.alternatives, verification: choice.verification, documented: choice.documented };
-
+    const { credentials, model, baseUrl } = await this.textProviderFor(userId, 'Creative Production');
     const [intake, logoAsset] = await Promise.all([this.prisma.productIntake.findUnique({ where: { projectId } }), this.brandSvc.logoAsset(projectId)]);
-    // brand content the owner approved with Get Content (null when Get Content was never used: the run then behaves exactly as before)
+    // brand content the owner approved with Get Content (null when Get Content was never used)
     const brandCtx = await this.brandSvc.brandContext(projectId, logoAsset?.id ?? null);
-    const recommended = f3.report.channels.map((c) => c.channel as string);
-    const channels = (dto.channels?.length ? dto.channels : recommended.slice(0, 4)).filter((c): c is ChannelId => (CHANNEL_IDS as readonly string[]).includes(c));
-    if (!channels.length) channels.push('instagram');
-    const concepts = dto.concepts ?? Math.min(3, Math.max(1, f3.report.creativeBrief.suggestedConceptCount || 3));
     const input: CreativeInput = {
       projectName: intake?.productName ?? project.name,
       language: f3.report.language || 'en',
       websiteUrl: intake?.websiteUrl?.trim() || null,
-      channels: [...new Set(channels)],
-      concepts,
-      landing: dto.landing ?? true,
+      channels: [...new Set(o.channels)] as ChannelId[],
+      concepts: o.concepts,
+      objective: o.objective,
+      audience: o.audience,
+      voice: o.voice ?? null,
     };
     const logo = logoAsset ? await readAll(this.storage.read(logoAsset.filePath)).catch(() => null) : null;
     const { palette, fromBrand } = await derivePalette(f1.palette, logo);
-    // Hybrid Production: references and brand images come from this project only; the settings are normalized by the server
-    const hybridIn = dto.hybrid ? await this.hybridInputs.prepare(projectId, dto.hybrid as never, true) : null;
-    // several ORIGINAL images per concept (Full Production, Hybrid Production): maxImages is the number of originals, shared out by the allocation planner
-    const variations = !!imageModel && (dto.variations === true || !!hybridIn);
-    const settings = {
-      model,
-      imageModel,
-      imageQuality: dto.imageQuality ?? ('low' as const),
-      imageSize: dto.imageSize ?? null,
-      maxImages: imageModel ? (variations ? Math.min(dto.maxImages ?? hybridIn?.hybrid.originals ?? 20, 40) : Math.min(dto.maxImages ?? concepts, concepts)) : 0,
-      maxRegenerations: imageModel && !variations ? (dto.maxRegenerations ?? 0) : 0,
-      maxLayoutsPerConcept: dto.maxLayoutsPerConcept ?? 4,
-      maxRepairRounds: dto.maxRepairRounds ?? 2,
-      visionReviews: dto.visionReviews ?? 0,
-      maxModelCalls: dto.maxModelCalls ?? (variations ? 60 : 16),
-      maxOutputTokens: dto.maxOutputTokens,
-      variations,
-      layoutsPerOriginal: dto.layoutsPerOriginal ?? 3,
-      imageConcurrency: dto.imageConcurrency ?? 2,
-      maxVariants: dto.maxVariants ?? (variations || noAi ? 24 : 12),
-      approvedBudgetUsd: dto.approvedBudgetUsd ?? null,
-      depth: dto.depth === true,
-      hybrid: hybridIn ? { ...hybridIn.hybrid, originals: imageModel ? Math.min(dto.maxImages ?? hybridIn.hybrid.originals, 40) : hybridIn.hybrid.originals } : null,
-    };
-    // the plan of originals as it can be known BEFORE the run (the real concepts do not exist yet: equal weights)
-    const hybridForecast = settings.hybrid ? planHybrid({ concepts: Array.from({ length: concepts }, (_, i) => ({ id: `K${i + 1}`, name: `Concept ${i + 1}`, channels: input.channels })), originals: imageModel ? settings.hybrid.originals : 0, templateCreatives: settings.hybrid.templateCreatives, channelPriority: input.channels, fixedSize: settings.imageSize, brandImages: hybridIn?.brandImageCount ?? 0, basis: 'forecast', formatIds: designFormatIds(settings.hybrid) }) : null;
-    const allocation = hybridForecast ? hybridForecast.allocation : variations ? forecastAllocation({ target: settings.maxImages, conceptCount: concepts, channels: input.channels, fixedSize: settings.imageSize, layoutsPerOriginal: settings.layoutsPerOriginal }) : null;
-    const planChunk = Math.max(3, Math.min(24, Math.floor(capOutputTokens(model, 9000).tokens / 450)));
-    const estimate = estimateCreativeRun({ concepts, landing: input.landing, imageGeneration: !!imageModel, maxImages: settings.maxImages, maxRegenerations: settings.maxRegenerations, maxLayoutsPerConcept: settings.maxLayoutsPerConcept, maxRepairRounds: settings.maxRepairRounds, visionReviews: settings.visionReviews, maxModelCalls: settings.maxModelCalls, channels: input.channels.length, depth: settings.depth, variations: allocation ? { target: allocation.allocated, expectedLayouts: allocation.expectedLayouts, planChunk } : undefined, extraCalls: settings.hybrid ? (settings.hybrid.directionRefine ? 1 : 0) + (settings.hybrid.selection === 'assisted' ? 1 : 0) : 0 });
-    return { project, intake, f1, f2, f3, credentials, baseUrl, input, settings, estimate, allocation, palette, fromBrand, logo, brandCtx, logoName: logoAsset?.originalName ?? null, imageModelCheck, strategyRow, hybridIn, hybridForecast };
-  }
-
-  /** GET /models (free, no inference): the model ids the user's key lists. null = could not tell (outage), never "no models". */
-  private async listModelIds(apiKey: string): Promise<string[] | null> {
-    try {
-      const client = new OpenAIClient({ apiKey, baseUrl: resolveOpenAIBaseUrl() });
-      return (await client.listModels(AbortSignal.timeout(15_000))).map((m) => m.id);
-    } catch {
-      return null;
-    }
-  }
-
-  /** Everything the user should see BEFORE spending: the exact chain, the effective settings and the expected call counts. No price is computed. */
-  async preflightCreativeProduction(userId: string, projectId: string, dto: StartCreativeDto = {}) {
-    const r = await this.resolveCreative(userId, projectId, dto);
-    return {
-      ok: true,
-      chain: { f1ReportId: r.f1.reportId, f2AuditId: r.f2.auditId, f3StrategyId: r.f3.strategyId, strategyCreatedAt: r.strategyRow.createdAt, strategyPartial: r.f3.partial, campaignName: r.f3.report.productContext.name },
-      input: r.input,
-      settings: r.settings,
-      estimate: r.estimate,
-      allocation: r.allocation,
-      brand: { palette: r.palette, fromBrand: r.fromBrand, logo: r.logoName },
-      imageModel: { ...r.imageModelCheck, warning: r.settings.imageModel ? imageModelWarning(r.settings.imageModel) : null },
-      notes: [
-        'Every limit is enforced by LaunchPilot per run; none of them is an OpenAI spending cap.',
-        r.settings.imageModel ? `Each image request is billed by OpenAI for ${r.settings.imageModel} at quality "${r.settings.imageQuality}"; LaunchPilot records only what the provider reports and shows no price.` : 'No image model is selected, so no image request is made.',
-        'Channel layouts are rendered locally from the base images: no model call and no cost per format.',
-        r.settings.maxRegenerations > 0 ? `Up to ${r.settings.maxRegenerations} extra image(s) may be generated to replace a rejected one.` : 'Image regeneration is off: a rejected picture stays visible as an unresolved issue instead of being re-bought.',
-      ],
-    };
+    // the campaign design and the approved, rights-cleared pictures of THIS project (normalized by the server)
+    const designIn = await this.hybridInputs.prepare(projectId, o.design as never, true);
+    return { project, intake, f1, f3, credentials, model, baseUrl, input, palette, fromBrand, logo, brandCtx, designIn };
   }
 
   /**
-   * F4 Creative Production on ONE completed F3 strategy (and the exact F1 report and F2 audit it names). Six Mozaik participants
-   * (the Fixer only if the review finds something to repair). Uses the user's own OpenAI key for text AND images; nothing runs
-   * without this explicit call. `testHooks` (timeouts, fake tools) is for tests only and is not reachable through HTTP.
+   * F4 Creative Production on ONE completed strategy: Content Writer, Visual Researcher, Creative Designer and Quality Reviewer. Text only on the
+   * user's own provider key; every visual is rendered locally from approved pictures and the template collection. No image is ever generated.
+   * Started only by Campaign Production. `testHooks` is for tests only and is not reachable through HTTP.
    */
-  async startCreativeProduction(userId: string, projectId: string, dto: StartCreativeDto = {}, testHooks: Partial<CreativeRunConfig> = {}, opts: { factoryRunId?: string; spendCapUsd?: number | null; ledger?: SpendBudget; depth?: boolean; continueFrom?: { row: { id: string; f3StrategyId: string }; pkg: CampaignPackage } } = {}) {
-    const r = await this.resolveCreative(userId, projectId, dto);
-    const { f1, f2, f3, input, settings, credentials, baseUrl } = r;
-    const spendCapUsd = opts.spendCapUsd ?? settings.approvedBudgetUsd;
-    // several originals per concept are many paid requests: they never start without an approved spending limit
-    // ... and an image model whose price is not published means the cost is unknown until the first image: the user must say they know
-    if (settings.variations && settings.maxImages > 0 && !opts.factoryRunId && settings.imageModel && imageCostEstimate(settings.imageModel, settings.imageQuality, settings.imageSize ?? '1024x1024').usd === null) {
-      // the unknown price is accepted inside the ONE spending approval, which names the maximum number of image requests (computed from the plan)
-      if (dto.approvedImageRequests !== settings.maxImages) throw new UnprocessableEntityException(`Image pricing is not available for ${settings.imageModel}, so your spending approval must also cover the maximum number of image requests (${settings.maxImages}). Approve the plan as shown (approvedImageRequests: ${settings.maxImages}) or choose a model with a published price. Nothing has been sent to OpenAI.`);
-    }
-    if (settings.variations && settings.maxImages > 0 && !opts.factoryRunId && !(spendCapUsd && spendCapUsd > 0)) throw new UnprocessableEntityException('Several original images per concept are many paid requests. Approve a spending limit (approvedBudgetUsd) first; LaunchPilot refuses requests that would exceed it.');
+  async startCreativeProduction(userId: string, projectId: string, o: CreativeStartOptions, testHooks: Partial<CreativeRunConfig> = {}, opts: { factoryRunId?: string; spendCapUsd?: number | null; ledger?: SpendBudget } = {}) {
+    const r = await this.resolveCreative(userId, projectId, o);
+    const { f1, f3, input, credentials, baseUrl, designIn } = r;
+    const design = designIn.hybrid;
     return this.launchRun({
       factoryRunId: opts.factoryRunId,
       userId,
@@ -908,59 +729,36 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
       start: async (run, writer) => {
         // The campaign row exists from the start so the assets the agents store while running already belong to it.
         const campaign = await this.prisma.creativeCampaign.create({
-          data: { projectId, runId: run.id, f1ReportId: f1.reportId, f2AuditId: f2.auditId, f3StrategyId: f3.strategyId, schemaVersion: CAMPAIGN_SCHEMA_VERSION, language: input.language, model: settings.model, imageModel: settings.imageModel, status: 'running', campaignName: `${f3.report.productContext.name} — creative campaign`.slice(0, 120) },
+          data: { projectId, runId: run.id, f1ReportId: f1.reportId, f2AuditId: null, f3StrategyId: f3.strategyId, schemaVersion: CAMPAIGN_SCHEMA_VERSION, language: input.language, model: r.model, imageModel: null, status: 'running', campaignName: `${f3.report.productContext.name} — campaign`.slice(0, 120) },
         });
         const assets = new DbAssetStore(this.prisma, this.storage, projectId, campaign.id);
-        // image-only continuation: copy what succeeded under the NEW campaign (the earlier one is never touched)
-        const seed = opts.continueFrom ? await prepareContinuationSeed(opts.continueFrom.pkg, new DbAssetStore(this.prisma, this.storage, projectId, opts.continueFrom.row.id), assets, opts.continueFrom.pkg.lineage?.revision ?? 1) : undefined;
         return this.runtime.startRun({
           runId: run.id,
           projectId,
           userId,
           mode: 'creative_production',
           manifest: this.buildManifest(r.project, r.intake),
-          credentials: r.credentials,
+          credentials,
           creative: {
             campaignId: campaign.id,
             projectId,
             f1,
-            f2,
             f3,
             input,
-            model: settings.model,
-            imageModel: settings.imageModel,
-            imageQuality: settings.imageQuality,
-            ...(settings.imageSize ? { imageSize: settings.imageSize } : {}),
-            maxImages: settings.maxImages,
-            maxRegenerations: settings.maxRegenerations,
-            maxLayoutsPerConcept: settings.maxLayoutsPerConcept,
-            maxRepairRounds: settings.maxRepairRounds,
-            visionReviews: settings.visionReviews,
-            maxModelCalls: settings.maxModelCalls,
-            maxOutputTokens: settings.maxOutputTokens,
-            variations: settings.variations,
-            layoutsPerOriginal: settings.layoutsPerOriginal,
-            imageConcurrency: settings.imageConcurrency,
-            maxVariants: settings.maxVariants,
-            spendCapUsd: spendCapUsd ?? null,
+            model: r.model,
+            spendCapUsd: opts.spendCapUsd ?? null,
             ledger: opts.ledger,
-            depth: opts.depth ?? settings.depth,
-            ...(seed ? { seed } : {}),
-            ...(settings.hybrid && r.hybridIn
-              ? {
-                  hybrid: isNoAi(settings.hybrid)
-                    ? {
-                        settings: settings.hybrid,
-                        brandImages: r.hybridIn.brandImages,
-                        referencePalettes: r.hybridIn.referencePalettes,
-                        // search and download happen during the run ONLY in automatic stock mode, with the providers the user approved
-                        discovery: settings.hybrid.imagery.autoStock ? this.visual.discoveryPort({ includePaid: settings.hybrid.imagery.allowPaidSearch }) : null,
-                        acquire: settings.hybrid.imagery.autoStock ? this.visual.acquirePort(userId, projectId) : null,
-                        discoveredBefore: await this.library.discoveredCount(projectId),
-                      }
-                    : { settings: settings.hybrid, brandImages: r.hybridIn.brandImages, referencePalettes: r.hybridIn.referencePalettes, discovery: this.visual.discoveryPort() },
-                }
-              : {}),
+            design,
+            brandImages: designIn.brandImages,
+            referencePalettes: designIn.referencePalettes,
+            // search and download during the run happen ONLY in automatic stock mode, with the providers the user approved
+            discovery: design.imagery.autoStock ? this.visual.discoveryPort({ includePaid: design.imagery.allowPaidSearch }) : null,
+            acquire: design.imagery.autoStock ? this.visual.acquirePort(userId, projectId) : null,
+            discoveredBefore: await this.library.discoveredCount(projectId),
+            maxRepairRounds: o.maxRepairRounds,
+            visionReviews: o.visionReviews,
+            maxModelCalls: o.maxModelCalls,
+            maxOutputTokens: o.maxOutputTokens,
             palette: r.palette,
             hasBrandPalette: r.fromBrand,
             logo: r.logo,
@@ -991,109 +789,20 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  // ---- image-only continuation --------------------------------------------------------------------------------------------
-
-  /** The finished campaign a continuation builds on, and the planned images that do not exist yet. 404 for other users' campaigns. */
-  private async continuationBase(userId: string, campaignId: string) {
-    const row = await this.ownedCampaign(userId, campaignId);
-    if (row.status !== 'completed' || !row.packageJson) throw new ConflictException('Only a finished campaign can be continued.');
-    const parsed = CampaignPackage.safeParse(row.packageJson);
-    if (!parsed.success) throw new UnprocessableEntityException('The stored campaign package could not be read.');
-    const pkg = parsed.data;
-    if (isNoAi(pkg.hybrid?.settings)) throw new UnprocessableEntityException('This campaign was made with NO AI HYBRID, which never generates images, so there are no images to continue. To use pictures you have added since, start the campaign again from the same strategy: Product Discovery, the Marketing Audit and the Strategy are reused, not run again.');
-    if (!pkg.imageAllocation || !pkg.imageVariations.length) throw new UnprocessableEntityException('This campaign was made with one image per concept, so there is no image plan to continue. Run Full Production or Hybrid Production to get several original images per concept.');
-    const missing = missingSlots(pkg.imageAllocation, pkg.imageVariations);
-    // Hybrid Production: template creatives that were never rendered (failed, or waiting for an original) are rendered now, locally and for free
-    const hy = pkg.hybrid;
-    const templatesPending = !!hy && (hy.counts.templates.rendered + hy.counts.templates.fallbackRendered < hy.counts.templates.planned || hy.creatives.some((c) => c.status === 'fallback_rendered'));
-    if (!missing.length && !templatesPending) throw new ConflictException('Every planned image and template creative of this campaign already exists, so there is nothing to continue.');
-    return { row, pkg, missing, templatesPending };
-  }
-
-  private continuationDto(row: { f3StrategyId: string; model: string; imageModel: string | null; metadataJson: unknown }, pkg: CampaignPackage, missing: number, dto: ContinueImagesDto): StartCreativeDto {
-    const meta = (row.metadataJson ?? {}) as { inputSnapshot?: { channels?: string[] } };
-    const channels = meta.inputSnapshot?.channels?.length ? meta.inputSnapshot.channels : [...new Set(pkg.copyVariants.map((v) => v.channel as string))];
-    return {
-      strategyId: row.f3StrategyId,
-      model: dto.model ?? row.model, // the text model of the earlier campaign: never switched silently
-      imageModel: dto.imageModel ?? row.imageModel ?? 'auto',
-      imageQuality: dto.imageQuality ?? (['low', 'medium', 'high', 'auto'].includes(pkg.usage.images.quality ?? '') ? (pkg.usage.images.quality as 'low') : 'medium'),
-      concepts: pkg.concepts.length,
-      channels,
-      landing: !!pkg.landingContent,
-      maxImages: Math.min(dto.maxImages ?? missing, missing),
-      variations: true,
-      ...(pkg.hybrid ? { hybrid: pkg.hybrid.settings as never, imageModelStrategy: 'quality' as const } : {}),
-      visionReviews: dto.visionReviews ?? (missing === 0 ? 0 : 2),
-      maxRepairRounds: 1,
-      maxModelCalls: 8,
-      approvedBudgetUsd: dto.approvedBudgetUsd,
-      confirmUnpricedImages: dto.confirmUnpricedImages,
-      approvedImageRequests: dto.approvedImageRequests,
-    } as StartCreativeDto;
-  }
-
-  /** What an image-only continuation would do and cost. Free: no paid request. */
-  async preflightImageContinuation(userId: string, campaignId: string, dto: ContinueImagesDto = {}) {
-    const { row, pkg, missing } = await this.continuationBase(userId, campaignId);
-    const r = await this.resolveCreative(userId, row.projectId, this.continuationDto(row, pkg, missing.length, dto));
-    const willRequest = Math.min(r.settings.maxImages, missing.length);
-    const slots = missing.slice(0, willRequest);
-    const outputCap = capOutputTokens(r.settings.model, 6000).tokens;
-    const cost: CostEstimate = estimateCost({
-      textModel: r.settings.model,
-      imageModel: r.settings.imageModel,
-      imageQuality: r.settings.imageQuality,
-      imageSizes: slots.map((s) => s.size),
-      phases: [{ phase: 'creative', runs: true, typicalCalls: r.settings.visionReviews > 0 ? 1 : 0, capCalls: r.settings.maxModelCalls, outputCap }],
-      profiles: {},
-      targetUsd: null,
-      approvedUsd: dto.approvedBudgetUsd ?? null,
-      listedImageModels: null,
-    });
-    const records = new Map(pkg.imageVariations.map((v) => [v.variationId, v]));
-    return {
-      ok: true,
-      parent: { id: row.id, name: row.campaignName, revision: pkg.lineage?.revision ?? 1, imageCounts: pkg.imageCounts },
-      missing: missing.map((s) => ({ variationId: s.variationId, conceptName: pkg.concepts.find((c) => c.id === s.conceptId)?.name ?? s.conceptId, variationName: records.get(s.variationId)?.variationName ?? null, status: records.get(s.variationId)?.status ?? 'planned', explanation: records.get(s.variationId)?.explanation ?? null, size: s.size })),
-      willRequest,
-      reuse: { concepts: pkg.concepts.length, copyVariants: pkg.copyVariants.length, landing: !!pkg.landingContent, originals: pkg.imageVariations.filter((v) => v.status === 'generated').length, layouts: pkg.channelLayouts.length },
-      notRerun: ['Product Discovery', 'Marketing Audit', 'Market Research & Strategy', 'Copywriter', 'Landing Content Builder'],
-      settings: { imageModel: r.settings.imageModel, imageQuality: r.settings.imageQuality, maxImages: willRequest, visionReviews: r.settings.visionReviews, imageConcurrency: r.settings.imageConcurrency, textModel: r.settings.model },
-      imageModel: { ...r.imageModelCheck, warning: r.settings.imageModel ? imageModelWarning(r.settings.imageModel) : null },
-      cost,
-      mustConfirm: missing.length > 0,
-      ...(pkg.hybrid ? { hybrid: { templatesPlanned: pkg.hybrid.counts.templates.planned, templatesDelivered: pkg.hybrid.counts.templates.rendered + pkg.hybrid.counts.templates.fallbackRendered, note: 'Template creatives that do not exist yet are rendered locally from the originals (no image request, no cost). Creatives made without their planned original are rendered again properly once it exists.' } } : {}),
-    };
-  }
-
-  /**
-   * Generates ONLY the missing images of a finished campaign, as a NEW campaign (revision) that reuses the strategy, the copy, the landing
-   * content and every original that succeeded. Billed by OpenAI: it needs an approved spending limit and an explicit confirmation, and the
-   * earlier campaign is never modified.
-   */
-  async startImageContinuation(userId: string, campaignId: string, dto: ContinueImagesDto, testHooks: Partial<CreativeRunConfig> = {}) {
-    const { row, pkg, missing } = await this.continuationBase(userId, campaignId);
-    // only missing IMAGES are billed; template creatives are rendered locally and need no approval
-    if (missing.length > 0 && (dto.confirmCost !== true || !(dto.approvedBudgetUsd && dto.approvedBudgetUsd > 0))) throw new UnprocessableEntityException('Generating the missing images is billed by OpenAI. Review the estimate, approve a spending limit (approvedBudgetUsd) and confirm the cost (confirmCost) to start.');
-    const pre = await this.preflightImageContinuation(userId, campaignId, dto);
-    if (pre.cost.budget.status === 'below_estimate') throw new UnprocessableEntityException(pre.cost.budget.message);
-    return this.startCreativeProduction(userId, row.projectId, this.continuationDto(row, pkg, missing.length, dto), testHooks, { spendCapUsd: dto.approvedBudgetUsd, continueFrom: { row, pkg } });
-  }
-
-  private campaignSummary(r: { id: string; projectId: string; runId: string; f1ReportId: string; f2AuditId: string; f3StrategyId: string; schemaVersion: number; language: string; model: string; imageModel: string | null; status: string; approvalStatus: string | null; campaignName: string; packageJson: unknown; createdAt: Date }) {
+  private campaignSummary(r: { id: string; projectId: string; runId: string; f1ReportId: string; f2AuditId: string | null; f3StrategyId: string; schemaVersion: number; language: string; model: string; imageModel: string | null; status: string; approvalStatus: string | null; campaignName: string; packageJson: unknown; createdAt: Date }) {
     const pkg = (r.packageJson ?? null) as Partial<CampaignPackage> | null;
-    const assets = pkg?.imageAssets ?? [];
     return {
       id: r.id,
       projectId: r.projectId,
       runId: r.runId,
       f1ReportId: r.f1ReportId,
+      /** historical campaigns only (built on an F2 audit) */
       f2AuditId: r.f2AuditId,
       f3StrategyId: r.f3StrategyId,
       schemaVersion: r.schemaVersion,
       language: r.language,
       model: r.model,
+      /** historical campaigns only: V4 never generates an AI image */
       imageModel: r.imageModel,
       status: r.status,
       approvalStatus: r.approvalStatus,
@@ -1101,11 +810,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
       createdAt: r.createdAt,
       concepts: pkg?.concepts?.length ?? null,
       variants: pkg?.copyVariants?.length ?? null,
-      layouts: pkg?.channelLayouts?.length ?? null,
-      generatedImages: pkg ? assets.filter((a) => a.kind === 'image' && a.source === 'ai_image' && a.status !== 'superseded').length : null,
-      imageCounts: pkg?.imageCounts ?? null,
-      imageTarget: pkg?.imageAllocation?.target ?? null,
-      lineage: pkg?.lineage ?? null,
+      deliverables: pkg?.deliverables?.counts ?? null,
       cost: pkg?.cost ?? null,
       findings: pkg?.reviewFindings?.length ?? null,
       unresolved: pkg?.approval?.unresolvedFindingIds?.length ?? null,
@@ -1141,26 +846,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
   async getCampaign(userId: string, campaignId: string) {
     const r = await this.ownedCampaign(userId, campaignId);
     const rows = await this.prisma.campaignAsset.findMany({ where: { campaignId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
-    return { ...this.campaignSummary(r), package: await this.withImageResults(r, rows), metadata: r.metadataJson, assets: rows.map(this.assetView(campaignId)) };
-  }
-
-  /**
-   * Campaigns saved before per-concept image results existed have none. For those (and only those) the results are DERIVED, on read,
-   * from what the run recorded (its assets and `visual.generated` events) and flagged `reconstructed`. The stored package is never
-   * modified, and a campaign that has its own results is returned exactly as saved.
-   */
-  private async withImageResults(r: { runId: string; imageModel: string | null; createdAt: Date; packageJson: unknown }, rows: Parameters<typeof toAssetRecord>[0][]) {
-    const pkg = r.packageJson as { concepts?: { id: string; name: string }[]; imageResults?: unknown[] } | null;
-    if (!pkg || !Array.isArray(pkg.concepts) || (Array.isArray(pkg.imageResults) && pkg.imageResults.length > 0)) return r.packageJson;
-    const events = await this.prisma.campaignEvent.findMany({ where: { runId: r.runId, eventType: 'visual.generated' }, orderBy: { sequence: 'asc' }, select: { payloadJson: true } });
-    const imageResults = reconstructImageResults({
-      concepts: pkg.concepts,
-      assets: rows.map((row) => toAssetRecord(row)),
-      visualEvents: events.map((e) => (e.payloadJson ?? {}) as { conceptId?: string; failed?: boolean; error?: { code?: string; message?: string } | null }),
-      imageModel: r.imageModel,
-      at: r.createdAt,
-    });
-    return { ...pkg, imageResults };
+    return { ...this.campaignSummary(r), package: r.packageJson, metadata: r.metadataJson, assets: rows.map(this.assetView(campaignId)) };
   }
 
   async getCampaignAssets(userId: string, campaignId: string) {
@@ -1182,16 +868,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     return { asset: row, stream: this.storage.read(row.filePath) };
   }
 
-  /** The local landing-page PREVIEW (escaped template + CSP; the UI shows it in a sandboxed iframe). Deployed nowhere. */
-  async getLandingPreview(userId: string, campaignId: string) {
-    const r = await this.ownedCampaign(userId, campaignId);
-    const pkg = (r.packageJson ?? null) as Partial<CampaignPackage> | null;
-    if (!pkg?.landingContent) throw new NotFoundException('This campaign has no landing page content');
-    const meta = (r.metadataJson ?? {}) as { brand?: { palette?: string[] } };
-    return renderLandingHtml(pkg.landingContent, { name: pkg.campaignName ?? r.campaignName, language: pkg.language ?? r.language, palette: meta.brand?.palette ?? [] });
-  }
-
-  /** The downloadable package: real binaries, JSON, copy, landing content and preview, review, manifest. */
+  /** THE download: one ZIP with the strategy, the social posts and visuals per platform, the ads, the print designs, brand, sources and README. Old campaigns keep their own layout. */
   async exportCampaign(userId: string, campaignId: string) {
     const r = await this.ownedCampaign(userId, campaignId);
     if (!r.packageJson) throw new ConflictException(r.status === 'running' ? 'The campaign is still being produced' : 'This campaign has no package (the run did not finish)');
@@ -1203,7 +880,7 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     const used = new Set(parsed.data.imageAssets.flatMap((a) => a.sourceAssetIds ?? []).filter((s) => s.startsWith('brand:')).map((s) => s.slice(6)));
     const provenance = used.size ? await this.prisma.imageProvenance.findMany({ where: { projectId: r.projectId, assetId: { in: [...used] } } }).catch(() => []) : [];
     const credits = creditsText(provenance.map((p) => ({ provider: p.provider, attribution: p.attribution, pageUrl: p.pageUrl, license: p.license, attributionRequired: p.attributionRequired })));
-    // NO AI HYBRID: the original pictures the rights allow handing on (never a stock original whose license forbids it)
+    // the original pictures the rights allow handing on (never a stock original whose license forbids it)
     const sources = parsed.data.hybrid?.imagery ? await this.library.exportSources(r.projectId, parsed.data.hybrid.imagery.library.filter((l) => l.redistributeOriginal).map((l) => l.id)) : [];
     // the approved logo file travels with the package metadata (only when Get Content approved one and it was used)
     const logoRef = parsed.data.hybrid?.brand?.logo ?? null;
@@ -1215,30 +892,10 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     return { zip, filename: zipFileName(parsed.data), manifest };
   }
 
-  /** Only the original AI images of a campaign, as a ZIP (for "download all originals"). */
-  async exportOriginals(userId: string, campaignId: string) {
-    const r = await this.ownedCampaign(userId, campaignId);
-    const parsed = r.packageJson ? CampaignPackage.safeParse(r.packageJson) : null;
-    if (!parsed?.success) throw new ConflictException(r.status === 'running' ? 'The campaign is still being produced' : 'This campaign has no package (the run did not finish)');
-    if (!parsed.data.imageVariations.length) throw new UnprocessableEntityException('This campaign has one image per concept and no list of original images; download the full package instead.');
-    const { zip } = await buildOriginalsZip(parsed.data, new DbAssetStore(this.prisma, this.storage, r.projectId, r.id));
-    return { zip, filename: originalsZipFileName(parsed.data) };
-  }
-
-  /** Hybrid Production downloads: only the template creatives, or every finished creative (originals + template creatives), as a ZIP. */
-  async exportCreatives(userId: string, campaignId: string, scope: 'templates' | 'all') {
-    const r = await this.ownedCampaign(userId, campaignId);
-    const parsed = r.packageJson ? CampaignPackage.safeParse(r.packageJson) : null;
-    if (!parsed?.success) throw new ConflictException(r.status === 'running' ? 'The campaign is still being produced' : 'This campaign has no package (the run did not finish)');
-    if (!parsed.data.hybrid) throw new UnprocessableEntityException('This campaign has no template creatives (it was not made with Hybrid Production); download the full package instead.');
-    const { zip } = await buildCreativesZip(parsed.data, new DbAssetStore(this.prisma, this.storage, r.projectId, r.id), scope);
-    return { zip, filename: creativesZipFileName(parsed.data, scope) };
-  }
-
   /**
-   * The Mozaik view of a creative run: plan (incl. the Fixer created at run time), participants, cross-checks, usage and the
-   * timeline of REAL participant events (copy -> images -> layouts -> review -> repairs). From the saved campaign when there is
-   * one, otherwise folded from the persisted events, so a running or failed run is still inspectable.
+   * The Mozaik view of a creative run: plan, participants, usage and the timeline of REAL participant events (copy -> pictures -> templates ->
+   * renders -> review -> repairs). From the saved campaign when there is one, otherwise folded from the persisted events, so a running or failed
+   * run is still inspectable. Historical runs (AI images, landing page, Fixer) are folded with the same code: their extra events are listed as they are.
    */
   async getCreativeAnalysis(userId: string, runId: string) {
     const run = await this.ownedRun(userId, runId);
@@ -1246,80 +903,49 @@ export class MozaikService implements OnModuleInit, OnModuleDestroy {
     type Obj = Record<string, any>;
     const [campaign, events] = await Promise.all([this.prisma.creativeCampaign.findFirst({ where: { runId } }), this.prisma.campaignEvent.findMany({ where: { runId }, orderBy: { sequence: 'asc' }, take: 1500 })]);
     const n = (v: unknown) => (Array.isArray(v) ? v.length : 0);
-    const TIMELINE = new Set(['images.sourcing.requested', 'images.sourced', 'image.generation.refused', 'phase.started', 'task.assigned', 'task.completed', 'copy.proposed', 'landing.proposed', 'visual.generated', 'layout.completed', 'crosscheck.requested', 'crosscheck.answered', 'review.requested', 'review.completed', 'participant.registered', 'participant.idle', 'fix.requested', 'revision.requested', 'revision.applied', 'revision.completed', 'campaign.completed', 'phase.completed', 'phase.failed', 'factory.completed', 'factory.failed', 'factory.cancelled']);
+    const TIMELINE = new Set(['phase.started', 'task.assigned', 'task.completed', 'copy.proposed', 'images.sourced', 'template.selection.completed', 'layout.completed', 'review.requested', 'review.completed', 'revision.requested', 'revision.applied', 'participant.registered', 'participant.idle', 'campaign.completed']);
     const summarize = (type: string, p: Obj): string => {
       switch (type) {
-        case 'copy.proposed': return `${n(p.concepts)} concept(s), ${n(p.variants)} copy variant(s) proposed`;
-        case 'landing.proposed': return 'landing page content proposed';
-        case 'visual.generated': return `${p.conceptId}: ${p.failed ? `image failed (${p.error?.message ?? 'unknown'}), brand background used` : `image stored as ${p.asset?.id ?? '?'}`}`;
-        case 'layout.completed': return `${p.conceptId}: ${n(p.layouts)} layout(s) rendered${n(p.skipped) ? `, ${n(p.skipped)} format(s) skipped` : ''}`;
-        case 'crosscheck.requested': return `${p.producer} → ${p.reviewer}: ${n(p.claims)} claim(s) to check`;
-        case 'crosscheck.answered': return `${p.reviewer} → ${p.producer}: ${p.status}${p.status === 'answered' ? ` (${(p.answers ?? []).map((a: Obj) => a.verdict).join(', ')})` : ''}`;
-        case 'review.requested': return `round ${p.round}: ${n(p.scope?.variantIds)} variant(s), ${n(p.scope?.assetIds)} asset(s)${p.scope?.landing ? ', landing page' : ''}`;
+        case 'copy.proposed': return `${n(p.concepts)} concept(s), ${n(p.variants)} text(s) written`;
+        case 'images.sourced': return String(p.summary ?? 'pictures sourced').slice(0, 200);
+        case 'template.selection.completed': return `${n(p.plan?.items ?? p.items)} template(s) chosen`;
+        case 'layout.completed': return `${p.conceptId ?? 'campaign'}: ${n(p.layouts)} visual(s) rendered${n(p.skipped) ? `, ${n(p.skipped)} skipped` : ''}`;
+        case 'review.requested': return `review round ${p.round ?? 1}`;
         case 'review.completed': return `round ${p.round}: ${n(p.findings)} finding(s), model review ${p.modelReview}`;
-        case 'participant.registered': return `${p.agent} created at run time: ${p.reason}`;
+        case 'revision.requested': return `${p.agent ?? 'revision'}: ${n(p.operations)} correction(s) requested`;
+        case 'revision.applied': return `${p.owner ?? p.agent}: ${p.status}${p.note ? ` — ${p.note}` : ''}`;
+        case 'participant.registered': return `${p.agent} joined: ${p.reason}`;
         case 'participant.idle': return `${p.agent}: ${p.reason}`;
-        case 'fix.requested': return `round ${p.round}: ${n(p.findingIds)} finding(s) handed to the Fixer`;
-        case 'revision.requested': return `Fixer → ${p.agent}: ${n(p.operations)} repair operation(s), wave ${p.wave}`;
-        case 'revision.applied': return `${p.owner}: ${p.status} — ${p.note}`;
-        case 'revision.completed': return `round ${p.round}: ${(p.results ?? []).filter((r: Obj) => r.status === 'applied').length} of ${n(p.results)} repair(s) applied`;
         case 'task.assigned': return `${p.agent} assigned: ${p.task}`;
         case 'task.completed': return `${p.agent}: ${p.outcome}${p.error ? ` (${p.error.message})` : ''}${p.reason ? ` (${p.reason})` : ''}`;
-        case 'images.sourcing.requested': return `Visual Researcher asked to source pictures for ${Number(p.slots) || 0} creative(s)`;
-        case 'images.sourced': return String(p.summary ?? 'pictures sourced').slice(0, 200);
-        case 'image.generation.refused': return `an image-generation request was refused before anything was sent (${Number(p.count) || 0})`;
         case 'campaign.completed': return 'campaign package saved';
         default: return '';
       }
     };
     const timeline = events.filter((e) => TIMELINE.has(e.eventType)).map((e) => ({ sequence: e.sequence, type: e.eventType, participant: e.participant, at: e.createdAt, summary: summarize(e.eventType, (e.payloadJson ?? {}) as Obj) }));
-
-    const dyn = { activated: [] as Obj[], skipped: [] as Obj[] };
-    const fold = { plan: null as unknown, participants: new Map<string, Obj>(), sources: [] as unknown[], crosschecks: [] as Obj[] };
-    const progress = { concepts: 0, variants: 0, landing: false, images: 0, imagesFailed: 0, layouts: 0, skippedLayouts: 0, round: 0, findings: 0, repairsApplied: 0, repairsFailed: 0 };
+    const fold = { plan: null as unknown, participants: new Map<string, Obj>(), sources: [] as unknown[] };
+    const progress = { concepts: 0, texts: 0, visuals: 0, skipped: 0, round: 0, findings: 0, corrections: 0 };
     for (const e of events) {
       const p = (e.payloadJson ?? {}) as Obj;
       switch (e.eventType) {
         case 'phase.started': fold.plan = p.plan ?? null; break;
         case 'source.retrieved': fold.sources.push(p.source); break;
         case 'task.assigned': fold.participants.set(p.agent, { agent: p.agent, state: 'working' }); break;
-        case 'participant.idle':
-          fold.participants.set(p.agent, { agent: p.agent, state: 'skipped', reason: p.reason });
-          if (p.agent === 'Fixer') dyn.skipped.push({ agent: p.agent, key: 'fixer', reason: p.reason });
-          break;
-        case 'participant.registered':
-          fold.participants.set(p.agent, { agent: p.agent, state: 'working', reason: p.reason });
-          dyn.activated.push({ agent: p.agent, key: 'fixer', reason: p.reason, dynamic: true });
-          break;
+        case 'participant.idle': fold.participants.set(p.agent, { agent: p.agent, state: 'skipped', reason: p.reason }); break;
         case 'task.completed': fold.participants.set(p.agent, { agent: p.agent, state: p.outcome === 'succeeded' ? 'done' : p.outcome, error: p.error ?? null, reason: p.reason ?? null }); break;
-        case 'crosscheck.requested': for (const c of p.claims ?? []) fold.crosschecks.push({ requestId: p.requestId, producer: p.producer, reviewer: p.reviewer, claimId: c.claimId, status: 'pending' }); break;
-        case 'crosscheck.answered':
-          for (const c of fold.crosschecks.filter((x) => x.requestId === p.requestId)) {
-            const a = (p.answers ?? []).find((x: Obj) => x.claimId === c.claimId);
-            Object.assign(c, a ? { status: 'answered', verdict: a.verdict, rationale: a.rationale } : { status: 'failed' });
-          }
-          break;
-        case 'copy.proposed': progress.concepts = n(p.concepts); progress.variants = n(p.variants); break;
-        case 'landing.proposed': progress.landing = true; break;
-        case 'visual.generated': progress.images += p.failed ? 0 : 1; progress.imagesFailed += p.failed ? 1 : 0; break;
-        case 'layout.completed': progress.layouts += n(p.layouts); progress.skippedLayouts += n(p.skipped); break;
+        case 'copy.proposed': progress.concepts = n(p.concepts); progress.texts = n(p.variants); break;
+        case 'layout.completed': progress.visuals += n(p.layouts); progress.skipped += n(p.skipped); break;
         case 'review.requested': progress.round = Number(p.round) || progress.round; break;
         case 'review.completed': progress.findings = n(p.findings); break;
-        case 'revision.completed': for (const r of p.results ?? []) r.status === 'applied' ? progress.repairsApplied++ : progress.repairsFailed++; break;
+        case 'revision.applied': if (p.status === 'applied') progress.corrections++; break;
       }
     }
     const base = { runId, status: run.status, kind: 'creative' as const, campaignId: campaign?.id ?? null, campaignStatus: campaign?.status ?? null, approvalStatus: campaign?.approvalStatus ?? null, progress, timeline };
     const m = (campaign?.metadataJson ?? null) as (Partial<CreativeReportMeta> & { brand?: { palette: string[]; fromBrand: boolean; logo: boolean } }) | null;
     if (campaign?.packageJson && m) {
-      return {
-        ...base, source: 'report' as const,
-        plan: m.plan ?? null, participants: m.participants ?? [], sources: m.sources ?? [], crosschecks: m.crosschecks ?? [], usage: m.usage ?? null, aiCalls: m.aiCalls ?? {},
-        images: m.images ?? null, settings: m.settings ?? null, chain: m.chain ?? null, summaries: m.summaries ?? {}, why: m.why ?? null, partial: m.partial ?? false, brand: m.brand ?? null, imageModel: m.imageModel ?? null, model: m.model ?? null,
-      };
+      return { ...base, source: 'report' as const, plan: m.plan ?? null, participants: m.participants ?? [], sources: m.sources ?? [], usage: m.usage ?? null, aiCalls: m.aiCalls ?? {}, settings: m.settings ?? null, chain: m.chain ?? null, summaries: m.summaries ?? {}, why: m.why ?? null, partial: m.partial ?? false, brand: m.brand ?? null, model: m.model ?? null };
     }
-    const basePlan = fold.plan as { activated?: Obj[]; skipped?: Obj[] } | null;
-    const plan = basePlan && (dyn.activated.length || dyn.skipped.length) ? { ...basePlan, activated: [...(basePlan.activated ?? []), ...dyn.activated], skipped: [...(basePlan.skipped ?? []), ...dyn.skipped] } : fold.plan;
-    return { ...base, source: 'events' as const, plan, participants: [...fold.participants.values()], sources: fold.sources, crosschecks: fold.crosschecks, usage: null, aiCalls: {}, images: null, settings: null, chain: campaign ? { f1ReportId: campaign.f1ReportId, f2AuditId: campaign.f2AuditId, f3StrategyId: campaign.f3StrategyId } : null, summaries: {}, why: null, partial: false, brand: null, imageModel: campaign?.imageModel ?? null, model: campaign?.model ?? null };
+    return { ...base, source: 'events' as const, plan: fold.plan, participants: [...fold.participants.values()], sources: fold.sources, usage: null, aiCalls: {}, settings: null, chain: campaign ? { f1ReportId: campaign.f1ReportId, f3StrategyId: campaign.f3StrategyId } : null, summaries: {}, why: null, partial: false, brand: null, model: campaign?.model ?? null };
   }
 
   /**

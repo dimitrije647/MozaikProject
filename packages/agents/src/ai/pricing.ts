@@ -9,9 +9,7 @@
 export const PRICE_BOOK_VERIFIED_AT = '2026-10-31';
 export const PRICE_SOURCES = {
   pricing: 'https://developers.openai.com/api/docs/pricing',
-  imageGuide: 'https://developers.openai.com/api/docs/guides/image-generation',
   textModel: 'https://developers.openai.com/api/docs/models/gpt-4.1-mini',
-  imageModel: 'https://developers.openai.com/api/docs/models/gpt-image-1-mini',
 } as const;
 
 export interface TextPrice {
@@ -175,71 +173,6 @@ export const estimateTokens = (chars: number) => Math.ceil(chars / 3);
 /** Worst-case USD of ONE text request: its estimated input plus the FULL output cap. Used to reserve budget before the call. */
 export function textReserveUsd(model: string | null | undefined, inputChars: number, maxOutputTokens: number): number | null {
   return textCostUsd(model, { inputTokens: estimateTokens(inputChars), outputTokens: maxOutputTokens });
-}
-
-// ---- images ---------------------------------------------------------------------------------------------------------------------
-
-export type PricedImageQuality = 'low' | 'medium' | 'high';
-export type PricedImageSize = '1024x1024' | '1024x1536' | '1536x1024';
-const SIZE_INDEX: Record<PricedImageSize, number> = { '1024x1024': 0, '1024x1536': 1, '1536x1024': 2 };
-
-/** USD per image by quality and size [square, portrait, landscape], from the image guide's per-image table. */
-const IMAGE_PER_IMAGE: Record<string, Record<PricedImageQuality, [number, number, number]>> = {
-  'gpt-image-1-mini': { low: [0.005, 0.006, 0.006], medium: [0.011, 0.015, 0.015], high: [0.036, 0.052, 0.052] },
-  'gpt-image-1.5': { low: [0.009, 0.013, 0.013], medium: [0.034, 0.05, 0.05], high: [0.133, 0.2, 0.2] },
-  'gpt-image-2': { low: [0.006, 0.005, 0.005], medium: [0.053, 0.041, 0.041], high: [0.211, 0.165, 0.165] },
-};
-
-/** Token prices (USD per 1M tokens) used to turn the provider-reported usage of a finished image into dollars. */
-const IMAGE_TOKEN_PRICES: Record<string, { textInputPerM: number; imageOutputPerM: number }> = {
-  'gpt-image-1-mini': { textInputPerM: 2.0, imageOutputPerM: 8.0 },
-  'gpt-image-1.5': { textInputPerM: 5.0, imageOutputPerM: 32.0 },
-  'gpt-image-2': { textInputPerM: 5.0, imageOutputPerM: 30.0 },
-  'gpt-image-2.5-sunburst': { textInputPerM: 5.0, imageOutputPerM: 30.0 },
-  'gpt-image-2.5-flare': { textInputPerM: 5.0, imageOutputPerM: 30.0 },
-};
-
-export type ImageCostBasis =
-  /** The per-image price from OpenAI's table for this model, quality and size. */
-  | 'per_image_table'
-  /** quality "auto": the model decides, so the price of "high" is used as an upper bound. */
-  | 'upper_bound_auto'
-  /** Token-priced model without a published per-image figure: no estimate exists before the request. */
-  | 'unavailable';
-
-export interface ImageCostEstimate {
-  usd: number | null;
-  basis: ImageCostBasis;
-  note: string;
-}
-
-export function imageCostEstimate(model: string | null | undefined, quality: string | null | undefined, size: string | null | undefined): ImageCostEstimate {
-  const id = model ? family(model) : '';
-  const table = IMAGE_PER_IMAGE[id];
-  const sz = SIZE_INDEX[(size ?? '1024x1024') as PricedImageSize];
-  if (!table || sz === undefined) {
-    const tokenPriced = !!IMAGE_TOKEN_PRICES[id];
-    return { usd: null, basis: 'unavailable', note: tokenPriced ? `${id} is billed by tokens (image output $${IMAGE_TOKEN_PRICES[id].imageOutputPerM} per 1M tokens); OpenAI publishes no per-image price for it, so no estimate is shown before the request. The real cost is computed from the usage OpenAI reports for each image.` : `No verified price for ${model ?? 'this model'}.` };
-  }
-  const q = (quality ?? 'low') as string;
-  if (q === 'auto') return { usd: table.high[sz], basis: 'upper_bound_auto', note: 'Quality "auto" lets the model choose, so the price of "high" is used as an upper bound.' };
-  if (q !== 'low' && q !== 'medium' && q !== 'high') return { usd: null, basis: 'unavailable', note: `No verified price for quality "${q}".` };
-  return { usd: table[q][sz], basis: 'per_image_table', note: `OpenAI per-image price for ${id}, ${q}, ${size ?? '1024x1024'}.` };
-}
-
-/** USD for ONE finished image from the usage the provider reported (text input + image output tokens). null = no token price known. */
-export function imageActualCostUsd(model: string | null | undefined, usage: { input: number; output: number } | null | undefined): number | null {
-  const p = model ? IMAGE_TOKEN_PRICES[family(model)] : undefined;
-  if (!p || !usage) return null;
-  return (usage.input * p.textInputPerM + usage.output * p.imageOutputPerM) / 1_000_000;
-}
-
-/** The cheapest verified per-image price among the models of the price book (for the "choose a cheaper model" option). */
-export function cheaperImageModels(quality: string, size: string): { model: string; usd: number }[] {
-  return Object.keys(IMAGE_PER_IMAGE)
-    .map((model) => ({ model, usd: imageCostEstimate(model, quality, size).usd }))
-    .filter((x): x is { model: string; usd: number } => x.usd !== null)
-    .sort((a, b) => a.usd - b.usd);
 }
 
 export const round2 = (n: number) => Math.round(n * 100) / 100;

@@ -1,6 +1,6 @@
 import { z } from 'zod';
+import { CopyDirection } from '../copywriting/direction';
 import { BusinessType, EvidenceStatus } from '../discovery/schemas';
-import { FINDING_KINDS } from '../audit/board';
 import { CHANNEL_IDS } from './channels';
 
 /**
@@ -12,6 +12,10 @@ const text = (max: number) => z.string().max(max);
 const list = (max: number, items = 5) => z.array(text(max)).max(items);
 const Channel = z.enum(CHANNEL_IDS);
 const DateBasis = z.enum(['public_holiday_api', 'recurring_pattern', 'user_provided', 'speculative']);
+
+/** What kind of statement a finding is (same classes the earlier phases use). */
+export const STRATEGY_FINDING_KINDS = ['observation', 'claim_on_source', 'assessment', 'hypothesis', 'gap'] as const;
+export type StrategyFindingKind = (typeof STRATEGY_FINDING_KINDS)[number];
 
 // ---- typed details (one per research area; a finding carries exactly the one that matches its author) ----------------------
 
@@ -71,13 +75,13 @@ export const OpportunityDetail = z.object({
 export type SeasonalOpportunity = z.infer<typeof OpportunityDetail>;
 
 export const LlmStrategyFinding = z.object({
-  kind: z.enum(FINDING_KINDS),
+  kind: z.enum(STRATEGY_FINDING_KINDS),
   title: z.string().min(3).max(140),
   statement: z.string().min(3).max(600),
   classification: EvidenceStatus,
   importance: z.enum(['high', 'medium', 'low']),
   sourceType: z.enum(['website', 'search_result', 'holiday_api', 'user_provided', 'f1_finding', 'f2_finding', 'ai_inference']),
-  /** Id of a <source> block (e.g. "S3"), or null. Never an F1/F2 finding id. */
+  /** Id of a <source> block (e.g. "S3"), or null. Never an F1 finding id. f2_finding only appears in strategies saved before V4. */
   sourceId: z.string().max(12).nullable(),
   /** URL, or the F1/F2 finding id when sourceType is f1_finding / f2_finding. */
   locator: z.string().max(300).nullable(),
@@ -94,14 +98,15 @@ export const LlmStrategyFinding = z.object({
 });
 export type LlmStrategyFinding = z.infer<typeof LlmStrategyFinding>;
 
+/** The Marketing Strategist's research answer: audience segments, competitors, one evaluation per social channel and timing, in ONE call. */
 export const StrategyAgentOutput = z.object({
   summary: text(1000),
-  findings: z.array(LlmStrategyFinding).max(12),
+  findings: z.array(LlmStrategyFinding).max(24),
   missingInformation: z.array(text(300)).max(10),
 });
 export type StrategyAgentOutput = z.infer<typeof StrategyAgentOutput>;
 
-// ---- the strategy (what the Campaign Strategist writes) ---------------------------------------------------------------------
+// ---- the strategy (what the Marketing Strategist writes from its committed findings) ---------------------------------------------------------------------
 
 export const StrategyStatement = z.object({
   text: z.string().min(2).max(700),
@@ -118,8 +123,8 @@ const Role = z.enum(['primary', 'secondary', 'test']);
 
 /**
  * LIMITS OF THE STORED REPORT. The strategist's draft is held to the stricter limits above (that is all the model may write). The policy layer
- * (policy.ts) then ADDS to three lists on its own: the claims the Marketing Audit flagged, the Channel Scout's finding for a recommended
- * channel and every disputed finding that the draft left out. The stored report must accept what the policy can produce, and the policy never
+ * (policy.ts) then ADDS to lists on its own: the channel evaluation finding of a recommended channel and every disputed finding that the draft
+ * left out (strategies saved before V4 also carry the claims their Marketing Audit flagged). The stored report must accept what the policy can produce, and the policy never
  * produces more: both sides use these numbers (a producer/consumer test fails if they ever drift apart again).
  */
 export const STORED_LIMITS = { claimsToAvoid: 12, channelFindingIds: 9, disagreements: 50 } as const;
@@ -141,6 +146,8 @@ export const CreativeBriefDraft = z.object({
   deliverables: z.array(z.object({ type: text(100), channel: Channel.nullable(), count: z.number().int() })).max(8),
   suggestedConceptCount: z.number().int(),
   toneOfVoice: text(200).nullable(),
+  /** The copy direction for the Content Writer: purpose, problem, benefits, next action, proof and suitable principles (copywriting/direction.ts). */
+  copyDirection: CopyDirection,
 });
 export type CreativeBriefDraft = z.infer<typeof CreativeBriefDraft>;
 
@@ -178,14 +185,17 @@ const Metric = z.object({ label: z.string(), value: z.string() });
 const Ref = z.object({ findingId: z.string(), agent: z.string(), status: EvidenceStatus, confidence: z.number().nullable(), sourceId: z.string().nullable(), locator: z.string().nullable(), crosscheck: z.string() });
 
 export const F4CreativeBrief = CreativeBriefDraft.extend({
-  /** The model's claims plus the ones the Marketing Audit flagged (policy.ts): a longer list than the draft's. */
+  /** null in strategies saved before the copywriting framework existed (the plan then falls back to the objective). */
+  copyDirection: CopyDirection.nullable().default(null),
+  /** The model's claims (strategies saved before V4 add the ones their Marketing Audit flagged): a longer list than the draft's. */
   claimsToAvoid: z.array(ClaimToAvoid).max(STORED_LIMITS.claimsToAvoid),
-  /** Copied from F1/F2, never written by a model. */
+  /** Copied from F1, never written by a model. */
   productIdentity: z.object({ name: z.string(), category: z.string(), businessType: BusinessType.or(z.string()), summary: z.string(), valueProposition: z.string().nullable() }),
   language: z.string(),
   visualPalette: z.array(z.string()),
   visualBasis: z.enum(['f1_measured_palette', 'none']),
-  provenance: z.object({ f1ReportId: z.string(), f2AuditId: z.string(), strategyRunId: z.string().nullable() }),
+  /** f2AuditId: the Marketing Audit an older strategy was built on; null for V4 strategies (no audit is run). */
+  provenance: z.object({ f1ReportId: z.string(), f2AuditId: z.string().nullable(), strategyRunId: z.string().nullable() }),
 });
 export type F4CreativeBrief = z.infer<typeof F4CreativeBrief>;
 
@@ -208,7 +218,7 @@ export const CampaignStrategyReport = StrategyDraft.omit({ creativeBrief: true }
     geography: z.array(z.string()),
     f1Confidence: z.number(),
   }),
-  /** 3. What F2 observed, with its age (an old audit is not today's reality). */
+  /** 3. LEGACY: what the F2 Marketing Audit observed, in strategies saved before V4. null for new strategies (no audit is run). */
   existingMarketing: z.object({
     f2AuditId: z.string(),
     f2SchemaVersion: z.number(),
@@ -220,7 +230,7 @@ export const CampaignStrategyReport = StrategyDraft.omit({ creativeBrief: true }
     /** F2's unresolved contradictions travel with the strategy so no later phase builds on a disputed observation (absent in older reports). */
     contradictions: z.array(z.object({ topic: z.string(), detail: z.string(), status: z.enum(['open', 'resolved']) })).max(6).default([]),
     notes: z.array(z.string()),
-  }),
+  }).nullable().default(null),
   /** 4/5. Segments as hypotheses with their evidence. */
   audienceResearch: z.array(z.object({ segment: SegmentDetail, status: EvidenceStatus, statement: z.string(), reasoning: z.string(), ref: Ref })),
   /** 6. Competitors, with whether their existence was confirmed from a retrieved page. */
@@ -238,7 +248,7 @@ export const CampaignStrategyReport = StrategyDraft.omit({ creativeBrief: true }
     profiles: z.array(z.object({ competitor: CompetitorDetail, status: EvidenceStatus, statement: z.string(), ref: Ref })),
     gaps: z.array(z.string()),
   }),
-  /** 8. Every channel scout's evaluation and every channel that did NOT get a scout, with the reason. */
+  /** 8. Every channel evaluation (V4: one per social platform, by the Marketing Strategist; older strategies: by Channel Scouts, with their selection). */
   channelEvaluation: z.object({
     evaluated: z.array(z.object({ scout: z.string(), evaluation: ChannelDetail, status: EvidenceStatus, statement: z.string(), reasoning: z.string(), ref: Ref })),
     notSelected: z.array(z.object({ channel: Channel, reason: z.string(), score: z.number() })),

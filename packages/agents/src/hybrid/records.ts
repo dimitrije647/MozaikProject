@@ -205,7 +205,7 @@ export const LibraryImageRecord = z.object({
 });
 export type LibraryImageRecord = z.infer<typeof LibraryImageRecord>;
 
-/** NO AI HYBRID: what the campaign did about pictures. `aiImagesGenerated` and `imageRequests` are always 0 in this mode and are recorded so the package proves it. */
+/** What the campaign did about pictures (V4 and NO AI HYBRID campaigns). `aiImagesGenerated` and `imageRequests` are always 0 and are recorded so the package proves it. */
 export const ImageryBlock = z.object({
   mode: z.literal('no_ai_hybrid'),
   aiImagesGenerated: z.literal(0),

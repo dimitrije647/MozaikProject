@@ -2,9 +2,9 @@ import type { F1Context } from '../audit/context';
 import type { CreativeInput, F3Context } from './context';
 
 /**
- * The VISUAL BRIEF: what the Visual Creator and the image prompt need to know about the business, gathered from F1 (the product), F2/F3
+ * The VISUAL BRIEF: what the Visual Researcher needs to know about the business (visual direction and picture search), gathered from F1 (the product), F2/F3
  * (the strategy and its creative brief) and the run's input. Nothing here is written by a model and nothing is invented: every field is
- * copied or trimmed from a stored report. Before this existed the Visual Creator saw only the strategy block; it never saw what the
+ * copied or trimmed from a stored report. Before this existed only the strategy block was used; it never saw what the
  * product actually is, so its pictures stayed generic.
  */
 export interface VisualBrief {

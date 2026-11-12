@@ -42,7 +42,6 @@ const schema = z.object({
   targetAudience: z.string().max(1000),
   preferredLanguage: z.string(),
   campaignDuration: z.string(),
-  enableSeoAudit: z.boolean(),
   enableSeasonalCalendar: z.boolean(),
   enableGoogleDriveExport: z.boolean(),
   publishingMode: z.enum(['manual', 'scheduled']),
@@ -60,7 +59,6 @@ const DEFAULTS: Values = {
   targetAudience: '',
   preferredLanguage: 'en',
   campaignDuration: '1 month',
-  enableSeoAudit: true,
   enableSeasonalCalendar: false,
   enableGoogleDriveExport: false,
   publishingMode: 'manual',
@@ -70,7 +68,7 @@ const STEPS = [
   { title: 'Product', hint: 'What are you promoting?', fields: ['productName', 'shortDescription', 'websiteUrl', 'githubUrl'] },
   { title: 'Social presence', hint: 'Where your audience is', fields: ['socials'] },
   { title: 'Marketing goals', hint: 'Goal, market, audience', fields: ['marketingGoal', 'targetMarket', 'targetAudience', 'preferredLanguage', 'campaignDuration'] },
-  { title: 'Features', hint: 'Toggles and publishing', fields: ['enableSeoAudit', 'enableSeasonalCalendar', 'enableGoogleDriveExport', 'publishingMode'] },
+  { title: 'Features', hint: 'Toggles and publishing', fields: ['enableSeasonalCalendar', 'enableGoogleDriveExport', 'publishingMode'] },
   { title: 'Review', hint: 'Check and save', fields: [] },
 ] as const;
 
@@ -152,7 +150,6 @@ export default function NewProjectPage() {
         preferredLanguage: v.preferredLanguage,
         campaignDuration: v.campaignDuration,
         publishingMode: v.publishingMode,
-        enableSeoAudit: v.enableSeoAudit,
         enableSeasonalCalendar: v.enableSeasonalCalendar,
         enableGoogleDriveExport: v.enableGoogleDriveExport,
       });
@@ -216,7 +213,7 @@ export default function NewProjectPage() {
                   <Field label="Product name" htmlFor="productName" error={errors.productName?.message}>
                     <Input id="productName" placeholder="e.g. Deep Diving School" {...register('productName')} />
                   </Field>
-                  <Field label="Description" htmlFor="shortDescription" optional hint="One or two sentences: what it is and who it is for. Hybrid Production needs a short description (a business name and a description are all it requires); everything else on this form is optional.">
+                  <Field label="Description" htmlFor="shortDescription" optional hint="One or two sentences: what it is and who it is for. A campaign needs a short description (a business name and a description are all it requires); everything else on this form is optional.">
                     <Textarea id="shortDescription" {...register('shortDescription')} />
                   </Field>
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -304,7 +301,6 @@ export default function NewProjectPage() {
                 <>
                   <StepTitle title="Features" body="Choose what the agents should include when they run." />
                   <div className="space-y-3">
-                    <Toggle control={control} name="enableSeoAudit" title="SEO audit" body="Analyse your website and content for search visibility." />
                     <Toggle control={control} name="enableSeasonalCalendar" title="Seasonal calendar" body="Plan content around holidays, seasons and key dates." />
                     <Toggle control={control} name="enableGoogleDriveExport" title="Google Drive export" body="Export finished assets to Drive (needs the Google Drive integration)." />
                   </div>
@@ -366,7 +362,7 @@ function Toggle({
   body,
 }: {
   control: ReturnType<typeof useForm<Values>>['control'];
-  name: 'enableSeoAudit' | 'enableSeasonalCalendar' | 'enableGoogleDriveExport';
+  name: 'enableSeasonalCalendar' | 'enableGoogleDriveExport';
   title: string;
   body: string;
 }) {
@@ -436,7 +432,6 @@ function ReviewList({ values: v, files, goTo }: { values: Values; files: FileBuc
       step: 3,
       title: 'Features',
       items: [
-        ['SEO audit', v.enableSeoAudit ? 'On' : 'Off'],
         ['Seasonal calendar', v.enableSeasonalCalendar ? 'On' : 'Off'],
         ['Google Drive export', v.enableGoogleDriveExport ? 'On' : 'Off'],
         ['Publishing', 'Manual'],

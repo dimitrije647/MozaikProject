@@ -29,11 +29,11 @@ export interface InputBlocker {
 }
 
 export interface InputReadiness {
-  /** false only when a REQUIRED item is missing (and the preset enforces it). */
+  /** false only when a REQUIRED item is missing (and the campaign start enforces it). */
   ready: boolean;
   /** Every check with its state, required first. */
   checks: InputCheck[];
-  /** The blocking problems (empty unless the preset enforces the requirements). Each one says how to fix it. */
+  /** The blocking problems (empty unless the campaign start enforces the requirements). Each one says how to fix it. */
   blockers: InputBlocker[];
   /** Missing recommended items (warnings). */
   warnings: string[];
@@ -99,7 +99,7 @@ export function assessInputs(f: InputFacts, opts: { enforce: boolean }): InputRe
     { id: 'name', level: 'required', label: 'Business or product name', present: name.length >= 2, whenMissing: 'A campaign cannot be made without a name.' },
     { id: 'description', level: 'required', label: 'Short description', present: isMeaningfulDescription(description, name), whenMissing: 'A campaign cannot be made without knowing what the business offers.' },
 
-    { id: 'website', level: 'recommended', label: 'Website', present: has(f.intake?.websiteUrl), whenMissing: 'Website not provided. Website SEO analysis will be skipped and no destination link will be invented.' },
+    { id: 'website', level: 'recommended', label: 'Website', present: has(f.intake?.websiteUrl), whenMissing: 'Website not provided. Business research uses the other sources and no destination link will be invented.' },
     { id: 'logo', level: 'recommended', label: 'Logo', present: f.assets.logo > 0, whenMissing: 'Logo not provided. LaunchPilot will use a text-based brand identity (the business name).' },
     { id: 'audience', level: 'recommended', label: 'Target audience', present: has(f.intake?.targetAudience), whenMissing: 'Target audience not specified. The AI will propose an audience based on the description and label it as an assumption.' },
 
@@ -109,7 +109,7 @@ export function assessInputs(f: InputFacts, opts: { enforce: boolean }): InputRe
     { id: 'social', level: 'optional', label: 'Social media profiles', present: f.socialProfiles > 0, whenMissing: 'No social profile supplied. Account-specific social analysis will be skipped; a recommended social strategy is still produced.' },
     { id: 'competitors', level: 'optional', label: 'Competitor information', present: f.competitors > 0, whenMissing: 'No competitor supplied. No competitor is named and no competitor figure is invented; category-level positioning is labelled a hypothesis.' },
     { id: 'colors', level: 'optional', label: 'Brand colors', present: hasImagery, whenMissing: 'No brand colors can be read from files. The campaign design suggests a palette from your website, repository or logo when it can, and otherwise uses the default palette of the template collection you choose.' },
-    { id: 'photos', level: 'optional', label: 'Existing photographs', present: f.assets.images > 0, whenMissing: 'No photographs supplied. The approved AI-generated originals are used.' },
+    { id: 'photos', level: 'optional', label: 'Existing photographs', present: f.assets.images > 0, whenMissing: 'No photographs supplied. The creatives are typography-first unless you add approved or licensed pictures (no AI image is generated).' },
     { id: 'style', level: 'optional', label: 'Template collection', present: !!f.style && f.style !== 'auto', whenMissing: 'No template collection chosen yet. You choose one of the 10 collections in the campaign design; it decides the look of every creative.' },
     { id: 'channels', level: 'optional', label: 'Marketing channels', present: !!f.channels && f.channels.length > 0, whenMissing: 'No channels chosen. The strategy recommends a sensible set (up to four) and the campaign follows it.' },
     { id: 'duration', level: 'optional', label: 'Campaign duration', present: has(f.intake?.campaignDuration), whenMissing: 'No campaign duration set. The strategy proposes one and labels it as an assumption.' },
@@ -118,8 +118,8 @@ export function assessInputs(f: InputFacts, opts: { enforce: boolean }): InputRe
 
   const blockers: InputBlocker[] = [];
   if (opts.enforce) {
-    if (!checks[0].present) blockers.push({ code: 'missing_name', message: 'Hybrid Production needs the business or product name. Add it in the project details, then review the plan again.' });
-    if (!checks[1].present) blockers.push({ code: 'missing_description', message: `Hybrid Production needs a short description of what the business offers (at least one short sentence). ${DESCRIPTION_HELP} Add it in the project details, then review the plan again.` });
+    if (!checks[0].present) blockers.push({ code: 'missing_name', message: 'A campaign needs the business or product name. Add it in the project details, then review the plan again.' });
+    if (!checks[1].present) blockers.push({ code: 'missing_description', message: `A campaign needs a short description of what the business offers (at least one short sentence). ${DESCRIPTION_HELP} Add it in the project details, then review the plan again.` });
   }
   const missing = (level: InputLevel) => checks.filter((c) => c.level === level && !c.present);
   const tally = (level: InputLevel) => ({ present: checks.filter((c) => c.level === level && c.present).length, total: checks.filter((c) => c.level === level).length });

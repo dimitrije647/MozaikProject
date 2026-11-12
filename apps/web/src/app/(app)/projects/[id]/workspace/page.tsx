@@ -7,11 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/empty-state';
 import { PipelineBadge, PipelineCards, PipelineStrip, toSummary } from '@/components/pipeline-ui';
-import { MarketingAuditPanel } from '@/components/marketing-audit-panel';
-import { MarketStrategyPanel } from '@/components/market-strategy-panel';
-import { CreativeProductionPanel } from '@/components/creative-production-panel';
-import { ProductDiscoveryPanel } from '@/components/product-discovery-panel';
-import { RuntimeTestPanel } from '@/components/runtime-test-panel';
+import { CampaignHistory } from '@/components/campaign-history';
 import { ProjectStatusBadge } from '@/components/project-status-badge';
 import { STATUS_META } from '@/components/integration-card';
 import { useFactoryRuns, useMyIntegrations, useProject, usePipeline, useProviders } from '@/lib/hooks';
@@ -45,7 +41,7 @@ export default function WorkspacePage() {
       {/* Banner */}
       <div role="status" className="flex items-start gap-3 rounded-2xl border border-amber-300/70 bg-amber-50 px-5 py-4 text-sm text-amber-900">
         <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-        <p><strong className="font-semibold">Nothing runs until you confirm it.</strong> “Run campaign” shows the plan and the limits first (free), then runs Product Discovery (F1), the Marketing Audit (F2), Market Research &amp; Strategy (F3) and Creative Production (F4) in order on your own OpenAI key, reusing completed work. The phase panels below stay available for running one phase at a time.</p>
+        <p><strong className="font-semibold">Nothing runs until you confirm it.</strong> “Generate campaign” shows the plan and the cost first (free), then runs Business Research, Marketing Strategy and Creative Production on the AI provider saved in Settings, reusing current research. This page shows what is saved; it starts nothing.</p>
       </div>
 
       {/* Hero */}
@@ -61,9 +57,9 @@ export default function WorkspacePage() {
               <span className="text-sm text-muted-dark">{MARKETING_GOALS.find((g) => g.value === intake?.marketingGoal)?.label ?? 'No goal set'}</span>
             </div>
           </div>
-          <Button asChild size="lg" title="Review the plan and limits, then run F1 to F4 in one go">
+          <Button asChild size="lg" title="Review the plan and the cost, then generate the campaign">
             <Link href={`/projects/${id}/campaign`}>
-              {factoryActive ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} {factoryActive ? 'View campaign run' : 'Run campaign'}
+              {factoryActive ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} {factoryActive ? 'View progress' : 'Generate campaign'}
             </Link>
           </Button>
         </div>
@@ -73,8 +69,8 @@ export default function WorkspacePage() {
       </section>
 
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
-        {/* Stage cards: real saved state and results of F1 to F4 and the export */}
-        <PipelineCards pipeline={pipeline.data} loading={pipeline.isLoading} flags={flags} />
+        {/* Stage cards: the saved state of the stages and the export */}
+        <PipelineCards pipeline={pipeline.data} loading={pipeline.isLoading} flags={flags} projectId={id} />
 
         {/* Side panels */}
         <div className="space-y-6">
@@ -87,7 +83,7 @@ export default function WorkspacePage() {
               {intake?.stylePreference && <Row k="Earlier style note" v={STYLES.find((s) => s.value === intake.stylePreference)?.label ?? intake.stylePreference} />}
               <Row k="Publishing" v={intake?.publishingMode} />
               <div className="border-t border-cream-300/70 pt-3">
-                <p className="mb-2 text-xs uppercase tracking-wider text-muted">Default formats (confirmed in each campaign)</p>
+                <p className="mb-2 text-xs uppercase tracking-wider text-muted">Formats noted in the project (every campaign produces all formats its collection can draw)</p>
                 <div className="flex flex-wrap gap-1.5">
                   {p.formats.filter((f) => f.enabled).map((f) => (
                     <span key={f.id} className="rounded-full bg-cream-200 px-2.5 py-1 text-xs">{FORMAT_OPTIONS.find((o) => o.key === f.formatType)?.label}</span>
@@ -123,15 +119,7 @@ export default function WorkspacePage() {
         </div>
       </div>
 
-      <div id="phase-f1" className="scroll-mt-6"><ProductDiscoveryPanel projectId={id} /></div>
-
-      <div id="phase-f2" className="scroll-mt-6"><MarketingAuditPanel projectId={id} /></div>
-
-      <div id="phase-f3" className="scroll-mt-6"><MarketStrategyPanel projectId={id} /></div>
-
-      <div id="phase-f4" className="scroll-mt-6"><CreativeProductionPanel projectId={id} /></div>
-
-      <RuntimeTestPanel projectId={id} />
+      <div id="campaign-history" className="scroll-mt-6"><CampaignHistory projectId={id} /></div>
     </div>
   );
 }

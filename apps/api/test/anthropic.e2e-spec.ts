@@ -1,9 +1,9 @@
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, UnprocessableEntityException } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { FakeOpenAI } from '@launchpilot/agents/dist/testing/fake-openai';
-import { createApp, createProject, loginUser, registerUser, waitForTerminal, type TestUser } from './helpers';
+import { createApp, createProject, loginUser, registerUser, startF1, waitForTerminal, type TestUser } from './helpers';
 
-// CLAUDE PROVIDER (V3): Settings > AI providers with a Claude Console API key, the persisted default provider/model, the refused subscription
+// CLAUDE PROVIDER (V3, adapted to V4: no per-stage routes, no presets): Settings > AI providers with a Claude Console API key, the persisted default provider/model, the refused subscription
 // mode, and a real Mozaik phase run entirely on Claude. Two local fakes (Claude and OpenAI): no network, nothing billed.
 describe('Claude provider (Claude API key only; subscription mode unavailable)', () => {
   let app: INestApplication;
@@ -99,7 +99,8 @@ describe('Claude provider (Claude API key only; subscription mode unavailable)',
 
     const projectId = await createProject(user, 'Bike Repair Shop');
     await user.agent.put(`/projects/${projectId}/intake`).send({ productName: 'Bike Repair Shop', shortDescription: 'We fix bicycles in Novi Sad', targetMarket: 'Novi Sad', preferredLanguage: 'en' }).expect(200);
-    const started = (await again.post(`/projects/${projectId}/runs/product-discovery`).send({}).expect(201)).body;
+    // the stage resolves the PERSISTED default provider and model itself (the run takes no provider or model)
+    const started = await startF1(app, user, projectId);
     expect(started).toMatchObject({ provider: 'anthropic', status: 'RUNNING' });
     const done = await waitForTerminal(user, started.id, 30_000);
     expect(done.status).toBe('COMPLETED');
@@ -116,33 +117,37 @@ describe('Claude provider (Claude API key only; subscription mode unavailable)',
   it('never switches providers: a non-Claude model on the Claude default is refused before anything is sent; another user cannot use this key', async () => {
     const user = await claudeUser('claude-noswitch');
     const projectId = await createProject(user);
-    const r = await user.agent.post(`/projects/${projectId}/runs/product-discovery`).send({ model: 'gpt-4.1-mini' }).expect(422);
-    expect(r.body.message).toMatch(/never switches providers/);
+    // the API refuses to save a non-Claude model for Claude; a row that holds one anyway (older data) is refused at run time
+    await db.apiCredential.updateMany({ where: { userId: user.id, providerKey: 'anthropic' }, data: { model: 'gpt-4.1-mini' } });
+    await expect(startF1(app, user, projectId)).rejects.toThrow(/never switches providers/);
+    const pre = (await user.agent.post(`/projects/${projectId}/factory/preflight`).send({}).expect(200)).body;
+    expect(pre.blockers.map((b: any) => b.code)).toContain('model_unavailable');
+    await user.agent.post(`/projects/${projectId}/factory`).send({ approvedBudgetUsd: 1, confirmCost: true }).expect(422);
     expect(claude.requests).toHaveLength(0);
     expect(openai.requests).toHaveLength(0);
 
     const other = await registerUser(app, 'claude-other');
     const theirs = await createProject(other);
-    const denied = await other.agent.post(`/projects/${theirs}/runs/product-discovery`).send({}).expect(422);
-    expect(denied.body.message).toMatch(/OpenAI API key/); // no key of their own: nothing of the first user's is used
-    await other.agent.post(`/projects/${projectId}/runs/product-discovery`).send({}).expect(404); // and the first user's project is not theirs
+    const denied = startF1(app, other, theirs);
+    await expect(denied).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(startF1(app, other, theirs)).rejects.toThrow(/OpenAI API key/); // no key of their own: nothing of the first user's is used
+    const blocked = (await other.agent.post(`/projects/${theirs}/factory/preflight`).send({}).expect(200)).body;
+    expect(blocked.blockers.map((b: any) => b.code)).toContain('no_credentials');
+    await other.agent.post(`/projects/${projectId}/factory/preflight`).send({}).expect(404); // and the first user's project is not theirs
     expect(claude.requests).toHaveLength(0);
   });
 
-  it('a full campaign defaults to Real Content Production (0 AI images); an AI-image legacy preset on Claude is blocked, never routed to OpenAI', async () => {
+  it('Campaign Production on Claude: ONE workflow with no preset and no image model; the provider comes from Settings; nothing goes to OpenAI', async () => {
     const user = await claudeUser('claude-factory');
     const projectId = await createProject(user);
-    const presets = (await user.agent.get('/factory/presets').expect(200)).body;
-    expect(presets.default).toBe('no_ai_hybrid');
-    expect(presets.legacy).toEqual(['first_test', 'demo', 'full_production', 'hybrid_production']);
+    await user.agent.get('/factory/presets').expect(404); // V4: there are no presets to choose from
     const def = (await user.agent.post(`/projects/${projectId}/factory/preflight`).send({}).expect(200)).body;
-    expect(def.preset).toBe('no_ai_hybrid');
-    expect(def.models.image).toBeNull(); // no image model exists in the default
-    expect(def.models.text.id).toBe(MODEL);
-    expect(def.hybrid.noAi.statement.aiImages).toBe('AI-generated images: 0');
-    expect((def.blockers ?? []).map((b: any) => b.code)).not.toContain('provider_no_images');
-    const legacy = (await user.agent.post(`/projects/${projectId}/factory/preflight`).send({ preset: 'first_test' }).expect(200)).body;
-    expect(legacy.blockers.map((b: any) => b.code)).toContain('provider_no_images');
+    expect(def.preset).toBeUndefined();
+    expect(def.provider).toMatchObject({ id: 'anthropic', name: 'Claude', model: MODEL, source: 'settings' });
+    expect(def.statement.aiImages).toMatch(/AI-generated images: 0/);
+    expect(def.phases.map((p: any) => p.code)).toEqual(['F1', 'F3', 'F4']);
+    expect(def.blockers.map((b: any) => b.code)).not.toContain('provider_unsupported');
+    expect(claude.calls()).toHaveLength(0); // the plan is free: at most the (free) model list was read
     expect(openai.requests).toHaveLength(0);
   });
 });

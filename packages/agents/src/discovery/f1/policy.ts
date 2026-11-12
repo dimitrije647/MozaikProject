@@ -2,7 +2,7 @@ import { isGroundedReference } from '../grounding';
 import type { DiscoveryInput } from '../input';
 import { inputCorpus, normalizeText } from '../input';
 import type { EvidenceStatus } from '../schemas';
-import { AGENT_INFO, type AgentKey, type F1Board, type Finding, type FindingSourceType, type SourceKind, type SourceStore } from './board';
+import { AGENT_INFO, type F1Board, type Finding, type FindingSourceType, type SourceKind, type SourceStore } from './board';
 import type { LlmFinding, ProductDiscoveryReportV2, ReportStatement } from './schemas';
 import { REPORT_V2_VERSION } from './schemas';
 
@@ -12,7 +12,7 @@ import { REPORT_V2_VERSION } from './schemas';
  * `verified` means: the statement is directly supported by a verbatim excerpt of a source that was
  * really retrieved from the live web or the GitHub API in this run (not a fixture, not a search
  * snippet, not user-supplied text). It certifies "this source says so", never real-world truth.
- * Only the Web and Repo analyzers can produce it; every other `verified` label is downgraded.
+ * Only website and repository sources can support it; every other `verified` label is downgraded.
  * `claimed` must trace to the user's text, or to a verbatim excerpt of the cited source.
  */
 export interface PolicyIssue {
@@ -50,7 +50,7 @@ export interface PolicyContext {
 }
 
 /** Validates one finding produced by an agent and returns the version the board stores. */
-export function validateFinding(llm: LlmFinding, agent: string, key: AgentKey, ctx: PolicyContext): Omit<Finding, 'id' | 'crosscheck' | 'at'> {
+export function validateFinding(llm: LlmFinding, agent: string, ctx: PolicyContext): Omit<Finding, 'id' | 'crosscheck' | 'at'> {
   const { input, store, issues } = ctx;
   let { classification, sourceType, sourceId, locator, excerpt } = llm;
   let adjustment: string | null = null;
@@ -73,7 +73,7 @@ export function validateFinding(llm: LlmFinding, agent: string, key: AgentKey, c
   const userSource = !src ? sourceType === 'intake_field' || sourceType === 'user_input' : USER_SUPPLIED.has(src.kind);
 
   if (classification === 'verified') {
-    const ok = !!src && (src.kind === 'website' || src.kind === 'repository') && src.live && !src.fixture && !!excerpt && (key === 'web' || key === 'repo');
+    const ok = !!src && (src.kind === 'website' || src.kind === 'repository') && src.live && !src.fixture && !!excerpt;
     if (!ok) {
       classification = userSource ? 'claimed' : 'inferred';
       adjust(
@@ -98,7 +98,7 @@ export function validateFinding(llm: LlmFinding, agent: string, key: AgentKey, c
   }
 
   // What a vision model reads out of an image is never better than an inference.
-  if (key === 'visual' && (classification === 'claimed' || classification === 'verified')) classification = 'inferred';
+  if ((sourceType === 'image' || src?.kind === 'image') && (classification === 'claimed' || classification === 'verified')) classification = 'inferred';
 
   return {
     agent,
@@ -124,10 +124,21 @@ export interface AnalyzedSections {
   visual: boolean;
 }
 
-/** An analysis section counts as analyzed only if its agent actually contributed findings. */
+/**
+ * A section counts as analyzed only if a source of its kind was really retrieved in this run AND the analysis produced at least one
+ * finding from that kind of source (a finding citing such a source, or with that source type). Nothing is credited for a source that failed.
+ */
 export function analyzedSections(board: F1Board): AnalyzedSections {
-  const has = (name: string) => board.findings.some((f) => f.agent === name);
-  return { website: has(AGENT_INFO.web.name), repository: has(AGENT_INFO.repo.name), documents: has(AGENT_INFO.files.name), visual: has(AGENT_INFO.visual.name) };
+  const retrieved = (kinds: SourceKind[]) => board.sources.some((s) => s.status === 'retrieved' && kinds.includes(s.kind));
+  const kindOf = new Map(board.sources.map((s) => [s.id, s.kind]));
+  const cited = (kinds: SourceKind[], types: FindingSourceType[]) => board.findings.some((f) => (!!f.sourceId && kinds.includes(kindOf.get(f.sourceId)!)) || types.includes(f.sourceType));
+  const section = (kinds: SourceKind[], types: FindingSourceType[]) => retrieved(kinds) && cited(kinds, types);
+  return {
+    website: section(['website', 'search_result'], ['website', 'search_result']),
+    repository: section(['repository'], ['repository']),
+    documents: section(['document'], ['uploaded_file']),
+    visual: section(['image'], ['image']),
+  };
 }
 
 /**
@@ -146,7 +157,7 @@ export function finalizeReportV2(
 ): { report: ProductDiscoveryReportV2; issues: PolicyIssue[]; analyzed: AnalyzedSections } {
   const issues: PolicyIssue[] = [];
   const byId = new Map(board.findings.map((f) => [f.id, f]));
-  const agent = AGENT_INFO.synthesizer.name;
+  const agent = AGENT_INFO.researcher.name;
   const analyzed = analyzedSections(board);
 
   const fix = (s: ReportStatement): ReportStatement => {

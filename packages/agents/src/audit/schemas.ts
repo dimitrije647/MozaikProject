@@ -1,6 +1,13 @@
 import { z } from 'zod';
 import { EvidenceStatus } from '../discovery/schemas';
-import { AUDIT_AREAS, FINDING_KINDS, SEVERITIES } from './board';
+
+/** HISTORICAL ONLY: the stored F2 Marketing Audit (no longer run since V4). These schemas exist so saved audits stay readable. */
+export const AUDIT_AREAS = ['seo', 'social', 'brand', 'messaging', 'presence', 'cross'] as const;
+export type AuditArea = (typeof AUDIT_AREAS)[number];
+export const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+export type Severity = (typeof SEVERITIES)[number];
+export const FINDING_KINDS = ['observation', 'claim_on_source', 'assessment', 'hypothesis', 'gap'] as const;
+export type FindingKind = (typeof FINDING_KINDS)[number];
 
 /**
  * Wire schemas for the F2 agents and the Marketing Audit Report.

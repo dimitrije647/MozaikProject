@@ -12,13 +12,12 @@ import { configureOpenAi, createApp, createProject, registerUser, sleep, type Te
 const sharp: any = require(require.resolve('sharp', { paths: [require.resolve('@launchpilot/agents')] }));
 
 // VISUAL SYSTEM 2.0 end to end: ten collections, the ONE campaign design, brand palette analysis (website / repository / logo, mocked), web visual
-// discovery (mocked providers; Pinterest is reference-only), licensed pictures with provenance, the free plan, and a full mocked Hybrid run that
-// uses the approved design. OpenAI is faked over real HTTP: nothing is billed. No external website, repository or search provider is ever contacted.
+// discovery (mocked providers; Pinterest is reference-only), licensed pictures with provenance, the free plan, and a full mocked Campaign Production
+// run (V4: one workflow, no AI image) that uses the approved design. OpenAI is faked over real HTTP: nothing is billed. No external website, repository or search provider is ever contacted.
 jest.setTimeout(600_000);
 
 const KEY = 'sk-test-VISUALE2E1234567890abcdefghijk';
 const MODEL = 'gpt-4.1-mini';
-const IMAGE = 'gpt-image-1.5';
 
 // ---- mocked providers ------------------------------------------------------------------------------------------------------------------------
 
@@ -83,7 +82,7 @@ describe('Visual System 2.0', () => {
 
   async function useFake(options: FakeOpenAIOptions = {}) {
     if (fake) await fake.close();
-    fake = await new FakeOpenAI({ models: [MODEL, IMAGE, 'gpt-image-1-mini', 'text-embedding-test'], ...options }).start();
+    fake = await new FakeOpenAI({ models: [MODEL, 'text-embedding-test'], ...options }).start();
     process.env.LAUNCHPILOT_OPENAI_BASE_URL = fake.url;
   }
   const paid = () => fake.requests.filter((r) => r.path.endsWith('/responses') || r.path.endsWith('/images/generations'));
@@ -115,7 +114,8 @@ describe('Visual System 2.0', () => {
       await sleep(150);
     }
   };
-  const HYBRID = { preset: 'hybrid_production', mode: 'fresh', approvedBudgetUsd: 5, confirmCost: true, f4: { imageModel: IMAGE } };
+  /** V4 "Generate Campaign": ONE approved budget and its confirmation (no preset, no image model). */
+  const CAMPAIGN = { approvedBudgetUsd: 5, confirmCost: true };
   const newDesign = async (u: TestUser, projectId: string, collectionId = 'premium_editorial') => (await u.agent.post(`/projects/${projectId}/design/new`).send({ collectionId }).expect(200)).body.design;
   const confirmed = (d: any, over: Record<string, unknown> = {}) => ({ ...d, formats: ['instagram_post', 'instagram_story', 'website_banner'], confirmed: true, ...over });
 
@@ -399,68 +399,58 @@ describe('Visual System 2.0', () => {
   it('PLAN: the design must be confirmed and readable; the plan shows collection, palette, formats and where pictures come from; nothing is spent', async () => {
     const { user, projectId } = await readyUser('vs-plan');
     const d = await newDesign(user, projectId, 'premium_editorial');
-    const body = (design: unknown, extra: object = {}) => ({ preset: 'hybrid_production', mode: 'fresh', f4: { imageModel: IMAGE }, hybrid: { design, ...extra } });
+    const body = (design: unknown, extra: object = {}) => ({ design: { design, ...extra } });
 
     // not confirmed: a blocker with a plain reason, found before any approval
     const open = (await preflight(user, projectId, body({ ...d, formats: ['instagram_post'] })).expect(200)).body;
     expect(open.ok).toBe(false);
     expect(open.blockers.map((b: any) => b.code)).toContain('design_unconfirmed');
-    expect(open.hybrid.design.collection).toMatchObject({ id: 'premium_editorial', name: 'Premium Editorial' });
-    await startF(user, projectId, { ...HYBRID, hybrid: { design: { ...d, formats: ['instagram_post'] } } }).expect(422);
+    expect(open.designCheck.collection).toMatchObject({ id: 'premium_editorial', name: 'Premium Editorial' });
+    await startF(user, projectId, { ...CAMPAIGN, ...body({ ...d, formats: ['instagram_post'] }) }).expect(422);
 
     // an unreadable palette is a blocker too
     const bad = (await preflight(user, projectId, body(confirmed(d, { palette: { ...d.palette, text: '#f1f1f1', background: '#ffffff' } }))).expect(200)).body;
     expect(bad.blockers.map((b: any) => b.code)).toContain('design_palette');
 
-    // confirmed: no design blocker; the plan carries the design and the picture-source plan; the paid request count is exactly what was asked
+    // confirmed: no design blocker; the plan carries the design and the picture-source plan; no image is ever requested
     const good = (await preflight(user, projectId, body(confirmed(d))).expect(200)).body;
     expect(good.blockers.map((b: any) => b.code).filter((c: string) => c.startsWith('design_'))).toEqual([]);
-    expect(good.hybrid.design.collection.name).toBe('Premium Editorial');
-    expect(good.hybrid.design.formats.labels).toEqual(['Instagram post', 'Instagram story', 'Website banner']);
-    expect(good.hybrid.design.sources).toMatchObject({ paidImageRequests: 5, mode: 'balanced' });
-    expect(good.hybrid.originals.paidRequests).toBe(5);
-    expect(good.hybrid.slots.map((s: any) => s.formatId).every((f: string) => ['instagram_square', 'instagram_portrait', 'story', 'web_banner', 'landing_hero'].includes(f))).toBe(true);
+    expect(good.designCheck.collection.name).toBe('Premium Editorial');
+    expect(good.designCheck.formats.labels).toEqual(['Instagram post', 'Instagram story', 'Web banner ad']);
+    expect(good.designCheck.sources).toMatchObject({ mode: 'balanced', aiImages: 0 });
+    expect(good.design.design).toMatchObject({ collectionId: 'premium_editorial', confirmed: true });
+    expect(good.deliverables.planned).toBeGreaterThan(0);
+    expect(JSON.stringify(good.deliverables)).not.toMatch(/landing/); // V4 plans no landing page
+    expect(good.statement.aiImages).toMatch(/AI-generated images: 0/);
     expect(good.budget.required).toBe(true); // the ONE campaign budget is still required
-    await startF(user, projectId, { preset: 'hybrid_production', mode: 'fresh', f4: { imageModel: IMAGE }, hybrid: { design: confirmed(d) } }).expect(422); // no budget approved: refused
+    await startF(user, projectId, body(confirmed(d))).expect(422); // no budget approved: refused
 
-    // picture sources: the user's own pictures are used for the suggestion; the requested AI count is never changed by the plan
+    // picture sources: the user's own pictures are counted as approved sources; nothing is generated in their place
     for (let i = 0; i < 3; i++) await user.agent.post(`/projects/${projectId}/assets`).field('type', 'image').attach('files', await pngBuffer('#336699', `<rect width="${60 + i}" height="60" fill="#fff"/>`), { filename: `p${i}.png`, contentType: 'image/png' }).expect(201);
-    const sources = (await preflight(user, projectId, body(confirmed(d, { imageSourcing: 'prefer_existing' }))).expect(200)).body.hybrid.design.sources;
-    expect(sources.paidImageRequests).toBe(5);
-    expect(sources.suggestions).toHaveLength(1);
-    expect(sources.suggestions[0].set.originals).toBeLessThan(5);
-    expect(sources.perConcept.every((c: any) => ['AI_GENERATED', 'USER_PROVIDED'].includes(c.picture))).toBe(true);
+    const sources = (await preflight(user, projectId, body(confirmed(d, { imageSourcing: 'prefer_existing' }))).expect(200)).body.designCheck.sources;
+    expect(sources).toMatchObject({ mode: 'prefer_existing', aiImages: 0 });
+    expect(sources.approvedPictures).toBeGreaterThan(0);
 
-    // a campaign configured without a design keeps working exactly as before
-    const legacy = (await preflight(user, projectId, { preset: 'hybrid_production', mode: 'fresh', f4: { imageModel: IMAGE } }).expect(200)).body;
-    expect(legacy.hybrid.design ?? null).toBeNull();
-    expect(legacy.blockers.filter((b: any) => String(b.code).startsWith('design_'))).toEqual([]);
-    // the free hybrid preview with a design also makes no OpenAI request and uses only the collection
-    const beforeReq = fake.requests.length;
-    const prev = (await user.agent.post(`/projects/${projectId}/hybrid/preview`).send(body(confirmed(d))).expect(200)).body;
-    const lib = new Set(getCollection('premium_editorial')!.templateIds);
-    expect(prev.selection.items.every((i: any) => lib.has(i.templateId))).toBe(true);
-    expect(prev.selection.collection).toMatchObject({ id: 'premium_editorial' });
-    expect(prev.visualDirection.brief.origin).toBe('user_approved');
-    expect(prev.visualDirection.brief.colors.primary).toBe(d.palette.primary);
+    // V4: a campaign without a design cannot start (every visual is drawn with the approved collection and palette)
+    const none = (await preflight(user, projectId, {}).expect(200)).body;
+    expect(none.blockers.map((b: any) => b.code)).toContain('design_missing');
+    expect(none.designCheck).toBeNull();
     expect(paid()).toHaveLength(0); // the plan review only lists models (free); no text or image request exists
-    expect(fake.requests.length - beforeReq).toBe(0); // and the free preview sends nothing at all, not even the model list
   });
 
   // ---- a full mocked run -----------------------------------------------------------------------------------------------------------------------------
 
-  it('FULL RUN with the approved design: 5 AI originals + 15 template creatives inside the collection, lineage, ZIP, persistence, continuation after a failure', async () => {
+  it('FULL RUN with the approved design: every creative is a template of the collection, drawn with the approved palette; no AI image; lineage, ZIP, persistence', async () => {
     const { user, projectId } = await readyUser('vs-full');
     const d = await newDesign(user, projectId, 'clean_ecommerce');
     const design = confirmed({ ...d, palette: { ...d.palette, primary: '#0b6e4f', accent: '#e4572e' }, overridden: ['primary', 'accent'], paletteEvidence: { ...d.paletteEvidence, primary: { source: 'user', confidence: 'high', evidence: 'Chosen by you' }, accent: { source: 'user', confidence: 'high', evidence: 'Chosen by you' } } });
-    await useFake({ reply: ((r: FakeRequest): FakeReply | undefined => (r.kind === 'image' && [2, 4].includes(r.attempt) ? { status: 400, json: { error: { code: 'moderation_blocked', message: 'rejected', type: 'invalid_request_error' } } } : undefined)) as FakeOpenAIOptions['reply'] });
-    const started = (await startF(user, projectId, { ...HYBRID, hybrid: { design } }).expect(201)).body;
+    const started = (await startF(user, projectId, { ...CAMPAIGN, design: { design } }).expect(201)).body;
     const run = await waitF(user, started.id);
     expect(['completed', 'partial']).toContain(run.status);
     // the design is part of the run: it survives refreshes, and is exactly what was approved
-    const reload = (await user.agent.get(`/factory-runs/${started.id}`).expect(200)).body;
-    expect(reload.config.settings.hybrid.design).toMatchObject({ collectionId: 'clean_ecommerce', confirmed: true, palette: { primary: '#0b6e4f', accent: '#e4572e' } });
-    expect(fake.imageCalls().length).toBeLessThanOrEqual(5); // never more than the 5 requested originals (2 of them were refused)
+    const row = await db.factoryRun.findUnique({ where: { id: started.id } });
+    expect((row!.configJson as any).design.design).toMatchObject({ collectionId: 'clean_ecommerce', confirmed: true, palette: { primary: '#0b6e4f', accent: '#e4572e' } });
+    expect(fake.imageCalls()).toHaveLength(0); // V4 never requests an image
     const campaign = (await user.agent.get(`/campaigns/${run.campaignId}`).expect(200)).body;
     const h = campaign.package.hybrid;
     expect(h.settings.design.collectionId).toBe('clean_ecommerce');
@@ -470,40 +460,23 @@ describe('Visual System 2.0', () => {
     for (const t of h.creatives.filter((x: any) => x.status === 'rendered')) expect(t).toMatchObject({ collectionId: 'clean_ecommerce', origin: 'TEMPLATE_RENDERED' });
     expect(h.direction.origin).toMatch(/user_approved|model_refined/);
     expect(h.direction.colors.primary).toBe('#0b6e4f');
-    expect(h.counts.originals.requested).toBeLessThanOrEqual(5);
+    expect(campaign.package.imageAssets.filter((a: any) => a.source === 'ai_image')).toHaveLength(0);
 
-    // the export carries the design
+    // the export carries the design (V4 layout under campaign/)
     const res = await user.agent.get(`/campaigns/${run.campaignId}/export`).buffer(true).parse((r, cb) => {
       const chunks: Buffer[] = [];
       r.on('data', (c: Buffer) => chunks.push(c));
       r.on('end', () => cb(null, Buffer.concat(chunks)));
     }).expect(200);
     const zip = await JSZip.loadAsync(res.body as Buffer);
-    const exported = JSON.parse(await zip.file('design/campaign-design.json')!.async('string'));
-    expect(exported).toMatchObject({ collectionId: 'clean_ecommerce', palette: { primary: '#0b6e4f' } });
+    const exported = JSON.parse(await zip.file('campaign/brand/brand.json')!.async('string'));
+    expect(exported).toMatchObject({ collection: { id: 'clean_ecommerce' }, palette: { primary: '#0b6e4f' } });
     expect(Object.keys(zip.files).some((n) => /pinterest/i.test(n))).toBe(false);
-    expect(await zip.file('campaign.json')!.async('string')).not.toMatch(/pinterest\.com/i);
+    expect(Object.keys(zip.files).some((n) => /landing/i.test(n))).toBe(false);
+    expect(await zip.file('campaign/campaign.json')!.async('string')).not.toMatch(/pinterest\.com/i);
+    const rights = JSON.parse(await zip.file('campaign/sources/rights.json')!.async('string'));
+    expect(rights.aiImagesGenerated).toBe(0);
 
-    // the missing originals are completed WITHOUT choosing another design
-    if (h.counts.total.delivered < 20) {
-      await useFake();
-      const pre = (await user.agent.post(`/campaigns/${run.campaignId}/continue-images/preflight`).send({ approvedBudgetUsd: 2 }).expect(200)).body;
-      expect(pre.ok).toBe(true);
-      const cont = (await user.agent.post(`/campaigns/${run.campaignId}/continue-images`).send({ approvedBudgetUsd: 2, confirmCost: true }).expect(201)).body;
-      const end = Date.now() + 300_000;
-      let row: any;
-      for (;;) {
-        row = (await user.agent.get(`/runs/${cont.id}`).expect(200)).body;
-        if (row.status !== 'RUNNING') break;
-        if (Date.now() > end) throw new Error('continuation still running');
-        await sleep(150);
-      }
-      expect(row.status).toBe('COMPLETED');
-      const done = (await user.agent.get(`/campaigns/${row.campaignId}`).expect(200)).body;
-      expect(done.package.hybrid.settings.design.collectionId).toBe('clean_ecommerce');
-      expect(done.package.hybrid.creatives.every((t: any) => !t.collectionId || t.collectionId === 'clean_ecommerce')).toBe(true);
-      expect(fake.imageCalls().length).toBeLessThanOrEqual(2);
-    }
     // the draft of the project is untouched by the run
     expect((await user.agent.get(`/projects/${projectId}/design`).expect(200)).body.draft).toBeNull();
   });

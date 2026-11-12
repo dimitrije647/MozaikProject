@@ -4,22 +4,33 @@ import type { TemplateSlot } from './plan';
 import type { TemplateContent } from './records';
 import type { HybridFacts } from './settings';
 
-/** The text a creative shows is the approved copy of the concept: the headline, a trimmed supporting line and the call to action. */
-export const supportingTextOf = (v: Pick<CopyVariantRecord, 'description' | 'body'>) => {
-  const t = (v.description ?? v.body).replace(/\s+/g, ' ').trim();
+/** The text a creative shows is the approved copy of the concept: the headline, the supporting line written for the visual (else a trimmed body) and the call to action. */
+export const supportingTextOf = (v: Pick<CopyVariantRecord, 'description' | 'body'> & { visualLine?: string | null }) => {
+  // the Content Writer's own line for the visual comes first: a cut-off caption is a last resort (older campaigns)
+  const t = (v.visualLine || v.description || v.body).replace(/\s+/g, ' ').trim();
   return t.length <= 110 ? t : `${t.slice(0, 107).replace(/\s+\S*$/, '')}…`;
 };
 
-const pickVariant = (variants: CopyVariantRecord[], conceptId: string, channel: string) =>
-  variants.find((v) => v.conceptId === conceptId && v.channel === channel && v.placement === 'paid_ad') ?? variants.find((v) => v.conceptId === conceptId && v.channel === channel) ?? variants.find((v) => v.conceptId === conceptId);
+/**
+ * The copy a slot shows. V4 slots name their deliverable: a social post uses that platform's post, an ad or print slot uses the ad or print copy
+ * of its concept. Older slots (no kind) keep the earlier rule: the concept's paid ad for the channel, else any copy of the channel, else any copy.
+ */
+const pickVariant = (variants: CopyVariantRecord[], slot: Pick<TemplateSlot, 'conceptId' | 'channel' | 'kind'>) => {
+  const mine = variants.filter((v) => v.conceptId === slot.conceptId);
+  if (slot.kind === 'social_post') return mine.find((v) => v.placement === 'social_post' && v.channel === slot.channel);
+  if (slot.kind) return mine.find((v) => v.placement === slot.kind);
+  return mine.find((v) => v.channel === slot.channel && v.placement === 'paid_ad') ?? mine.find((v) => v.channel === slot.channel) ?? mine[0];
+};
 
-/** The content for a slot, from the concept's real copy. null when the concept has no copy at all (nothing to place, nothing invented). */
-export function contentForSlot(slot: Pick<TemplateSlot, 'conceptId' | 'channel'>, concepts: Pick<ConceptRecord, 'id' | 'name'>[], variants: CopyVariantRecord[]): TemplateContent | null {
-  const v = pickVariant(variants, slot.conceptId, slot.channel);
+/** The content for a slot, from the concept's real copy. null when there is no copy for it (nothing to place, nothing invented). */
+export function contentForSlot(slot: Pick<TemplateSlot, 'conceptId' | 'channel' | 'kind'>, concepts: Pick<ConceptRecord, 'id' | 'name'>[], variants: CopyVariantRecord[]): TemplateContent | null {
+  const v = pickVariant(variants, slot);
   if (!v) return null;
   const concept = concepts.find((c) => c.id === slot.conceptId);
   const eyebrow = concept && concept.name.length <= 40 && concept.name.trim().toLowerCase() !== v.headline.trim().toLowerCase() ? concept.name.trim() : null;
-  return { headline: v.headline.trim(), support: supportingTextOf(v) || null, cta: v.ctaText.trim() || null, eyebrow, variantId: v.id };
+  // a billboard carries its headline and nothing else that has to be read from a distance
+  const support = slot.kind === 'billboard' ? null : supportingTextOf(v) || null;
+  return { headline: v.headline.trim(), support, cta: v.ctaText.trim() || null, eyebrow: slot.kind === 'billboard' ? null : eyebrow, variantId: v.id };
 }
 
 /** What a forecast (before any copy exists) assumes: every slot will have a headline, a supporting line and a call to action. */

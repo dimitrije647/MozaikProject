@@ -151,7 +151,6 @@ export default function ProjectDetailPage() {
           <Card>
             <CardHeader><CardTitle>Features</CardTitle></CardHeader>
             <CardContent className="space-y-3">
-              <Flag label="SEO audit" on={intake?.enableSeoAudit} />
               <Flag label="Seasonal calendar" on={intake?.enableSeasonalCalendar} />
               <Flag label="Google Drive export" on={intake?.enableGoogleDriveExport} />
               <div className="flex items-center justify-between border-t border-cream-300/70 pt-3 text-sm">

@@ -1,192 +1,152 @@
 import { z } from 'zod';
 import { CHANNEL_IDS } from '../strategy/channels';
-import { IMAGE_QUALITIES, IMAGE_SIZES } from '../ai/openai-images';
 import { AssetLineage, HybridBlock } from '../hybrid/records';
+import { COPY_PURPOSES, PRINCIPLE_IDS } from '../copywriting/principles';
+import { CopyPlan } from '../copywriting/plan';
+import { CTA_TYPES, CampaignLineage, ImageAllocationPlan, ImageCounts, ImageResultRecord, ImageVariationRecord, LandingContent, LEGACY_IMAGE_QUALITIES, LEGACY_IMAGE_SIZES, LegacyImageUsage, NO_IMAGE_USAGE } from './legacy-schemas';
 
 /**
- * Wire schemas for the F4 agents and the stored Campaign Package. Every field is required (absent = null / empty array) so
- * OpenAI strict structured outputs accept them. Over-length text is trimmed on parse (see parseModelJson).
+ * Wire schemas for the F4 agents and the stored Campaign Package. Every field the model writes is required (absent = null / empty array) so
+ * strict structured outputs accept them. Over-length text is trimmed on parse (see parseModelJson).
+ *
+ * V4 (schema version 2): ONE marketing package per campaign. Concepts built on the strategy, platform posts for X, TikTok, Facebook, Instagram
+ * and LinkedIn (TikTok with a video concept/script: no video is ever generated), web and display ad copy, billboard and flyer copy, and the
+ * template creatives of the deliverables plan. No AI image, no landing page. Packages of earlier versions still parse (see legacy-schemas.ts).
  */
 const text = (max: number) => z.string().max(max);
 const list = (max: number, n = 5) => z.array(text(max)).max(n);
 const Channel = z.enum(CHANNEL_IDS);
+/** The copywriting principles a piece applies (ids of copywriting/principles.ts): a few that fit, never all. */
+const Principles = z.array(z.enum(PRINCIPLE_IDS)).max(5);
 
-export const CTA_TYPES = ['book_consultation', 'request_quote', 'register', 'learn_more', 'purchase', 'contact'] as const;
+export { CTA_TYPES };
 export const CtaType = z.enum(CTA_TYPES);
 export type CtaType = z.infer<typeof CtaType>;
+
+/** The five social platforms every campaign writes for. */
+export const CAMPAIGN_PLATFORMS = ['x', 'tiktok', 'facebook', 'instagram', 'linkedin'] as const;
+export type CampaignPlatform = (typeof CAMPAIGN_PLATFORMS)[number];
+export const isCampaignPlatform = (c: string): c is CampaignPlatform => (CAMPAIGN_PLATFORMS as readonly string[]).includes(c);
+
+/** What a deliverable is. The placement of a V4 copy variant uses the same words (older packages use paid_ad / organic_post / story). */
+export const DELIVERABLE_KINDS = ['social_post', 'web_ad', 'display_ad', 'billboard', 'flyer'] as const;
+export type DeliverableKind = (typeof DELIVERABLE_KINDS)[number];
 
 export const SUPPORT = ['brief', 'f1', 'f2', 'f3', 'user', 'hypothesis'] as const;
 const Claim = z.object({
   text: text(160),
-  /** Where the claim comes from. "hypothesis" = not backed by the supplied material. */
+  /** Where the claim comes from. "hypothesis" = not backed by the supplied material. ("f2" only appears in campaigns made before V4.) */
   support: z.enum(SUPPORT),
   ref: text(24).nullable(),
 });
 
-// ---- A19 Copywriter ------------------------------------------------------------------------------------------------------
+// ---- A3 Content Writer -------------------------------------------------------------------------------------------------------
 
 export const LlmConcept = z.object({
   key: z.string().min(1).max(8),
   name: z.string().min(2).max(80),
+  /** The strategy's main message or content pillar this concept is built on (the strategy is not reinvented). */
+  basis: text(200),
   angle: text(200),
   keyMessage: text(200),
   audience: text(120),
   ctaType: CtaType,
   ctaText: text(30),
+  /** What an approved photograph should show for this concept (used to match real pictures; no picture is generated). */
   visualIdea: text(300),
+  /** The communication purpose of this concept and, in one sentence, which principles it uses and why (internal, for review and debugging). */
+  purpose: z.enum(COPY_PURPOSES),
+  principleNote: text(240),
 });
 
-export const LlmCopyVariant = z.object({
+/** A short TikTok video concept. LaunchPilot does NOT make videos: this is a script for the owner to film. */
+export const VideoScript = z.object({
+  hook: text(150),
+  durationSeconds: z.number().int(),
+  scenes: z.array(z.object({ seconds: text(20), visual: text(220), onScreenText: text(100), voiceover: text(220) })).max(6),
+  soundNote: text(160),
+});
+export type VideoScript = z.infer<typeof VideoScript>;
+
+export const LlmPost = z.object({
   conceptKey: z.string().max(8),
-  channel: Channel,
-  placement: z.enum(['paid_ad', 'organic_post', 'story']),
-  length: z.enum(['short', 'long']),
-  headline: z.string().min(2).max(70),
-  body: z.string().min(2).max(400),
-  description: text(120).nullable(),
-  ctaText: text(30),
+  platform: z.enum(CAMPAIGN_PLATFORMS),
+  /** The hook / headline shown on the visual and as the first line. */
+  hook: z.string().min(2).max(90),
+  /** The post text as it is published on the platform. */
+  text: z.string().min(2).max(1500),
+  /** The short supporting line shown ON the rendered visual next to the hook (not a cut-off caption). */
+  visualLine: text(110),
+  cta: text(40),
   ctaType: CtaType,
-  hashtags: list(30),
+  hashtags: list(40, 8),
+  /** How to publish it: e.g. "Single image post, 4:5, carousel optional". */
+  postingFormat: text(160),
+  /** TikTok only: the short video concept and script; null for the other platforms. */
+  videoScript: VideoScript.nullable(),
   claims: z.array(Claim).max(4),
+  principles: Principles,
+});
+
+export const LlmAdCopy = z.object({
+  conceptKey: z.string().max(8),
+  kind: z.enum(['web_ad', 'display_ad']),
+  headline: z.string().min(2).max(60),
+  description: text(120),
+  cta: text(30),
+  ctaType: CtaType,
+  claims: z.array(Claim).max(3),
+  principles: Principles,
+});
+
+export const LlmPrintCopy = z.object({
+  conceptKey: z.string().max(8),
+  kind: z.enum(['billboard', 'flyer']),
+  /** Billboard: at most about seven words. */
+  headline: z.string().min(2).max(80),
+  /** Flyer body; a billboard leaves it empty. */
+  body: text(400),
+  /** Flyer: the short supporting line on the visual; a billboard leaves it empty. */
+  visualLine: text(110),
+  cta: text(40),
+  ctaType: CtaType,
+  claims: z.array(Claim).max(3),
+  principles: Principles,
 });
 
 export const CopyOutput = z.object({
   summary: text(600),
   concepts: z.array(LlmConcept).max(5),
-  variants: z.array(LlmCopyVariant).max(30),
+  posts: z.array(LlmPost).max(25),
+  ads: z.array(LlmAdCopy).max(10),
+  print: z.array(LlmPrintCopy).max(6),
   missingInformation: list(240, 8),
 });
 export type CopyOutput = z.infer<typeof CopyOutput>;
 
 export const CopyRevisionOutput = z.object({
   revisions: z
-    .array(z.object({ variantId: z.string().max(8), headline: z.string().min(2).max(70), body: z.string().min(2).max(400), ctaText: text(30), hashtags: list(30), claims: z.array(Claim).max(4) }))
-    .max(10),
+    .array(z.object({ variantId: z.string().max(8), headline: z.string().min(2).max(90), body: z.string().max(1500), visualLine: text(110), ctaText: text(40), hashtags: list(40, 8), claims: z.array(Claim).max(4) }))
+    .max(12),
 });
 export type CopyRevisionOutput = z.infer<typeof CopyRevisionOutput>;
 
-// ---- A20 Visual Creator (the text model plans; the image model paints) --------------------------------------------------
-
-export const VisualDirections = z.object({
-  summary: text(400),
-  directions: z
-    .array(
-      z.object({
-        conceptKey: z.string().max(8),
-        subject: text(300),
-        composition: text(300),
-        mood: text(150),
-        colors: list(20, 4),
-        avoid: list(100),
-        altText: text(200),
-        promptDetails: text(500),
-      }),
-    )
-    .max(5),
-});
-export type VisualDirections = z.infer<typeof VisualDirections>;
-
-/**
- * Several original images per concept: the text model proposes what EACH planned image shows. The number of images, which concept
- * each belongs to and the creative seeds (role, perspective, lighting) are fixed beforehand by the deterministic allocation planner;
- * the model only fills in the picture, and its answer is never trusted for counts (an unknown or repeated slot is ignored and
- * replaced by a deterministic direction).
- */
-export const VariationDirections = z.object({
-  summary: text(300),
-  variations: z
-    .array(
-      z.object({
-        slotId: z.string().max(24),
-        name: z.string().min(2).max(60),
-        goal: text(180),
-        medium: text(80),
-        subject: text(260),
-        setting: text(220),
-        focalPoint: text(160),
-        composition: text(260),
-        mood: text(140),
-        avoid: list(60, 3),
-        altText: text(160),
-        promptDetails: text(260),
-      }),
-    )
-    .max(24),
-});
-export type VariationDirections = z.infer<typeof VariationDirections>;
-
-export const VISUAL_ROLE_IDS = ['hero', 'detail', 'context', 'human', 'outcome', 'mood', 'symbol'] as const;
-export const IMAGE_STAGES = ['configuration', 'budget', 'planning', 'provider', 'decoding', 'storage', 'cancelled'] as const;
-
-// ---- concept critique (before any image is paid for) -------------------------------------------------------------------------------
-
-export const ConceptCritique = z.object({
-  summary: text(400),
-  concepts: z
-    .array(
-      z.object({
-        conceptId: z.string().max(8),
-        /** 1-5 each: does it name THIS product and audience / is it unlike the other concepts / does it fit the audience / does it give a picture something concrete to show? */
-        specificity: z.number().int(),
-        originality: z.number().int(),
-        audienceFit: z.number().int(),
-        visualPotential: z.number().int(),
-        verdict: z.enum(['keep', 'revise']),
-        problem: text(240),
-        /** Concrete direction for the Visual Creator (medium, subject, setting, what the eye should do). */
-        artDirection: text(300),
-        /** A stronger visual idea when the verdict is "revise", else null. */
-        visualIdeaRevision: text(300).nullable(),
-      }),
-    )
-    .max(5),
-});
-export type ConceptCritique = z.infer<typeof ConceptCritique>;
-
-// ---- A22 Landing Content Builder -----------------------------------------------------------------------------------------
-
-const Evidence = z.enum(SUPPORT);
-export const LandingContent = z.object({
-  seoTitle: text(70),
-  metaDescription: text(170),
-  hero: z.object({ headline: text(90), description: text(300), ctaText: text(30) }),
-  valueProposition: text(300),
-  benefits: z.array(z.object({ title: text(80), text: text(240), evidence: Evidence, ref: text(24).nullable() })).max(6),
-  sections: z.array(z.object({ title: text(80), body: text(500) })).max(4),
-  howItWorks: z.array(z.object({ step: text(80), text: text(240) })).max(5),
-  faq: z.array(z.object({ q: text(140), a: text(320) })).max(6),
-  /** Only supported evidence: no invented reviews, numbers or awards. */
-  trustSignals: z.array(z.object({ text: text(200), evidence: Evidence, ref: text(24).nullable() })).max(4),
-  ctas: z.array(z.object({ objective: CtaType, text: text(30) })).max(3),
-  ctaObjective: CtaType,
-  mobileHierarchy: list(100, 6),
-});
-export type LandingContent = z.infer<typeof LandingContent>;
-
-export const LandingOutput = z.object({ summary: text(400), content: LandingContent, missingInformation: list(240, 8) });
-export type LandingOutput = z.infer<typeof LandingOutput>;
-
-export const LANDING_PATCH_PATHS = ['seoTitle', 'metaDescription', 'hero.headline', 'hero.description', 'hero.ctaText', 'valueProposition'] as const;
-export const LANDING_LISTS = ['benefits', 'sections', 'faq', 'trustSignals'] as const;
-export const LandingRevisionOutput = z.object({
-  changes: z.array(z.object({ path: z.enum(LANDING_PATCH_PATHS), value: text(320) })).max(8),
-  removals: z.array(z.object({ list: z.enum(LANDING_LISTS), index: z.number().int() })).max(8),
-});
-export type LandingRevisionOutput = z.infer<typeof LandingRevisionOutput>;
-
-// ---- A23 Content & Brand Reviewer ------------------------------------------------------------------------------------------
+// ---- A6 Quality Reviewer ------------------------------------------------------------------------------------------------------
 
 export const ISSUE_KINDS = [
   'unsupported_claim', 'factual_error', 'strategy_mismatch', 'audience_mismatch', 'channel_mismatch', 'weak_cta', 'cta_mismatch', 'inconsistent_messaging',
-  'brand_tone', 'brand_color', 'logo', 'text_overflow', 'low_contrast', 'poor_crop', 'wrong_dimensions', 'visual_irrelevant', 'visual_defect', 'layout_unavailable', 'concept_overlap', 'generic_concept', 'other',
+  'brand_tone', 'brand_color', 'logo', 'text_overflow', 'low_contrast', 'poor_crop', 'wrong_dimensions', 'visual_irrelevant', 'visual_defect', 'layout_unavailable', 'concept_overlap', 'generic_concept', 'repetitive', 'source_rights', 'other',
+  // copywriting quality (V4 principles)
+  'generic_copy', 'weak_headline', 'false_urgency', 'unclear_copy', 'principle_misuse',
 ] as const;
 export const ISSUE_SEVERITIES = ['blocker', 'major', 'minor', 'info'] as const;
+/** Who repairs a finding: copywriter = the Content Writer, layout = the Creative Designer, visual = the Visual Researcher. ("landing" only in older campaigns.) */
 export const RESPONSIBLE = ['copywriter', 'landing', 'layout', 'visual'] as const;
 
 export const LlmReviewIssue = z.object({
   kind: z.enum(ISSUE_KINDS),
   severity: z.enum(ISSUE_SEVERITIES),
-  /** An asset id, a copy variant id (V1..), "landing", or null. */
+  /** An asset id, a copy variant id (V1..), a concept id (K1..) or null. */
   assetRef: text(40).nullable(),
   finding: z.string().min(3).max(300),
   evidence: text(300),
@@ -194,29 +154,55 @@ export const LlmReviewIssue = z.object({
   responsibleAgent: z.enum(RESPONSIBLE),
 });
 /**
- * The acceptance criteria the reviewer scores 1 (unusable) to 5 (excellent); 3 is acceptable, 2 or less is weak. A score of 2 or less that
- * no specific issue explains still becomes a finding, so a weak campaign is never approved just because its JSON is valid.
+ * Scored 1 (unusable) to 5 (excellent); 3 is acceptable, 2 or less is weak and becomes a finding when no issue explains it. The first six
+ * criteria exist since V3; the copywriting criteria (headline strength, specificity, clarity, CTA quality, platform fit, principle fit) were added
+ * with the principle framework, so they are optional in STORED rubrics (older campaigns) and required in the model's answer.
  */
-export const RUBRIC_CRITERIA = ['productAccuracy', 'brandConsistency', 'audienceRelevance', 'objectiveAlignment', 'originality', 'crossChannelConsistency'] as const;
-export const Rubric = z.object({
-  productAccuracy: z.number().int(),
-  brandConsistency: z.number().int(),
-  audienceRelevance: z.number().int(),
-  objectiveAlignment: z.number().int(),
-  originality: z.number().int(),
-  crossChannelConsistency: z.number().int(),
+export const RUBRIC_CRITERIA = ['productAccuracy', 'brandConsistency', 'audienceRelevance', 'objectiveAlignment', 'originality', 'crossChannelConsistency', 'headlineStrength', 'specificity', 'clarity', 'ctaQuality', 'platformFit', 'principleFit'] as const;
+const score = z.number().int();
+export const LlmRubric = z.object({
+  productAccuracy: score,
+  brandConsistency: score,
+  audienceRelevance: score,
+  objectiveAlignment: score,
+  originality: score,
+  crossChannelConsistency: score,
+  headlineStrength: score,
+  specificity: score,
+  clarity: score,
+  ctaQuality: score,
+  platformFit: score,
+  principleFit: score,
 });
+export const Rubric = LlmRubric.partial({ headlineStrength: true, specificity: true, clarity: true, ctaQuality: true, platformFit: true, principleFit: true });
 export type Rubric = z.infer<typeof Rubric>;
-/** `scores` is null for a review of images alone (the criteria are about the text and the concept). */
-export const ReviewOutput = z.object({ summary: text(500), issues: z.array(LlmReviewIssue).max(10), scores: Rubric.nullable() });
+/** `scores` is null for a review of images alone. */
+export const ReviewOutput = z.object({ summary: text(500), issues: z.array(LlmReviewIssue).max(10), scores: LlmRubric.nullable() });
 export type ReviewOutput = z.infer<typeof ReviewOutput>;
 
 // ---- stored records ---------------------------------------------------------------------------------------------------------------
 
 const Iso = z.string();
-export const ConceptRecord = z.object({ id: z.string(), name: z.string(), angle: z.string(), keyMessage: z.string(), audience: z.string(), ctaType: CtaType, ctaText: z.string(), visualIdea: z.string() });
+export const ConceptRecord = z.object({
+  id: z.string(),
+  name: z.string(),
+  angle: z.string(),
+  keyMessage: z.string(),
+  audience: z.string(),
+  ctaType: CtaType,
+  ctaText: z.string(),
+  visualIdea: z.string(),
+  basis: z.string().nullable().optional(),
+  /** copywriting framework (absent in older campaigns) */
+  purpose: z.enum(COPY_PURPOSES).nullable().optional(),
+  principleNote: z.string().nullable().optional(),
+});
 export type ConceptRecord = z.infer<typeof ConceptRecord>;
 
+/**
+ * One piece of copy. V4 placements: social_post (channel = the platform), web_ad / display_ad (channel = google_search, the nominal ad
+ * channel), billboard / flyer (channel = organic_content, the nominal print channel). Older packages use paid_ad / organic_post / story.
+ */
 export const CopyVariantRecord = z.object({
   id: z.string(),
   conceptId: z.string(),
@@ -233,6 +219,12 @@ export const CopyVariantRecord = z.object({
   version: z.number(),
   /** Earlier texts, kept: a revision never overwrites the original. */
   history: z.array(z.object({ version: z.number(), headline: z.string(), body: z.string(), ctaText: z.string(), reason: z.string() })),
+  postingFormat: z.string().nullable().optional(),
+  videoScript: VideoScript.nullable().optional(),
+  /** the line shown on the visual; absent = a trimmed body (older campaigns) */
+  visualLine: z.string().nullable().optional(),
+  /** the copywriting principles this piece applies (absent in older campaigns) */
+  principles: z.array(z.string()).optional(),
 });
 export type CopyVariantRecord = z.infer<typeof CopyVariantRecord>;
 
@@ -249,180 +241,54 @@ export const AssetRecord = z.object({
   height: z.number(),
   bytes: z.number(),
   sha256: z.string(),
-  /** ai_image = generated by the image model; brand_gradient = a deterministic brand-colored background (no image was generated). */
+  /** template_render = every V4 creative. ai_image / brand_gradient only appear in campaigns made before V4. */
   source: z.enum(['ai_image', 'brand_gradient', 'template_render']),
   model: z.string().nullable(),
-  quality: z.enum(IMAGE_QUALITIES).nullable(),
-  requestedSize: z.enum(IMAGE_SIZES).nullable(),
+  quality: z.enum(LEGACY_IMAGE_QUALITIES).nullable(),
+  requestedSize: z.enum(LEGACY_IMAGE_SIZES).nullable(),
   status: z.enum(['generated', 'rendered', 'superseded', 'failed']),
-  /** Layout flags raised while rendering (clipping risk, upscaling, low contrast...). */
   flags: z.array(z.string()),
   altText: z.string().nullable(),
-  /** Prompt metadata, secrets excluded. Never contains the API key. */
   promptMetadata: z.object({ promptChars: z.number(), directionSummary: z.string() }).nullable(),
   usage: z.object({ input: z.number(), output: z.number(), total: z.number() }).nullable(),
-  /** The planned image (variation) this original or layout belongs to. Absent on campaigns made with one image per concept. */
   variationId: z.string().nullable().optional(),
   createdAt: Iso,
-  /** Hybrid Production lineage (origin, template id + version, source assets, rights). Absent on assets saved before it existed: read it through originOf. */
   ...AssetLineage.shape,
 });
 export type AssetRecord = z.infer<typeof AssetRecord>;
-
-/**
- * What happened to ONE concept's original image: generated, failed (with the stage and the provider's own words) or skipped
- * (budget or configuration). This is how a brand-colored fallback is told apart from a real AI image, and why it exists.
- */
-export const ImageResultRecord = z.object({
-  conceptId: z.string(),
-  conceptName: z.string(),
-  model: z.string().nullable(),
-  /** false = no request was made for this concept (budget, configuration, planning or an earlier systematic failure). */
-  requestAttempted: z.boolean(),
-  outcome: z.enum(['generated', 'failed', 'skipped']),
-  stage: z.enum(['configuration', 'budget', 'planning', 'provider', 'decoding', 'storage', 'cancelled']).nullable(),
-  errorCode: z.string().nullable(),
-  providerStatus: z.number().nullable(),
-  providerCode: z.string().nullable(),
-  /** The provider's own (sanitized) message, or the safe generic one. */
-  message: z.string().nullable(),
-  /** One sentence for the user: what happened and what to do. */
-  explanation: z.string().nullable(),
-  /** true = the layouts use a deterministic brand-colored background instead of an AI image. */
-  fallbackUsed: z.boolean(),
-  /** The base image asset of this concept (the AI image, or the brand-colored fallback). */
-  assetId: z.string(),
-  /** true = not recorded during the run: derived afterwards from the run's recorded events (campaigns saved before results existed). */
-  reconstructed: z.boolean().optional(),
-});
-export type ImageResultRecord = z.infer<typeof ImageResultRecord>;
 
 export const LayoutRecord = z.object({
   id: z.string(),
   conceptId: z.string(),
   variantId: z.string(),
   assetId: z.string(),
-  /** The ORIGINAL AI image (or the concept's brand-colored background) this layout was cut from. */
+  /** LEGACY: the original AI image a layout was cut from. Empty for template creatives. */
   baseAssetId: z.string(),
-  /** The planned image (variation) of that original, when the campaign has several per concept. */
   variationId: z.string().nullable().optional(),
   format: z.string(),
   channel: Channel,
   headline: z.string(),
   ctaText: z.string(),
   flags: z.array(z.string()),
-  /** Set on template creatives (Hybrid Production): the template this layout was rendered from and the planned slot it fills. */
   templateId: z.string().nullable().optional(),
   templateVersion: z.number().nullable().optional(),
   slotId: z.string().nullable().optional(),
 });
 export type LayoutRecord = z.infer<typeof LayoutRecord>;
 
-// ---- several original images per concept ----------------------------------------------------------------------------------------
-
-/** One planned image, fixed by the deterministic allocation planner (never by the model). */
-export const PlannedVariation = z.object({
-  variationId: z.string(),
-  conceptId: z.string(),
-  /** 1-based position within the concept. */
-  index: z.number(),
-  role: z.enum(VISUAL_ROLE_IDS),
-  perspective: z.string(),
-  lighting: z.string(),
-  targetChannels: z.array(Channel),
-  /** Layout formats cut from this original. */
-  formats: z.array(z.string()),
-  size: z.enum(IMAGE_SIZES),
-});
-export type PlannedVariation = z.infer<typeof PlannedVariation>;
-
-export const ImageAllocationPlan = z.object({
-  /** Original AI images asked for. */
-  target: z.number(),
-  /** Images the plan can really place (fewer than the target only when the per-concept cap does not allow more). */
-  allocated: z.number(),
-  maxPerConcept: z.number(),
-  /** forecast = made before the concepts existed (equal weights); concepts = made from the real concepts and their channels. */
-  basis: z.enum(['forecast', 'concepts']),
-  perConcept: z.array(z.object({ conceptId: z.string(), name: z.string(), count: z.number(), channels: z.array(Channel), reason: z.string() })),
-  variations: z.array(PlannedVariation),
-  expectedLayouts: z.number(),
-  rules: z.array(z.string()),
-  warnings: z.array(z.string()),
-});
-export type ImageAllocationPlan = z.infer<typeof ImageAllocationPlan>;
-
-/** What happened to ONE planned original image. Failed and skipped images are kept: nothing is hidden behind a brand-colored background. */
-export const ImageVariationRecord = z.object({
-  conceptId: z.string(),
-  conceptName: z.string(),
-  variationId: z.string(),
-  index: z.number(),
-  variationName: z.string(),
-  visualGoal: z.string(),
-  role: z.enum(VISUAL_ROLE_IDS),
-  targetChannels: z.array(Channel),
-  size: z.enum(IMAGE_SIZES),
-  /** The exact prompt sent to the image model (empty when none was sent). Contains no credential. */
-  imagePrompt: z.string(),
-  /** model = the text model proposed this picture; deterministic = a direction built from the planner's seeds. */
-  plannedBy: z.enum(['model', 'deterministic']),
-  status: z.enum(['planned', 'generated', 'failed', 'skipped', 'blocked_by_budget']),
-  requestAttempted: z.boolean(),
-  stage: z.enum(IMAGE_STAGES).nullable(),
-  generatedAssetId: z.string().nullable(),
-  providerModel: z.string().nullable(),
-  quality: z.string().nullable(),
-  usage: z.object({ input: z.number(), output: z.number(), total: z.number() }).nullable(),
-  /** Known cost of this image (reported usage at the published rates, or the price-book figure). null = unknown. */
-  costUsd: z.number().nullable(),
-  safeError: z.object({ code: z.string(), message: z.string(), status: z.number().nullable(), providerCode: z.string().nullable() }).nullable(),
-  /** One sentence for the user. */
-  explanation: z.string().nullable(),
-  /** Always true: these are generated marketing visuals, not photographs of a real place, product or person. */
-  conceptual: z.boolean(),
-});
-export type ImageVariationRecord = z.infer<typeof ImageVariationRecord>;
-
-/** The honest tally. "generated" counts genuine provider results only: never a failed attempt, a fallback gradient or a resized copy. */
-export const ImageCounts = z.object({
-  requested: z.number(),
-  planned: z.number(),
-  attempted: z.number(),
-  generated: z.number(),
-  failed: z.number(),
-  skipped: z.number(),
-  blockedByBudget: z.number(),
-});
-export type ImageCounts = z.infer<typeof ImageCounts>;
-
 export const CostReport = z.object({
   currency: z.literal('USD'),
   priceBookVerifiedAt: z.string(),
-  /** The amount the user approved for this run (null = none was set). An application-side limit, not an OpenAI billing cap. */
   approvedUsd: z.number().nullable(),
-  /** Known cost of the finished requests. */
   spentUsd: z.number(),
-  /** Requests that may have been billed although no usable result came back. */
   uncertainUsd: z.number(),
   textUsd: z.number(),
   imageUsd: z.number().nullable(),
-  /** Requests sent without any known price: their cost is not in these figures unless the provider reported usage. */
   unpricedRequests: z.number(),
-  /** Requests refused unsent because they would have exceeded the approved amount. */
   blockedRequests: z.number(),
   note: z.string(),
 });
 export type CostReport = z.infer<typeof CostReport>;
-
-/** Where this campaign came from: a full run, or an image-only continuation of an earlier campaign (which is kept untouched). */
-export const CampaignLineage = z.object({
-  kind: z.enum(['full', 'image_continuation']),
-  revision: z.number(),
-  parentCampaignId: z.string().nullable(),
-  reusedAssets: z.number(),
-});
-export type CampaignLineage = z.infer<typeof CampaignLineage>;
 
 export const SkippedLayout = z.object({ conceptId: z.string(), format: z.string(), channel: Channel, reason: z.string() });
 export type SkippedLayout = z.infer<typeof SkippedLayout>;
@@ -456,10 +322,10 @@ export const RevisionRecord = z.object({
 });
 export type RevisionRecord = z.infer<typeof RevisionRecord>;
 
-/** Where the quality work stood when the campaign was saved: what was checked, what was scored, what was repaired, what was left out. */
 export const QualityDiagnostic = z.object({
   reviewRounds: z.number(),
   repairRounds: z.number(),
+  /** LEGACY: the concept critique of older campaigns (null in V4). */
   conceptCritique: z
     .object({
       ran: z.boolean(),
@@ -472,23 +338,57 @@ export const QualityDiagnostic = z.object({
     .nullable(),
   rubric: z.object({ criteria: z.array(z.string()), latest: Rubric.nullable(), history: z.array(z.object({ round: z.number(), scores: Rubric })) }),
   findings: z.object({ total: z.number(), deterministic: z.number(), fromModel: z.number(), fixed: z.number(), open: z.number(), unresolved: z.number() }),
-  /** Text requests re-sent with a larger output cap because an answer was cut off. */
   truncatedAnswersRetried: z.number(),
-  /** Work that was NOT done and why (a limit, a failure, nothing to do). */
   skipped: z.array(z.object({ what: z.string(), reason: z.string() })),
   verdict: z.string(),
 });
 export type QualityDiagnostic = z.infer<typeof QualityDiagnostic>;
 
-export const CAMPAIGN_SCHEMA_VERSION = 1;
+// ---- the deliverables of a V4 campaign ---------------------------------------------------------------------------------------------
+
+export const DeliverableRecord = z.object({
+  /** The slot id of the creative (also the id of the planned deliverable). */
+  id: z.string(),
+  kind: z.enum(DELIVERABLE_KINDS),
+  /** e.g. "Instagram post", "Billboard". */
+  label: z.string(),
+  conceptId: z.string(),
+  channel: Channel,
+  format: z.string(),
+  width: z.number(),
+  height: z.number(),
+  /** Where it goes in the ZIP, e.g. social/instagram, ads/web, print/billboards. */
+  folder: z.string(),
+  status: z.enum(['delivered', 'missing']),
+  assetId: z.string().nullable(),
+  variantId: z.string().nullable(),
+  /** true = an approved real picture is drawn in it; false = typography-first. */
+  withPicture: z.boolean(),
+  reason: z.string().nullable(),
+});
+export type DeliverableRecord = z.infer<typeof DeliverableRecord>;
+
+export const DeliverablesBlock = z.object({
+  version: z.literal(1),
+  platforms: z.array(Channel),
+  items: z.array(DeliverableRecord),
+  /** Deliverables the plan could not include at all (the collection cannot draw the format, there is no copy...), with the reason. */
+  notPlanned: z.array(z.object({ kind: z.enum(DELIVERABLE_KINDS), label: z.string(), format: z.string(), conceptId: z.string().nullable(), reason: z.string() })),
+  rules: z.array(z.string()),
+  counts: z.object({ planned: z.number(), delivered: z.number(), missing: z.number(), withPicture: z.number(), typographyFirst: z.number() }),
+});
+export type DeliverablesBlock = z.infer<typeof DeliverablesBlock>;
+
+/** 2 = V4 (one workflow, deliverables, no AI images, no landing page). 1 = earlier campaigns. */
+export const CAMPAIGN_SCHEMA_VERSION = 2;
 
 export const CampaignPackage = z.object({
   id: z.string(),
   projectId: z.string(),
   runId: z.string(),
   f1ReportId: z.string(),
-  /** The F2 Marketing Audit report id (stored as f2AuditId in the database). */
-  f2ReportId: z.string(),
+  /** LEGACY: the F2 Marketing Audit of campaigns made before V4; null for V4 campaigns (no audit is run). */
+  f2ReportId: z.string().nullable().default(null),
   f3StrategyId: z.string(),
   schemaVersion: z.number(),
   campaignName: z.string(),
@@ -496,31 +396,35 @@ export const CampaignPackage = z.object({
   concepts: z.array(ConceptRecord),
   copyVariants: z.array(CopyVariantRecord),
   imageAssets: z.array(AssetRecord),
-  /** One entry per concept: generated, failed or skipped, with the reason. Older packages have none. */
-  imageResults: z.array(ImageResultRecord).default([]),
-  /** The plan of original images (several per concept) fixed before any image was requested. null on campaigns with one image per concept. */
-  imageAllocation: ImageAllocationPlan.nullable().default(null),
-  /** One record per planned original image, generated or not. */
-  imageVariations: z.array(ImageVariationRecord).default([]),
-  imageCounts: ImageCounts.nullable().default(null),
-  /** Known spending of this run (text + images) next to the approved amount. */
+  /** V4: the deliverables plan and what became of every planned deliverable. null on campaigns made before V4. */
+  deliverables: DeliverablesBlock.nullable().default(null),
+  /** The copywriting plan (purpose, principles, Brand Voice Profile) the copy was written and reviewed against. null on older campaigns. */
+  copywriting: CopyPlan.nullable().default(null),
   cost: CostReport.nullable().default(null),
-  lineage: CampaignLineage.nullable().default(null),
   quality: QualityDiagnostic.nullable().default(null),
-  /** Hybrid Production: the visual direction, the template selection, what happened to every template creative and the honest counters. null on every other campaign. */
+  /** The template side: visual direction, template selection, every template creative, pictures and their rights, brand content. */
   hybrid: HybridBlock.nullable().default(null),
   channelLayouts: z.array(LayoutRecord),
   skippedLayouts: z.array(SkippedLayout),
-  landingContent: LandingContent.nullable(),
   reviewFindings: z.array(ReviewFindingRecord),
   revisions: z.array(RevisionRecord),
   approval: z.object({ status: z.enum(['approved', 'approved_with_notes', 'unresolved']), rounds: z.number(), unresolvedFindingIds: z.array(z.string()), note: z.string() }),
   usage: z.object({
     text: z.object({ calls: z.number(), inputTokens: z.number(), outputTokens: z.number(), totalTokens: z.number(), perAgent: z.record(z.string(), z.object({ calls: z.number(), totalTokens: z.number(), inputTokens: z.number().optional(), outputTokens: z.number().optional(), costUsd: z.number().nullable().optional() })) }),
-    images: z.object({ model: z.string().nullable(), quality: z.string().nullable(), size: z.string().nullable(), requested: z.number(), generated: z.number(), failed: z.number(), regenerations: z.number(), limits: z.object({ maxImages: z.number(), maxRegenerations: z.number() }), providerReportedTokens: z.object({ input: z.number(), output: z.number(), total: z.number() }).nullable(), costUsd: z.number().nullable().optional(), blockedBySpend: z.number().optional(), rateLimited: z.number().optional() }),
+    /** LEGACY: image requests of older campaigns. Always zero in V4. */
+    images: LegacyImageUsage.default(NO_IMAGE_USAGE),
     layouts: z.object({ rendered: z.number(), skipped: z.number() }),
   }),
   limitations: z.array(z.string()),
   createdAt: Iso,
+  // ---- LEGACY, read-only (campaigns made before V4) ----
+  imageResults: z.array(ImageResultRecord).default([]),
+  imageAllocation: ImageAllocationPlan.nullable().default(null),
+  imageVariations: z.array(ImageVariationRecord).default([]),
+  imageCounts: ImageCounts.nullable().default(null),
+  lineage: CampaignLineage.nullable().default(null),
+  landingContent: LandingContent.nullable().default(null),
 });
 export type CampaignPackage = z.infer<typeof CampaignPackage>;
+
+export { CampaignLineage, ImageAllocationPlan, ImageCounts, ImageResultRecord, ImageVariationRecord, LandingContent };

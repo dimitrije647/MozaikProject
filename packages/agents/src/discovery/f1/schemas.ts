@@ -30,7 +30,7 @@ export type LlmFinding = z.infer<typeof LlmFinding>;
 
 export const AgentOutput = z.object({
   summary: text(1200),
-  findings: z.array(LlmFinding).max(18),
+  findings: z.array(LlmFinding).max(30),
   missingInformation: z.array(text(300)).max(12),
 });
 export type AgentOutput = z.infer<typeof AgentOutput>;

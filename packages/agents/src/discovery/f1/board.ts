@@ -6,24 +6,22 @@ import { normalizeText } from '../input';
  * The F1 shared board: the typed, in-memory state all Product Discovery participants work on.
  *
  * Single-writer rule: only the Phase Coordinator mutates the board, in response to Mozaik events
- * (`source.retrieved`, `finding.posted`, `crosscheck.answered`, `task.completed`). Agents publish
- * events; they never write the board directly. The Synthesizer reads the board when `phase.ready`
- * arrives. The board never holds credentials.
+ * (`source.retrieved`, `finding.posted`, `task.completed`). The Business Researcher publishes events; it never
+ * writes the board directly, and reads a snapshot of it when `phase.ready` arrives to write the report.
+ * The board never holds credentials.
  */
 
-export const AGENT_KEYS = ['input', 'text', 'web', 'repo', 'files', 'visual', 'synthesizer'] as const;
+/**
+ * V4: ONE agent. The Business Researcher gathers every authorized source deterministically (intake, website, optional search,
+ * public repository, uploaded documents and images), makes ONE evidence analysis call and then ONE synthesis call (report and
+ * Product Manifest). Earlier runs had seven agents (Input/Text/Web/Repo/File/Visual Analyzers and a Product Synthesizer); their
+ * names survive only in the events and reports those runs saved.
+ */
+export const AGENT_KEYS = ['researcher'] as const;
 export type AgentKey = (typeof AGENT_KEYS)[number];
-export type AnalystKey = Exclude<AgentKey, 'synthesizer'>;
-export const ANALYST_KEYS: readonly AnalystKey[] = ['input', 'text', 'web', 'repo', 'files', 'visual'];
 
 export const AGENT_INFO: Record<AgentKey, { code: string; name: string; role: string }> = {
-  input: { code: 'A1', name: 'Input Analyzer', role: 'Reads the project intake and the original description' },
-  text: { code: 'A2', name: 'Text Analyzer', role: 'Independent deep read of the supplied text' },
-  web: { code: 'A3', name: 'Web Analyzer', role: 'Reads the real website and (optionally) searches for public information' },
-  repo: { code: 'A4', name: 'Repo Analyzer', role: 'Inspects a public GitHub repository through the official API' },
-  files: { code: 'A5', name: 'File Analyzer', role: 'Reads uploaded documents (PDF, DOCX, TXT, MD, JSON, CSV)' },
-  visual: { code: 'A6', name: 'Visual Analyzer', role: 'Looks at uploaded logos, screenshots and brand images' },
-  synthesizer: { code: 'A7', name: 'Product Synthesizer', role: 'Combines all findings, cross-checks and writes the report and Product Manifest' },
+  researcher: { code: 'A1', name: 'Business Researcher', role: 'Reads the authorized business sources (intake, website, repository, documents, images), extracts evidenced facts and writes the Product Discovery report and Product Manifest' },
 };
 
 export const COORDINATOR_NAME = 'Phase Coordinator';

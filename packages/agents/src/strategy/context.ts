@@ -3,9 +3,9 @@ import { readStoredReport, type ReadNotes, type ReportFailure } from '../contrac
 import type { F1Context } from '../audit/context';
 
 /**
- * What F3 receives from F2: a compact, read-only view of ONE completed audit (the report plus its findings with
- * provenance). Built by the backend from the stored audit; F3 never rebuilds or fabricates it. Together with the F1
- * context it is the F3Context: the product identity (F1) and what was observed about its marketing (F2).
+ * LEGACY (read-only): a compact view of ONE completed F2 Marketing Audit, the SEO/GEO audit of versions before V4. New
+ * campaigns never run it and the strategy no longer reads it; it is kept so audits, strategies and campaigns saved earlier can
+ * still be read and checked for lineage (contracts/chain-check.ts).
  */
 export interface F2Context {
   auditId: string;
@@ -59,13 +59,15 @@ export function buildF2Context(row: { id: string; f1ReportId: string; schemaVers
   return r.ok ? r.context : null;
 }
 
-/** The business's own brief for the campaign (current project data; F1/F2 describe the past). */
+/** The business's own brief for the campaign (current project data; F1 describes what was found about the business). */
 export interface StrategyInput {
   projectName: string;
   language: string;
   /** Where the business operates: F1 geography plus the intake's target market. */
   geography: string[];
+  /** The target audience the user configured for this campaign (the strategist builds on it; never replaced by a guess). */
   targetAudience: string | null;
+  /** The campaign objective the user configured. */
   marketingGoal: string | null;
   campaignDuration: string | null;
   budgetNote: string | null;
@@ -119,7 +121,7 @@ export const ageDays = (now: Date, iso: string | null): number | null => {
   return Number.isFinite(t) ? Math.max(0, Math.floor((now.getTime() - t) / 86_400_000)) : null;
 };
 
-/** An audit/report older than this is shown with its age and its verified findings are not carried forward as verified. */
+/** A report older than this is shown with its age and its verified findings are not carried forward as verified. */
 export const STALE_AFTER_DAYS = 30;
 
 export type { F1Context };

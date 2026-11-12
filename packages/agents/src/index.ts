@@ -19,12 +19,10 @@ export * from './discovery/f1/schemas';
 export {
   AGENT_INFO,
   AGENT_KEYS,
-  ANALYST_KEYS,
   COORDINATOR_NAME,
   F1BoardStore,
   SourceStore,
   type AgentKey,
-  type AnalystKey,
   type CrosscheckRecord,
   type F1Board,
   type F1Plan,
@@ -41,60 +39,48 @@ export * from './tools/page-reader';
 export * from './tools/github';
 export * from './tools/documents';
 export * from './tools/images';
-export { REVIEWERS } from './runtime/programs/f1/coordinator';
 export { buildDiscoveryInput, type DiscoveryInput, type RawDiscoveryData } from './discovery/input';
 
-// ---- F2 Marketing Audit ----
-export * from './audit/board';
+// ---- historical F2 Marketing Audit (read-only: V4 no longer runs an audit; saved audits stay readable) ----
 export * from './audit/schemas';
 export * from './audit/context';
 export * from './contracts/report-contract';
 export * from './contracts/chain-check';
-export { finalizeAuditReport, validateAuditFinding, type AuditPolicyIssue } from './audit/policy';
-export * from './tools/seo';
-export * from './tools/pagespeed';
-export * from './tools/social';
-export * from './tools/presence';
-export { planF2, type AuditRunConfig, type AuditReportMeta, type AuditSink } from './runtime/programs/f2-program';
-export type { AuditInput, F2Tools } from './runtime/programs/f2/env';
-export { AUDIT_REVIEWERS } from './runtime/programs/f2/coordinator';
 
-// ---- F3 Market Research & Strategy ----
+// ---- F3 Strategy (one agent: the Marketing Strategist) ----
 export * from './strategy/channels';
 export * from './strategy/schemas';
 export * from './strategy/board';
 export * from './strategy/context';
-export { evaluateScouts, SCOUT_THRESHOLD, type ScoutContext } from './strategy/scouts';
 export { finalizeStrategy, validateStrategyFinding, scrubFigures, type StrategyPolicyIssue } from './strategy/policy';
 export * from './tools/holidays';
 export * from './tools/competitors';
 export { planF3, type StrategyRunConfig, type StrategyReportMeta, type StrategySink } from './runtime/programs/f3-program';
 export type { F3Tools } from './runtime/programs/f3/env';
-export { planF4, estimateCreativeRun, type CreativeRunConfig, type CreativeReportMeta, type CreativeSink } from './runtime/programs/f4-program';
+// ---- F4 Creative Production (Content Writer, Visual Researcher, Creative Designer, Quality Reviewer; no AI images) ----
+export { F4Program, planF4, estimateCreativeRun, type CreativeRunConfig, type CreativeReportMeta, type CreativeSink } from './runtime/programs/f4-program';
 export type { F4Tools } from './runtime/programs/f4/env';
-export { ImageGenerator, IMAGE_SIZES, IMAGE_QUALITIES, isSupportedImageModel, looksLikeImageModel, DEFAULT_IMAGE_LIMITS as DEFAULT_IMAGE_GENERATION_LIMITS, type ImageQuality, type ImageSize, type ImageUsageSnapshot, type ImageGenSettings, type ImageBudgetLimits, type ImageResult as ImageGenerationResult } from './ai/openai-images';
 export * from './creative/schemas';
-export * from './ai/image-models';
-export { SYSTEMATIC_IMAGE_FAILURES, explainImageFailure, completeImageResults, reconstructImageResults, distinctReasons, countVariations, conceptResultFromVariations } from './creative/image-results';
+export * from './copywriting';
+export { LEGACY_IMAGE_SIZES, LEGACY_IMAGE_QUALITIES } from './creative/legacy-schemas';
 export * from './ai/pricing';
-export { prepareContinuationSeed, missingSlots, ContinuationError, type ContinuationSeed } from './creative/continuation';
 export { PRIORITY_LABEL, SPEND_PRIORITY, SpendBudget, SpendScope, scopeFor, type LedgerPlan, type Refusal, type RemainingBasis, type Reservation, type SpendController, type SpendKind, type SpendPriority, type SpendSnapshot } from './ai/budget';
-export { planImageAllocation, forecastAllocation, apportion, VISUAL_ROLES, PERSPECTIVES, LIGHTING, HARD_MAX_IMAGES, HARD_MAX_PER_CONCEPT, type AllocConcept, type AllocationInput } from './creative/image-allocation';
 export * from './creative/context';
 export * from './creative/formats';
 export * from './creative/assets';
 export * from './creative/palette';
 export { CREATIVE_INFO, CREATIVE_KEYS, CREATIVE_COORDINATOR_NAME, creativeKeyByName, type CreativeBoard, type CreativeKey, type CreativePlan, type CreativeSettingsSnapshot } from './creative/board';
-export { renderLandingHtml } from './creative/landing-html';
-export { buildCampaignZip, buildOriginalsZip, buildCreativesZip, creativesZipFileName, templateFileName, originalsZipFileName, zipFileName, safeName, campaignMarkdown, creditsFromImagery, type ExportManifest, type ExportFile, type ExportSource } from './creative/export';
+export { buildCampaignZip, zipFileName, safeName, creditsFromImagery, type ExportManifest, type ExportFile, type ExportSource, type ExportOptions } from './creative/export';
+export { legacyCampaignMarkdown, legacyTemplateFileName } from './creative/export-legacy';
 export { CREATIVE_INSTRUCTIONS } from './creative/prompts';
-export { renderLayout, type LayoutResult } from './creative/layout';
+export { planRepairs, slotsShowing, type RepairPlan, type RerenderOp } from './creative/repair';
 
-// ---- Hybrid Production (template library, visual direction, template selection) ----
-export { HYBRID_DEFAULTS, HYBRID_LIMITS, HYBRID_PRESET, NO_AI_DEFAULTS, NO_AI_PRESET, DEFAULT_IMAGERY, ImagerySettings, isNoAi, HybridSettings, HybridFacts, HybridReference, mergeHybrid } from './hybrid/settings';
+// ---- the visual side (template library, campaign design, deliverables plan, template selection) ----
+export { DEFAULT_HYBRID_SETTINGS, DEFAULT_IMAGERY, ImagerySettings, HybridSettings, HybridFacts, HybridReference, mergeHybrid } from './hybrid/settings';
 export * from './hybrid/records';
-export { planHybrid, evenThenWeighted, slotsFromSelection, HYBRID_FORMATS, type HybridPlan, type HybridPlanInput, type TemplateSlot } from './hybrid/plan';
-export { selectTemplates, scoreTemplate, availableFor, blockers as templateBlockers, objectiveKind, applyAssisted, stableHash, type SelectorContext, type SelectionInput, type SelectionResult, type Candidate } from './hybrid/selector';
+export { HYBRID_FORMATS, type HybridPlan, type TemplateSlot } from './hybrid/plan';
+export { planDeliverables, PLATFORM_DELIVERABLES, CAMPAIGN_DELIVERABLES, MAX_DELIVERABLES, folderOf, type DeliverablesInput, type DeliverablesPlan, type NotPlanned } from './hybrid/deliverables';
+export { selectTemplates, scoreTemplate, availableFor, blockers as templateBlockers, objectiveKind, stableHash, type SelectorContext, type SelectionInput, type SelectionResult, type Candidate } from './hybrid/selector';
 export { directionFor, industryTextOf, type DirectionContext } from './hybrid/direction';
 export { contentForSlot, forecastContent, renderContent, supportingTextOf } from './hybrid/content';
 export { hybridCounts, hybridNotes, buildHybridBlock, brandBlockOf } from './hybrid/report';
@@ -117,7 +103,7 @@ export { applyCollection, themeLayer, fontsOf } from './collections/theme';
 export * from './collections/design';
 export { checkDesignFit, designFormatIds, type DesignFit, type FormatFit } from './hybrid/design-plan';
 export { lockDesign } from './hybrid/direction';
-export { summarizeDiscovery } from './runtime/programs/f4/hybrid-agents';
+export { summarizeDiscovery, campaignDirection } from './runtime/programs/f4/agents';
 export { sourceImages, AUTO_STOCK_MAX, type SourcingOutcome } from './runtime/programs/f4/image-sourcing';
 export type { LibraryImageInfo, ImageAcquirePort, BrandContext } from './runtime/programs/f4/env';
 export * from './brand';

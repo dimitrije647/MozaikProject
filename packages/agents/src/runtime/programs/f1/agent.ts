@@ -214,9 +214,9 @@ export class PhaseAgent {
   }
 }
 
-/** An F1 analyst or the Product Synthesizer. */
+/** The F1 Business Researcher (analysis and synthesis in one conversation). */
 export class F1Agent extends PhaseAgent {
   constructor(env: F1Env, key: AgentKey, handlers: (self: PhaseAgent) => SituationHandler[]) {
-    super(env, { key, name: AGENT_INFO[key].name, instruction: F1_INSTRUCTIONS[key], capabilities: ['product-discovery', key === 'synthesizer' ? 'synthesis' : 'analysis', 'inference'] }, handlers);
+    super(env, { key, name: AGENT_INFO[key].name, instruction: F1_INSTRUCTIONS[key], capabilities: ['business-research', 'analysis', 'synthesis', 'inference'] }, handlers);
   }
 }

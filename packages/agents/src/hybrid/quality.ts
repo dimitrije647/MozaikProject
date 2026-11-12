@@ -9,7 +9,7 @@ import { originOf, type TemplateCreativeRecord, type TemplateQualityIssue, type 
  *   - every rendered one is a real file of exactly the planned size, with its template id + version and its source assets recorded
  *   - no two template creatives are the same bytes (a renamed copy is not a second creative)
  *   - a render that had to cut text is reported
- * It repairs nothing itself: findings with `repairable` are handed to the Fixer, the rest are limitations the user is told about.
+ * It repairs nothing itself: findings with `repairable` become re-render requests of the Quality Reviewer, the rest are limitations the user is told about.
  */
 export interface QualityInput {
   /** The approved campaign design: every creative must come from its collection and be drawn with its palette. null = no design (earlier campaigns). */
@@ -40,12 +40,12 @@ export async function verifyTemplateExport(input: QualityInput): Promise<Templat
     }
     if (rec.status === 'failed') {
       count.failed++;
-      issues.push({ slotId: item.slotId, assetId: null, kind: 'missing_render', severity: 'major', message: `${item.slotId} (${item.templateName}, ${item.format}) failed to render: ${rec.reason ?? 'unknown reason'}.`, repairable: !!item.variationId });
+      issues.push({ slotId: item.slotId, assetId: null, kind: 'missing_render', severity: 'major', message: `${item.slotId} (${item.templateName}, ${item.format}) failed to render: ${rec.reason ?? 'unknown reason'}.`, repairable: true });
       continue;
     }
     if (rec.status === 'skipped') {
       count.skipped++;
-      issues.push({ slotId: item.slotId, assetId: null, kind: 'missing_render', severity: 'major', message: `${item.slotId} (${item.templateName}, ${item.format}) was not rendered: ${rec.reason ?? 'its source image does not exist'}.`, repairable: false });
+      issues.push({ slotId: item.slotId, assetId: null, kind: 'missing_render', severity: 'major', message: `${item.slotId} (${item.templateName}, ${item.format}) was not rendered: ${rec.reason ?? 'no template of the collection fits it'}.`, repairable: false });
       continue;
     }
     if (input.design) {

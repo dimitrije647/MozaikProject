@@ -3,12 +3,13 @@ import { describe, it } from 'node:test';
 import sharp from 'sharp';
 import { listCollections, themedTemplates } from '../collections/registry';
 import { toCampaignRaster } from '../imagery/analysis';
-import { F4Program } from '../runtime/programs/f4-program';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { TEMPLATE_LIBRARY } from '../templates/library';
 import { renderTemplate } from '../templates/render';
 import { buildVisualDirection } from '../templates/visual-direction';
 import type { TemplateDef } from '../templates/schema';
-import { planHybrid } from './plan';
+import { planDeliverables } from './deliverables';
 import type { TemplateContent } from './records';
 import { availableFor, blockers, selectTemplates, type SelectorContext } from './selector';
 
@@ -24,15 +25,16 @@ describe('Template Selector with approved pictures (all ten collections)', () =>
   });
 
   for (const c of collections) {
-    it(`${c.id}: every creative that has a picture is drawn with a photo template whenever one fits; 20 distinct creatives; only the collection's templates`, () => {
+    it(`${c.id}: every deliverable that has a picture is drawn with a photo template whenever one fits; distinct creatives; only the collection's templates`, () => {
       const library = themedTemplates(c);
-      const plan = planHybrid({ concepts: Array.from({ length: 5 }, (_, i) => ({ id: `K${i + 1}`, name: `Concept ${i + 1}`, channels: ['instagram', 'facebook', 'linkedin'] as never })), originals: 0, templateCreatives: 20, channelPriority: ['instagram', 'facebook', 'linkedin'], fixedSize: null, brandImages: 4, basis: 'concepts' });
-      // like the real allocation: 8 approved pictures, each concept gets its own two (a picture serves several creatives, cropped per format)
-      const slots = plan.slots.map((s) => { const k = Number(s.conceptId.slice(1)) - 1; return { ...s, source: 'brand_image' as const, imageId: `img${(k * 2 + (s.index % 2)) % 8}`, secondaryImageId: null }; });
+      const plan = planDeliverables({ concepts: Array.from({ length: 3 }, (_, i) => ({ id: `K${i + 1}`, name: `Concept ${i + 1}` })), library, hasPicture: true, facts: {} });
+      // like the real allocation: 6 approved pictures, each concept gets its own two (a picture serves several creatives, cropped per format)
+      const slots = plan.slots.map((s) => { const k = Number(s.conceptId.slice(1)) - 1; return { ...s, source: 'brand_image' as const, imageId: `img${(k * 2 + (s.index % 2)) % 6}`, secondaryImageId: null }; });
       const ctx: SelectorContext = { direction: buildVisualDirection({ projectName: 'Bakery', channels: ['instagram'], brandPalette: ['#8a4b2a'], userStyleId: c.styleId }), industryText: 'bakery food', objectiveText: 'visit the shop', palette: ['#8a4b2a', '#f4e9dc'], hasLogo: true, brandName: 'Bakery', facts: {}, library, preferred: [], overrides: {}, mode: 'automatic', basis: 'concepts', collection: c };
       const contents = new Map(slots.map((s) => [s.slotId, content()]));
       const r = selectTemplates({ slots, contents, ctx });
-      assert.equal(r.plan.items.length, 20, `20 creatives placed (${r.unplaceable.map((u) => u.reason).join('; ')})`);
+      assert.equal(r.plan.items.length, slots.length, `every planned deliverable placed (${r.unplaceable.map((u) => u.reason).join('; ')})`);
+      assert.ok(slots.length >= 10, `${c.id}: the deliverables plan covers the platforms (${slots.length})`);
       const ids = new Set(library.map((t) => t.id));
       let photo = 0;
       for (const item of r.plan.items) {
@@ -45,7 +47,7 @@ describe('Template Selector with approved pictures (all ten collections)', () =>
         if (photoFits && !hasHero(chosen)) assert.match(item.rationale, /already used with this picture in this format/, `${item.slotId}: an approved picture was replaced by typography without a reason (${chosen.id})`);
         if (hasHero(chosen)) photo++;
       }
-      assert.ok(photo >= 10, `${c.id}: most creatives show the approved pictures (${photo}/20)`);
+      assert.ok(photo >= Math.floor(slots.length / 2), `${c.id}: most creatives show the approved pictures (${photo}/${slots.length})`);
       // distinct creatives: never the same template on the same picture in the same format twice
       const keys = r.plan.items.map((it) => `${it.templateId}|${slots.find((s) => s.slotId === it.slotId)!.imageId}|${it.format}`);
       assert.equal(new Set(keys).size, keys.length);
@@ -75,11 +77,11 @@ describe('Rendering with real brand content', () => {
   });
 });
 
-describe('Claude campaigns make no images', () => {
-  it('a Claude creative run that asks for an AI image is refused before anything exists (never sent to OpenAI instead)', () => {
-    assert.throws(
-      () => new F4Program({ provider: 'anthropic', apiKey: 'sk-ant-api03-TESTKEY1234567890abcdef' }, { model: 'claude-opus-5-5', imageModel: 'gpt-image-1-mini', maxImages: 1 } as never, async () => {}),
-      /Claude generates no images/,
-    );
+describe('No AI image can be generated', () => {
+  it('the creative program has no image generator and never calls an image endpoint (structural guarantee)', () => {
+    for (const f of ['runtime/programs/f4-program.ts', 'runtime/programs/f4/agents.ts', 'runtime/programs/f4/designer.ts', 'runtime/programs/f4/coordinator.ts']) {
+      const src = readFileSync(join(__dirname, '..', f), 'utf8');
+      assert.doesNotMatch(src, /ImageGenerator|createImage\(|images\/generations|imageModel/, `${f} must not reference image generation`);
+    }
   });
 });
