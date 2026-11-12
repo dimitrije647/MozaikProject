@@ -153,7 +153,10 @@ describe('collections and palettes work together', () => {
 describe('output formats of the design', () => {
   it('every option maps onto real creative formats, the project defaults use the same keys, unknown keys are dropped', () => {
     for (const k of FORMAT_OPTION_KEYS) for (const id of FORMAT_OPTIONS[k].formatIds) assert.ok(CREATIVE_FORMATS[id], `${k} -> ${id}`);
-    assert.deepEqual(formatIdsOf(['instagram_post', 'website_banner']), ['instagram_square', 'instagram_portrait', 'web_banner', 'landing_hero']);
+    // V4: the web banner is an ad only (no landing hero: landing pages are not produced); X, TikTok cover and display ad are V4 deliverables.
+    assert.deepEqual(formatIdsOf(['instagram_post', 'website_banner']), ['instagram_square', 'instagram_portrait', 'web_banner']);
+    assert.deepEqual(formatIdsOf(['x_post', 'tiktok_cover', 'display_ad', 'flyer', 'billboard']), ['x_post', 'story', 'display_square', 'flyer', 'billboard']);
+    for (const k of FORMAT_OPTION_KEYS) assert.ok(!FORMAT_OPTIONS[k].formatIds.includes('landing_hero'), `${k} must not produce a landing hero`);
     assert.deepEqual(formatKeysFromProject(['instagram_post', 'flyer', 'carrier_pigeon']), ['instagram_post', 'flyer']);
     assert.deepEqual(formatKeysFromProject(null), []);
   });

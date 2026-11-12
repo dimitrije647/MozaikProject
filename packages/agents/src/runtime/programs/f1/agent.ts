@@ -38,6 +38,11 @@ export interface JobSpec<T> {
   maxOutputTokens: number;
   /** Deadline for this job (analysis uses the task deadline instead). */
   timeoutMs?: number;
+  /**
+   * A long structured answer that is not the phase synthesis: V4's single researchers (F1 Business Researcher, the strategist's research step)
+   * write ONE combined analysis with a large cap, so their request clock must scale like a synthesis (ai/timeouts.ts). Synthesis always scales.
+   */
+  longAnswer?: boolean;
   images?: { mediaType: string; base64: string }[];
   onSuccess(value: T): void;
   onFailure(error: SafeProviderError): void;
@@ -153,7 +158,7 @@ export class PhaseAgent {
     if (spec.images?.length) this.env.gateway.attachImages(this.contextId, spec.images);
     this.env.gateway.setCallPriority(this.contextId, spec.priority ?? (spec.kind === 'review' ? 4 : 1));
     // the final document of a phase is a long structured answer: its clock grows with the tokens it may produce
-    this.env.gateway.setLongAnswer(this.contextId, spec.kind === 'synthesis');
+    this.env.gateway.setLongAnswer(this.contextId, spec.kind === 'synthesis' || spec.longAnswer === true);
     this.loop(spec.message);
   }
 

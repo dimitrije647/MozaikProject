@@ -204,7 +204,9 @@ describe('HISTORICAL COMPATIBILITY: the saved V3 chain of the incident in V4', (
       expect(v.failure.headline).toBe('Campaign stopped during F4 Creative Production.');
       expect(v.failure.recovery.ready).toBe(true);
       // V4 reads the F1 report and the strategy (the audit is history: no V4 stage reads it)
-      expect(v.failure.recovery.reports.map((r: Row) => [r.code, r.status])).toEqual([['F1', 'current'], ['F3', 'current']]);
+      // the V3 strategy predates V4's copy direction: it is read with ONE listed deterministic adjustment (copyDirection = null), never silently
+      expect(v.failure.recovery.reports.map((r: Row) => [r.code, r.status])).toEqual([['F1', 'current'], ['F3', 'normalized']]);
+      expect(v.failure.recovery.reports[1].message).toBe('Existing strategy is compatible after 1 deterministic adjustment (listed below) and will be reused.');
       expect(v.failure.recovery.resumeFrom).toEqual({ code: 'F4', title: 'Creative Production' });
       expect(v.failure.canContinue).toBe(true);
       expect(v.failure.saved.map((s: Row) => s.code)).toEqual(['F1', 'F2', 'F3']);

@@ -154,6 +154,9 @@ export class F3Program implements RunProgram {
     };
     // the strategy is the longest answer of the phase: its task deadline follows the clock of its request (and the one larger re-ask)
     if (generation) this.settings.synthTimeoutMs = Math.max(this.settings.synthTimeoutMs, synthesisTaskTimeoutMs(synthTokens, budget.escalateTo, generation));
+    // V4: the strategist's research is ONE combined analysis with the analyst cap (up to 8,000 tokens): a long answer too, so its task deadline
+    // follows its request clock as well (the 2026-11-02 incident pattern: a flat 90 s clock for a long answer)
+    if (generation) this.settings.agentTimeoutMs = Math.max(this.settings.agentTimeoutMs, synthesisTaskTimeoutMs(analystTokens, budget.escalateTo, generation));
     this.tools = {
       web: config.tools?.web ?? new WebFetchTool({ maxPages: this.settings.maxCompetitorPages * this.settings.maxPagesPerCompetitor + 2 }),
       search: config.tools?.search ?? createWebSearchFromEnv(),
@@ -257,6 +260,7 @@ export class F3Program implements RunProgram {
             schema: StrategyAgentOutput,
             schemaName: 'strategy_research',
             maxOutputTokens: settings.analystTokens,
+            longAnswer: true,
             onSuccess: (out) => {
               self.closeTask();
               ctx.emit('finding.posted', { agent: name, summary: out.summary, findings: out.findings, missingInformation: out.missingInformation }, self.participant);

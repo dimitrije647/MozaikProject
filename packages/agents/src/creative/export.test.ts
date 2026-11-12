@@ -7,7 +7,9 @@ import { buildCampaignZip, safeName, zipFileName } from './export';
 import { CAMPAIGN_SCHEMA_VERSION, CampaignPackage, type AssetRecord } from './schemas';
 import { makePng } from '../testing/fixtures';
 
-// The ZIP export: real binaries, deterministic safe names, a manifest with hashes, no secrets. FIXTURE data only.
+// The ZIP export of a campaign saved BEFORE V4 (no deliverables plan: export-legacy.ts keeps its historical layout): real binaries,
+// deterministic safe names, a manifest with hashes, no secrets. The V4 layout (campaign/social, ads, print, ...) is tested in f4.test.ts.
+// FIXTURE data only.
 
 async function fixture() {
   const store = new InMemoryAssetStore();
@@ -42,13 +44,16 @@ async function fixture() {
 }
 
 describe('Campaign ZIP export', () => {
-  it('contains the real image binaries, JSON, copy, landing, review and a manifest with hashes; names are deterministic and safe', async () => {
+  it('a pre-V4 campaign keeps its layout: real image binaries, JSON, copy, stored landing JSON, review and a manifest with hashes; names are deterministic and safe', async () => {
     const { store, pkg, base, old, layout } = await fixture();
     const { zip, manifest } = await buildCampaignZip(pkg, store, { palette: ['#0a5c8c'] });
     const z = await JSZip.loadAsync(zip);
     const names = Object.keys(z.files).filter((n) => !z.files[n].dir).sort();
     assert.ok(names.includes('campaign.json') && names.includes('README.md') && names.includes('summary.html') && names.includes('manifest.json'));
-    assert.ok(names.includes('landing/landing-content.json') && names.includes('landing/landing-preview.html'));
+    // V4 renders no landing page: the stored landing content of an old campaign is kept as JSON only, never as a rendered page
+    assert.ok(names.includes('landing/landing-content.json'));
+    assert.ok(!names.some((n) => n.endsWith('.html') && n.startsWith('landing/')), 'no landing page is rendered any more');
+    assert.ok(!names.some((n) => n.startsWith('campaign/')), 'a pre-V4 campaign is not exported in the V4 layout');
     assert.ok(names.includes('review/findings.json') && names.includes('review/revisions.json'));
     assert.ok(names.some((n) => n.startsWith('copy/start-with-confidence-instagram-paid_ad-v1')));
     const basePath = manifest.files.find((f) => f.assetId === base.id)!.path;
@@ -78,8 +83,9 @@ describe('Campaign ZIP export', () => {
     const html = await z.file('summary.html')!.async('string');
     assert.ok(!html.includes('<b>calmly</b>') && html.includes('&lt;b&gt;calmly&lt;/b&gt;'));
     assert.ok(html.includes(layoutPath));
-    const landing = await z.file('landing/landing-preview.html')!.async('string');
-    assert.ok(!landing.includes('<script>alert(1)</script>'));
+    const landing = JSON.parse(await z.file('landing/landing-content.json')!.async('string'));
+    assert.equal(landing.hero.headline, pkg.landingContent!.hero.headline, 'the stored landing content is exported unchanged');
+    for (const n of names.filter((x) => x.endsWith('.html'))) assert.ok(!(await z.file(n)!.async('string')).includes('<script>alert(1)</script>'), `${n} escapes untrusted text`);
     // nothing credential-shaped, no image prompt text
     const all = (await Promise.all(names.filter((n) => !n.endsWith('.png')).map((n) => z.file(n)!.async('string')))).join('\n');
     assert.doesNotMatch(all, /sk-[A-Za-z0-9]{10,}/);

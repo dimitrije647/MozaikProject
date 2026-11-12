@@ -114,6 +114,18 @@ describe('F3 Strategy (V4: one Marketing Strategist, no F2 audit)', () => {
     assert.doesNotMatch(research, /f2_context|Marketing Audit|SEO/);
   });
 
+  it('the research call is a LONG answer: its clock scales with its cap like the strategy (the 2026-11-02 incident pattern), a fixed clock is respected', async () => {
+    // the research answer (8,000-token cap) takes 1.2 s against a 0.4 s per-request clock
+    const slow = await track(new FakeOpenAI({ reply: (r) => (r.agent === 'strategist' && r.kind === 'analysis' ? { delayMs: 1200 } : undefined) }).start());
+    const fixed = await run({ baseUrl: slow.url, maxOutputTokens: 8000, callTimeoutMs: 400, maxRetries: 0 });
+    assert.notEqual(fixed.result.status, 'completed', 'a fixed clock of a caller is never overridden');
+    assert.equal(slow.calls('strategist', 'analysis').length, 1, 'a timed-out request is not repeated on its own');
+    assert.equal(slow.calls('strategist', 'synthesis').length, 0);
+    const scaled = await run({ baseUrl: slow.url, maxOutputTokens: 8000, callTimeoutMs: 400, maxRetries: 0, generation: { tokensPerSecond: 7500, overheadMs: 1500 } });
+    assert.equal(scaled.result.status, 'completed', String(scaled.result.errorMessage));
+    assert.equal(slow.calls('strategist', 'synthesis').length, 1);
+  });
+
   it('a channel outside the five campaign platforms cannot be recommended', () => {
     const issues: never[] = [];
     const f: LlmStrategyFinding = { kind: 'assessment', title: 'YouTube fit', statement: 'YouTube may fit.', classification: 'inferred', importance: 'low', sourceType: 'ai_inference', sourceId: null, locator: null, excerpt: null, reasoning: 'r', confidence: null, recommendation: null, segment: null, competitor: null, opportunity: null, channel: { channel: 'youtube', fit: 'strong', audienceFit: 'a', organicSuitability: 'high', paidSuitability: 'unknown', contentTypes: [], complexity: 'low', constraints: [], measurement: [], risks: [], role: 'primary' } };

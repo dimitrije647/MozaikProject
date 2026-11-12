@@ -217,6 +217,8 @@ export class F1Program implements RunProgram {
     };
     // the synthesis writes the longest answer of the phase: its task deadline follows the clock of its request (and the one larger re-ask)
     if (generation) this.settings.synthTimeoutMs = Math.max(this.settings.agentTimeoutMs, synthesisTaskTimeoutMs(synthTokens, budget.escalateTo, generation));
+    // V4: the ONE Business Researcher writes a single combined analysis with the analyst cap: a long answer, so its task deadline follows its clock
+    if (generation) this.settings.agentTimeoutMs = Math.max(this.settings.agentTimeoutMs, synthesisTaskTimeoutMs(analystTokens, budget.escalateTo, generation));
     this.tools = {
       web: config.tools?.web ?? new WebFetchTool({ maxPages: this.settings.maxWebPages }),
       search: config.tools?.search ?? createWebSearchFromEnv(),
@@ -325,6 +327,7 @@ export class F1Program implements RunProgram {
             schema: AgentOutput,
             schemaName: 'researcher_findings',
             maxOutputTokens: settings.analystTokens,
+            longAnswer: true,
             onSuccess: (out) => {
               self.closeTask();
               ctx.emit('finding.posted', { agent: name, summary: out.summary, findings: out.findings, missingInformation: out.missingInformation }, self.participant);

@@ -1,7 +1,7 @@
 import { INestApplication, UnprocessableEntityException } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { FakeOpenAI } from '@launchpilot/agents/dist/testing/fake-openai';
-import { createApp, createProject, loginUser, registerUser, startF1, waitForTerminal, type TestUser } from './helpers';
+import { campaignRequest, confirmedDesign, createApp, createProject, loginUser, registerUser, startF1, waitForFactory, waitForTerminal, type TestUser } from './helpers';
 
 // CLAUDE PROVIDER (V3, adapted to V4: no per-stage routes, no presets): Settings > AI providers with a Claude Console API key, the persisted default provider/model, the refused subscription
 // mode, and a real Mozaik phase run entirely on Claude. Two local fakes (Claude and OpenAI): no network, nothing billed.
@@ -104,8 +104,11 @@ describe('Claude provider (Claude API key only; subscription mode unavailable)',
     expect(started).toMatchObject({ provider: 'anthropic', status: 'RUNNING' });
     const done = await waitForTerminal(user, started.id, 30_000);
     expect(done.status).toBe('COMPLETED');
-    // every agent ran on Claude with the saved model; nothing went to OpenAI
-    expect(claude.calls().length).toBeGreaterThanOrEqual(3);
+    // every agent ran on Claude with the saved model; nothing went to OpenAI. V4 Business Research is ONE agent (the Business Researcher):
+    // exactly one research analysis and one report synthesis (V3 had several analysts, hence more calls)
+    expect(claude.calls('researcher', 'analysis')).toHaveLength(1);
+    expect(claude.calls('researcher', 'synthesis')).toHaveLength(1);
+    expect(claude.calls()).toHaveLength(2);
     expect(claude.calls().every((r) => r.provider === 'anthropic' && (r.body as any).model === MODEL)).toBe(true);
     expect(openai.requests).toHaveLength(0);
     const report = await db.productDiscoveryReport.findFirstOrThrow({ where: { runId: started.id } });
@@ -150,4 +153,27 @@ describe('Claude provider (Claude API key only; subscription mode unavailable)',
     expect(claude.calls()).toHaveLength(0); // the plan is free: at most the (free) model list was read
     expect(openai.requests).toHaveLength(0);
   });
+
+  it('Campaign Production RUNS on Claude: Business Research, Marketing Strategy and Creative Production all complete with the saved Claude model; nothing goes to OpenAI and no image is requested', async () => {
+    const user = await claudeUser('claude-campaign');
+    const projectId = await createProject(user, 'Bike Repair Shop');
+    await user.agent.put(`/projects/${projectId}/intake`).send({ productName: 'Bike Repair Shop', shortDescription: 'We fix bicycles in Novi Sad', targetMarket: 'Novi Sad', preferredLanguage: 'en' }).expect(200);
+    const design = await confirmedDesign(user, projectId, 'premium_editorial');
+    const started = (await user.agent.post(`/projects/${projectId}/factory`).send(campaignRequest(design)).expect(201)).body;
+    const run = await waitForFactory(user, started.id, 240_000);
+    expect(run.status).toBe('completed');
+    expect(run.phases.map((p: { code: string; status: string }) => [p.code, p.status])).toEqual([['F1', 'completed'], ['F3', 'completed'], ['F4', 'completed']]);
+    // the agent work of every stage reached Claude: the Business Researcher, the Marketing Strategist (research + strategy) and the Content Writer
+    expect(claude.calls('researcher', 'analysis')).toHaveLength(1);
+    expect(claude.calls('researcher', 'synthesis')).toHaveLength(1);
+    expect(claude.calls('strategist', 'analysis')).toHaveLength(1);
+    expect(claude.calls('strategist', 'synthesis')).toHaveLength(1);
+    expect(claude.calls('copywriter').length).toBeGreaterThanOrEqual(1);
+    expect(claude.calls().every((r) => r.provider === 'anthropic' && (r.body as any).model === MODEL)).toBe(true);
+    expect(openai.requests).toHaveLength(0);
+    expect(claude.imageCalls()).toHaveLength(0);
+    const camp = (await user.agent.get(`/campaigns/${run.campaignId}`).expect(200)).body;
+    expect(camp.package.deliverables.counts.delivered).toBeGreaterThan(0);
+    expect(camp.package.usage.images.requested).toBe(0);
+  }, 300_000);
 });

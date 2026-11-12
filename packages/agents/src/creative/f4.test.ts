@@ -124,8 +124,48 @@ describe('F4 Creative Production (V4: one workflow, four agents, no AI images)',
     assert.ok(names.some((n) => n.startsWith('campaign/social/instagram/') && n.endsWith('-post.txt')));
     assert.ok(names.includes('campaign/sources/rights.json'));
     assert.ok(names.includes('campaign/brand/brand.json'));
+    assert.ok(names.includes('campaign/manifest.json') && names.includes('campaign/campaign.json'));
+    // advertising and print: every delivered ad/print deliverable is a real file in its V4 folder
+    const delivered = (k: string) => d.items.some((i) => i.kind === k && i.status === 'delivered');
+    if (delivered('billboard')) assert.ok(names.some((n) => n.startsWith('campaign/print/billboards/') && n.endsWith('.png')));
+    if (delivered('flyer')) assert.ok(names.some((n) => n.startsWith('campaign/print/flyers/') && n.endsWith('.png')));
+    if (delivered('web_ad')) assert.ok(names.some((n) => n.startsWith('campaign/ads/web/') && n.endsWith('.png')));
+    if (delivered('display_ad')) assert.ok(names.some((n) => n.startsWith('campaign/ads/display/') && n.endsWith('.png')));
+    assert.ok(names.every((n) => n.startsWith('campaign/')), 'the V4 layout has one root folder');
+    assert.ok(!names.some((n) => /landing|seo|geo/i.test(n)), 'no landing page, SEO or GEO output in a V4 ZIP');
     assert.equal(manifest.assetsMissing.length, 0);
     for (const f of manifest.files) assert.ok(f.bytes > 0, `${f.path} is not an empty placeholder`);
+  });
+
+  it('GET CONTENT: the approved logo and photographs reach the creatives, the Visual Researcher records them and the ZIP carries the logo', async () => {
+    const logo = await sharp({ create: { width: 640, height: 220, channels: 4, background: '#0b3d91' } }).png().toBuffer();
+    const brand = { logo: { approved: true as const, assetId: 'asset-logo', source: 'website', fileName: 'site-logo.png', width: 640, height: 220 }, approvedPhotos: 3, approvedAt: '2026-11-03T10:00:00.000Z' };
+    const images = await Promise.all([1, 2, 3].map(photo));
+    const o = await run({ images, config: { logo, brand } });
+    assert.equal(o.result.status, 'completed', o.result.errorMessage ?? '');
+    assert.equal(o.fake.imageCalls().length, 0);
+    const { pkg } = o.packages[0];
+    const h = pkg.hybrid!;
+    assert.equal(h.brand?.logo?.assetId, 'asset-logo');
+    assert.equal(h.brand?.approvedPhotos, 3);
+    assert.ok(h.brand!.withLogo > 0, 'the approved logo is drawn on creatives');
+    for (const c of h.creatives.filter((x) => x.status === 'rendered')) assert.ok(c.logo, `${c.slotId}: the logo outcome is recorded`);
+    const approved = new Set(images.map((i) => i.id));
+    const used = h.creatives.flatMap((c) => c.sourceAssetIds ?? []).map((x) => x.replace('brand:', ''));
+    assert.ok(used.length > 0, 'approved photographs are used');
+    assert.ok(used.every((x) => approved.has(x)), 'only approved pictures are drawn');
+    const finding = o.events.filter((e) => e.type === 'finding.posted' && e.participant === 'Visual Researcher').map((e) => JSON.stringify(e.payload)).join(' ');
+    assert.match(finding, /Approved brand content: the official logo and 3 approved photograph/);
+    const z = await JSZip.loadAsync((await buildCampaignZip(pkg, o.store, { logo: { fileName: 'site-logo.png', data: logo, rights: 'Rights confirmed by the project owner' } })).zip);
+    assert.ok(Object.keys(z.files).some((n) => n.startsWith('campaign/brand/logo-')));
+  });
+
+  it('WITHOUT Get Content nothing about approved brand content is claimed', async () => {
+    const o = await run({ images: await Promise.all([1, 2].map(photo)) });
+    assert.equal(o.result.status, 'completed', o.result.errorMessage ?? '');
+    const finding = o.events.filter((e) => e.type === 'finding.posted' && e.participant === 'Visual Researcher').map((e) => JSON.stringify(e.payload)).join(' ');
+    assert.ok(finding.length > 0, 'the Visual Researcher still reports');
+    assert.doesNotMatch(finding, /Approved brand content/);
   });
 
   it('without any approved picture every deliverable is typography-first and nothing is faked', async () => {

@@ -176,7 +176,8 @@ describe('Visual System 2.0', () => {
     const { user } = await readyUser('vs-col', { withKey: false });
     const list = (await user.agent.get('/collections').expect(200)).body;
     expect(list.items.map((c: any) => c.id)).toEqual(['minimal_tech', 'bold_startup', 'premium_editorial', 'modern_corporate', 'luxury_hospitality', 'lifestyle_human', 'clean_ecommerce', 'dynamic_events', 'contemporary_geometric', 'soft_organic']);
-    expect(list.formatOptions.map((f: any) => f.key)).toEqual(['instagram_post', 'instagram_story', 'facebook_post', 'linkedin_post', 'website_banner', 'flyer', 'billboard', 'other']);
+    // the V4 deliverable catalog: social (X, TikTok cover, Instagram, Facebook, LinkedIn), advertising (web banner, display ad) and print
+    expect(list.formatOptions.map((f: any) => f.key)).toEqual(['x_post', 'tiktok_cover', 'instagram_post', 'instagram_story', 'facebook_post', 'linkedin_post', 'website_banner', 'display_ad', 'flyer', 'billboard', 'other']);
     const templates = new Set((await user.agent.get('/templates').expect(200)).body.items.map((t: any) => t.id));
     for (const c of list.items) {
       expect(c.templates.length).toBeGreaterThanOrEqual(5);

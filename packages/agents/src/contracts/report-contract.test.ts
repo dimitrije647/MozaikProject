@@ -55,7 +55,13 @@ describe('Report contract: the saved F1 -> F2 -> F3 chain of the incident', () =
     const r3 = readF3Report(f3);
     assert.ok(r1.ok && r2.ok && r3.ok);
     if (!(r1.ok && r2.ok && r3.ok)) return;
-    for (const r of [r1, r2, r3]) assert.equal(r.notes.status, 'current', 'no adjustment was needed: nothing was patched up');
+    for (const r of [r1, r2]) assert.equal(r.notes.status, 'current', 'no adjustment was needed: nothing was patched up');
+    // The saved strategy predates V4's copy direction: the ONLY adjustment is that declared default (null), listed, never silent.
+    assert.equal(r3.notes.status, 'normalized');
+    assert.deepEqual(r3.notes.defaulted, ['creativeBrief.copyDirection']);
+    assert.deepEqual(r3.notes.ignored, []);
+    assert.equal(r3.context.report.creativeBrief.copyDirection, null);
+    assert.equal('copyDirection' in f3.reportJson.creativeBrief, false, 'the stored report was not rewritten');
     assert.equal(r3.context.report.creativeBrief.claimsToAvoid.length, 9, 'no claim to avoid was dropped');
     assert.equal(r3.context.strategyId, 'fx-f3-strategy');
     assert.equal(r3.context.f1ReportId, 'fx-f1-report');
@@ -81,7 +87,7 @@ describe('Report contract: the saved F1 -> F2 -> F3 chain of the incident', () =
     assert.deepEqual(c.reports.map((r) => [r.report, r.status, r.message]), [
       ['F1', 'current', 'Existing Product Discovery report is compatible and will be reused.'],
       ['F2', 'current', 'Existing Marketing Audit is compatible and will be reused.'],
-      ['F3', 'current', 'Existing strategy is compatible and will be reused.'],
+      ['F3', 'normalized', 'Existing strategy is compatible after 1 deterministic adjustment (listed below) and will be reused.'],
     ]);
     assert.equal(c.contexts.f3?.report.creativeBrief.claimsToAvoid.length, 9);
   });
@@ -180,12 +186,12 @@ describe('Report contract: deterministic adjustments are listed, never silent', 
     assert.ok(r.ok);
     if (!r.ok) return;
     assert.equal(r.notes.status, 'normalized');
-    assert.deepEqual(r.notes.defaulted.sort(), ['competitorLandscape.namesNotFound', 'competitorLandscape.pagesRetrieved', 'competitorLandscape.sitesRead', 'competitorLandscape.userSuppliedNames', 'existingMarketing.contradictions']);
+    assert.deepEqual(r.notes.defaulted.sort(), ['competitorLandscape.namesNotFound', 'competitorLandscape.pagesRetrieved', 'competitorLandscape.sitesRead', 'competitorLandscape.userSuppliedNames', 'creativeBrief.copyDirection', 'existingMarketing.contradictions']);
     assert.equal('userSuppliedNames' in older.reportJson.competitorLandscape, false, 'the stored report was not rewritten');
     const chain = checkSavedChain({ projectId: 'fx-project', f1: load('f1-row.json'), f2: load('f2-row.json'), f3: older });
     assert.equal(chain.ok, true);
     assert.equal(chain.reports[2].status, 'normalized');
-    assert.match(chain.reports[2].message, /compatible after 5 deterministic adjustments .* and will be reused/);
+    assert.match(chain.reports[2].message, /compatible after 6 deterministic adjustments .* and will be reused/);
   });
 
   it('12. a field this version does not read is listed as ignored (kept in the stored row), not dropped without a word', () => {

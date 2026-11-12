@@ -137,7 +137,9 @@ export function buildResearcher(env: F4Env): PhaseAgent {
           env.hybrid.brandImages = outcome.library;
           summary = outcome.summary;
           sourcing = { imagery: outcome.imagery, allocation: outcome.allocation, discovery: outcome.discovery ? summarizeDiscovery(outcome.discovery) : null };
-          ctx.emit('finding.posted', { agent: name, summary: `${visualDirectionSummary(direction)} ${summary}`.slice(0, 900), findings: [], missingInformation: outcome.imagery.notes.slice(0, 5) }, self.participant);
+          // the brand material the owner approved with Get Content is part of what the pictures were chosen from (counts only: no outside text is passed on)
+          const brandLine = env.brand ? ` Approved brand content: ${env.brand.logo ? 'the official logo' : 'no logo'} and ${env.brand.approvedPhotos} approved photograph(s); the templates and layouts use them.` : '';
+          ctx.emit('finding.posted', { agent: name, summary: `${visualDirectionSummary(direction)}${brandLine} ${summary}`.slice(0, 900), findings: [], missingInformation: outcome.imagery.notes.slice(0, 5) }, self.participant);
         } catch {
           if (!self.isTaskOpen() || ctx.isClosed()) return;
           summary = 'Picture sourcing failed; the pictures you already approved are used without a search.';
