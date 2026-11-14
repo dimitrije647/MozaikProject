@@ -25,6 +25,7 @@ import { GitHubRepositoryTool, parseGitHubUrl } from '../../tools/github';
 import { ImagePreparationTool, type ImageInput } from '../../tools/images';
 import { createWebExtractFromEnv } from '../../tools/web-extract';
 import { WebFetchTool } from '../../tools/web-fetch';
+import { brandFactsOf, type BrandFacts } from '../../brand/official';
 import { createWebSearchFromEnv } from '../../tools/web-search';
 import { ParticipantRegistry } from '../participant-registry';
 import { createTextTransport, type InferenceCredentials } from '../providers';
@@ -94,6 +95,8 @@ export interface ReportMeta {
   aiCalls: Record<string, number>;
   tools: { search: string; searchConfigured: boolean; extract: string; extractConfigured: boolean; extractCalls: number; fixtureSources: boolean };
   inputSnapshot: DiscoveryInput;
+  /** Verified identity facts read from the business's own website (official slogan, name, contact) with their sources. Absent in older reports. */
+  brandFacts?: BrandFacts | null;
 }
 
 export type ReportSink = (report: ProductDiscoveryReportV2, meta: ReportMeta) => Promise<void>;
@@ -389,6 +392,7 @@ export class F1Program implements RunProgram {
                 aiCalls: Object.fromEntries(Object.entries(usage.perAgent).map(([k, v]) => [k, v.calls])),
                 tools: { search: env.tools.search.provider, searchConfigured: env.tools.search.configured, extract: env.tools.extract.provider, extractConfigured: env.tools.extract.configured, extractCalls: env.tools.extract.callCount, fixtureSources: settings.fixtureSources },
                 inputSnapshot: env.input,
+                brandFacts: env.brandPages?.length ? brandFactsOf(env.brandPages, env.input.intake?.productName ?? env.input.project.name) : null,
               };
               ctx.emit('task.completed', { agent: name, outcome: 'succeeded' }, self.participant);
               ctx.emit('report.generated', { report, meta }, self.participant);

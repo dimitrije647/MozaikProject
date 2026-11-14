@@ -9,8 +9,9 @@ import type { TemplateSlot } from './plan';
  * THE DELIVERABLES PLAN (pure, deterministic, no model). It decides what one campaign delivers, instead of a fixed creative quota:
  *
  *   social   one post visual per concept for each platform (X, TikTok cover, Facebook, Instagram, LinkedIn), in the platform's primary format
- *   ads      a web banner and a display ad for the lead concept(s)
- *   print    a billboard and a flyer for the lead concept
+ *   ads      a web banner and a display ad as a 2 x 2 VARIATION MATRIX: two different designs, each with the copy of the two lead concepts
+ *            (two meaningful copy alternatives: the concepts take different angles) = four creatives per ad deliverable
+ *   print    FOUR billboards (the same 2 x 2 matrix) and TWO flyers (the two lead concepts; one concept: a second layout of it)
  *
  * A deliverable is planned only when the chosen collection can really draw its format with the content the campaign has. One it cannot draw is
  * listed in `notPlanned` with the reason: it is never replaced by another shape, stretched or faked.
@@ -34,14 +35,15 @@ export const PLATFORM_DELIVERABLES: Record<CampaignPlatform, Spec> = {
 };
 
 /** Campaign-level deliverables and how many lead concepts get one. Ads carry the nominal ad channel, print the nominal print channel. */
-export const CAMPAIGN_DELIVERABLES: (Spec & { concepts: number })[] = [
-  { kind: 'web_ad', label: 'Web banner ad', channel: 'google_search', formats: ['web_banner'], folder: 'ads/web', concepts: 2 },
-  { kind: 'display_ad', label: 'Display ad', channel: 'google_search', formats: ['display_square', 'promo_16x9'], folder: 'ads/display', concepts: 2 },
-  { kind: 'billboard', label: 'Billboard', channel: 'organic_content', formats: ['billboard'], folder: 'print/billboards', concepts: 1 },
-  { kind: 'flyer', label: 'Flyer', channel: 'organic_content', formats: ['flyer'], folder: 'print/flyers', concepts: 1 },
+export const CAMPAIGN_DELIVERABLES: (Spec & { concepts: number; matrix?: boolean })[] = [
+  { kind: 'web_ad', label: 'Web banner ad', channel: 'google_search', formats: ['web_banner'], folder: 'ads/web', concepts: 2, matrix: true },
+  { kind: 'display_ad', label: 'Display ad', channel: 'google_search', formats: ['display_square', 'promo_16x9'], folder: 'ads/display', concepts: 2, matrix: true },
+  { kind: 'billboard', label: 'Billboard', channel: 'organic_content', formats: ['billboard'], folder: 'print/billboards', concepts: 2, matrix: true },
+  { kind: 'flyer', label: 'Flyer', channel: 'organic_content', formats: ['flyer'], folder: 'print/flyers', concepts: 2 },
 ];
 
-export const MAX_DELIVERABLES = 24;
+/** Upper bound of one campaign (3 concepts x 5 platforms + 3 matrices of 4 + 2 flyers = 29). */
+export const MAX_DELIVERABLES = 30;
 
 export const folderOf = (kind: DeliverableKind, channel: string): string => (kind === 'social_post' ? `social/${channel}` : (CAMPAIGN_DELIVERABLES.find((d) => d.kind === kind)?.folder ?? 'other'));
 
@@ -90,7 +92,7 @@ export function planDeliverables(input: DeliverablesInput): DeliverablesPlan {
   const notPlanned: NotPlanned[] = [];
   const warnings: string[] = [];
   const indexOf = new Map<string, number>();
-  const add = (spec: Spec, concept: { id: string; name: string }) => {
+  const add = (spec: Spec, concept: { id: string; name: string }, copyNo = 1, matrix: TemplateSlot['matrix'] = null) => {
     const formatId = spec.formats.find(drawable);
     if (!formatId) {
       notPlanned.push({ kind: spec.kind, label: spec.label, format: spec.formats[0], conceptId: concept.id, reason: `The chosen template collection has no template that can draw ${CREATIVE_FORMATS[spec.formats[0]]?.label ?? spec.formats[0]} with the content this campaign has.` });
@@ -108,7 +110,7 @@ export function planDeliverables(input: DeliverablesInput): DeliverablesPlan {
     const index = (indexOf.get(concept.id) ?? 0) + 1;
     indexOf.set(concept.id, index);
     slots.push({
-      slotId: spec.kind === 'social_post' ? `${concept.id}-${spec.channel}` : `${concept.id}-${spec.kind.replace('_', '-')}`,
+      slotId: spec.kind === 'social_post' ? `${concept.id}-${spec.channel}` : matrix ? `${concept.id}-${spec.kind.replace('_', '-')}-d${matrix.design}` : `${concept.id}-${spec.kind.replace('_', '-')}${copyNo > 1 ? `-${copyNo}` : ''}`,
       conceptId: concept.id,
       conceptName: concept.name,
       index,
@@ -123,10 +125,23 @@ export function planDeliverables(input: DeliverablesInput): DeliverablesPlan {
       label: spec.label,
       folder: spec.folder,
       fixedFormat: spec.kind !== 'social_post',
+      ...(matrix ? { matrix } : {}),
     });
   };
   // the campaign-level deliverables first (lead concepts), so the upper limit never drops a billboard or a flyer in favour of one more post
-  for (const spec of CAMPAIGN_DELIVERABLES) for (const c of input.concepts.slice(0, Math.max(1, spec.concepts))) add(spec, c);
+  for (const spec of CAMPAIGN_DELIVERABLES) {
+    if (!input.concepts.length) break;
+    if (spec.matrix) {
+      // 2 designs x 2 texts: the copy of the two lead concepts (one concept: one text, and the report says the matrix is 2 x 1)
+      const texts = input.concepts.slice(0, 2);
+      for (const design of [1, 2] as const) texts.forEach((c, i) => add(spec, c, 1, { group: spec.kind, design, copy: (i + 1) as 1 | 2 }));
+      if (texts.length < 2) warnings.push(`${spec.label}: only one concept exists, so the variation matrix is 2 designs x 1 text (no second copy alternative was written).`);
+      continue;
+    }
+    // print is delivered in its full count: with fewer concepts than that, the lead concept gets another layout (never a byte copy)
+    const n = spec.kind === 'billboard' || spec.kind === 'flyer' ? spec.concepts : Math.min(spec.concepts, input.concepts.length);
+    for (let i = 0; i < Math.max(1, n); i++) add(spec, input.concepts[i % input.concepts.length], Math.floor(i / input.concepts.length) + 1);
+  }
   for (const c of input.concepts) for (const p of platforms) add(PLATFORM_DELIVERABLES[p], c);
   // stable order for people: concept by concept, social first
   const kindRank: Record<DeliverableKind, number> = { social_post: 0, web_ad: 1, display_ad: 2, billboard: 3, flyer: 4 };
@@ -145,7 +160,7 @@ export function planDeliverables(input: DeliverablesInput): DeliverablesPlan {
     notPlanned,
     rules: [
       'One post visual per concept for each social platform, in the platform\'s primary format (TikTok: a 9:16 cover image; the video itself is a script, never generated).',
-      'A web banner and a display ad for the lead concepts, a billboard and a flyer for the lead concept.',
+      'Web banner, display ad and billboard as a 2 x 2 variation matrix: two different designs, each with the two lead concepts\' texts (four creatives each); two flyers (the two lead concepts, or two layouts of the only one).',
       `At most ${MAX_DELIVERABLES} deliverables per campaign.`,
       'A format the chosen collection cannot draw is reported, never replaced by another shape or stretched.',
     ],

@@ -211,6 +211,30 @@ export function consistencyFindings(board: CreativeBoard): RawFinding[] {
 }
 
 /** Measured problems of the rendered creatives and missing deliverables. */
+/**
+ * THE OFFICIAL SLOGAN (deterministic): the company's verified slogan is quoted VERBATIM or not at all, and a line the campaign made up is never
+ * presented as the company's slogan. Only the business's own website can make a line official (brand/official.ts).
+ */
+export function brandFindings(args: { board: CreativeBoard; officialSlogan: string | null }): RawFinding[] {
+  const out: RawFinding[] = [];
+  const norm = (t: string) => foldDiacritics(t.toLowerCase()).replace(/[^\p{L}\p{N} ]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  const off = args.officialSlogan ? norm(args.officialSlogan) : null;
+  const offWords = off ? off.split(' ') : [];
+  for (const v of args.board.variants) {
+    const text = `${v.headline} . ${v.body} . ${v.visualLine ?? ''}`;
+    const said = /\b(our|the company'?s?|official|brand)\s+(slogan|tagline|motto)\b|\b(slogan|motto)\s*[:–-]/i.test(text);
+    const n = norm(text);
+    if (off && said && !n.includes(off)) out.push({ kind: 'factual_error', severity: 'major', assetRef: v.id, finding: 'The copy presents a line as the company slogan, but it is not the official slogan confirmed on the website.', evidence: `Official slogan: "${args.officialSlogan}".`, suggestedCorrection: 'Quote the official slogan verbatim, or present the line as campaign copy, not as the slogan.', responsibleAgent: 'copywriter', source: 'deterministic' });
+    else if (!off && said) out.push({ kind: 'factual_error', severity: 'major', assetRef: v.id, finding: 'The copy presents a line as the company slogan, but no official slogan was confirmed on the website.', evidence: 'No verified slogan exists in the business research.', suggestedCorrection: 'Drop the claim that this is the slogan; keep the line as campaign copy if it fits.', responsibleAgent: 'copywriter', source: 'deterministic' });
+    else if (off && offWords.length >= 3 && !n.includes(off)) {
+      // most of the slogan's words in a row, but not the slogan itself: an altered quotation
+      const hits = offWords.filter((w) => n.split(' ').includes(w)).length;
+      if (hits >= Math.ceil(offWords.length * 0.75)) out.push({ kind: 'inconsistent_messaging', severity: 'minor', assetRef: v.id, finding: 'The copy uses an altered version of the official slogan.', evidence: `Official slogan: "${args.officialSlogan}".`, suggestedCorrection: 'Use the official slogan word for word, or write a clearly different campaign line.', responsibleAgent: 'copywriter', source: 'deterministic' });
+    }
+  }
+  return out;
+}
+
 export function assetFindings(args: { board: CreativeBoard; hasLogo: boolean; hasPalette: boolean }): RawFinding[] {
   const { board } = args;
   const out: RawFinding[] = [];
@@ -220,7 +244,10 @@ export function assetFindings(args: { board: CreativeBoard; hasLogo: boolean; ha
     if (!fmt || fmt.width !== a.width || fmt.height !== a.height) out.push({ kind: 'wrong_dimensions', severity: 'blocker', assetRef: a.id, finding: `The exported image is ${a.width}×${a.height}, not the ${fmt ? `${fmt.width}×${fmt.height}` : 'expected'} of format ${a.format}.`, evidence: 'Measured from the exported file.', suggestedCorrection: 'Render the creative again at the exact format size.', responsibleAgent: 'layout', source: 'deterministic' });
     for (const f of a.flags) {
       if (f === 'text_overflow') out.push({ kind: 'text_overflow', severity: 'major', assetRef: a.id, finding: 'The text does not fit its area at a readable size.', evidence: 'The fitting loop reached the minimum font size.', suggestedCorrection: 'Render again without the supporting line or with a roomier template.', responsibleAgent: 'layout', source: 'deterministic' });
-      else if (f.startsWith('low_contrast')) out.push({ kind: 'low_contrast', severity: 'major', assetRef: a.id, finding: `Text contrast is low (${f.replace('low_contrast_', '')}:1, needs 4.5:1).`, evidence: 'Measured from the image behind the text.', suggestedCorrection: 'Render again with another template of the collection.', responsibleAgent: 'layout', source: 'deterministic' });
+      // "low_contrast_adjusted:<layer>" means the renderer already REPLACED the colour to reach the target: not a problem. A contrast that stays
+      // low is "low_contrast_unresolved:<layer>" (template renders) or "low_contrast_<ratio>" (older campaigns).
+      else if (f.startsWith('low_contrast_unresolved:')) out.push({ kind: 'low_contrast', severity: 'major', assetRef: a.id, finding: `Text contrast stays low on ${f.slice('low_contrast_unresolved:'.length)} even with the best available colour.`, evidence: 'Measured from the image behind the text.', suggestedCorrection: 'Render again with another template of the collection.', responsibleAgent: 'layout', source: 'deterministic' });
+      else if (/^low_contrast_\d/.test(f)) out.push({ kind: 'low_contrast', severity: 'major', assetRef: a.id, finding: `Text contrast is low (${f.replace('low_contrast_', '')}:1, needs 4.5:1).`, evidence: 'Measured from the image behind the text.', suggestedCorrection: 'Render again with another template of the collection.', responsibleAgent: 'layout', source: 'deterministic' });
       else if (f === 'logo_unreadable') out.push({ kind: 'logo', severity: 'minor', assetRef: a.id, finding: 'The supplied logo could not be read, so the business name was drawn instead.', evidence: 'Image decoding failed.', suggestedCorrection: 'Upload the logo again as PNG.', responsibleAgent: 'layout', source: 'deterministic' });
       else if (f === 'cta_truncated') out.push({ kind: 'weak_cta', severity: 'minor', assetRef: a.id, finding: 'The call to action text was too long and was shortened.', evidence: 'Button width limit.', suggestedCorrection: 'Use a shorter call to action.', responsibleAgent: 'copywriter', source: 'deterministic' });
     }
@@ -237,6 +264,23 @@ export function assetFindings(args: { board: CreativeBoard; hasLogo: boolean; ha
  * The template quality report as findings. A creative that can be rendered again is a Creative Designer problem; a picture that is not an
  * approved, rights-cleared source is a blocker the Visual Researcher owns (it is never repaired by pretending).
  */
+/** What a remaining design-preflight issue becomes in the review, and the correction the Creative Designer can make (another template). */
+const DESIGN_FINDING = {
+  text_issue: { kind: 'text_overflow', fix: 'Render it again with another template of the collection (and without the supporting line).' },
+  image_issue: { kind: 'poor_crop', fix: 'Render it again with a template that shows the picture larger.' },
+  crop_issue: { kind: 'poor_crop', fix: 'Render it again with a template whose picture area suits this picture.' },
+  occlusion_issue: { kind: 'visual_defect', fix: 'Render it again with a template that keeps panels and text away from the people.' },
+  logo_issue: { kind: 'logo', fix: 'Render it again with a template that gives the logo enough room and contrast.' },
+  safe_area_issue: { kind: 'visual_defect', fix: 'Render it again with another template of the collection.' },
+  template_mismatch: { kind: 'visual_defect', fix: 'Render it again with a template made for the pictures this creative has.' },
+  ui_contamination: { kind: 'visual_defect', fix: 'Render it again without the editor/preview element.' },
+  duplicate_layout: { kind: 'repetitive', fix: 'Another template of the collection would make it look less like its sibling.' },
+  alignment_issue: { kind: 'visual_defect', fix: 'Render it again with its grouped elements on one axis.' },
+  media_issue: { kind: 'visual_defect', fix: 'Render it again with the rules of its medium (print: no button, the business named in full).' },
+  repeated_concept: { kind: 'repetitive', fix: 'Render it again with another template of the collection: the channel already has this design.' },
+  asset_mismatch: { kind: 'poor_crop', fix: 'Render it again with an approved photograph (or photo-free): a brand graphic or logo is never a creative\'s picture.' },
+} as const;
+
 export function templateFindings(args: { board: CreativeBoard }): RawFinding[] {
   const tq = args.board.templateQuality;
   if (!tq) return [];
@@ -249,6 +293,12 @@ export function templateFindings(args: { board: CreativeBoard }): RawFinding[] {
     else if (i.kind === 'ineligible_source') out.push({ kind: 'source_rights', severity: 'blocker', assetRef: i.assetId, finding: i.message.slice(0, 300), evidence: 'Template check: every picture must be an approved, rights-cleared source.', suggestedCorrection: 'Remove the picture from the creative or clear its rights in the image library.', responsibleAgent: 'visual', source: 'deterministic' });
     else if (i.kind === 'duplicate_output') out.push({ kind: 'repetitive', severity: 'major', assetRef: i.assetId, finding: i.message.slice(0, 300), evidence: 'Template check: byte comparison of the rendered files.', suggestedCorrection: 'Render it again with another template of the collection.', responsibleAgent: 'layout', source: 'deterministic' });
     else if (i.kind === 'missing_lineage' || i.kind === 'design_mismatch') out.push({ kind: 'other', severity: 'major', assetRef: i.assetId, finding: i.message.slice(0, 300), evidence: 'Template check: lineage and design.', suggestedCorrection: 'Render the creative again with its source and template recorded.', responsibleAgent: 'layout', source: 'deterministic' });
+    else if (i.kind === 'text_trimmed') out.push({ kind: 'text_overflow', severity: 'major', assetRef: i.assetId, finding: i.message.slice(0, 300), evidence: 'Template check: the renderer had to cut essential text (an ellipsis in the final asset).', suggestedCorrection: 'Use a shorter approved wording or another layout; the Content Writer writes a shorter call to action / headline when none exists.', responsibleAgent: 'layout', source: 'deterministic' });
+    else if (i.kind === 'missing_provenance') out.push({ kind: 'source_rights', severity: 'major', assetRef: i.assetId, finding: i.message.slice(0, 300), evidence: 'Template check: the campaign image library was compared with the pictures drawn.', suggestedCorrection: 'Re-approve the picture in the image library so its page, address and rights basis are stored.', responsibleAgent: 'visual', source: 'deterministic' });
+    else if (i.kind in DESIGN_FINDING) {
+      const d = DESIGN_FINDING[i.kind as keyof typeof DESIGN_FINDING];
+      out.push({ kind: d.kind, severity: i.severity === 'major' ? 'major' : 'minor', assetRef: i.assetId, finding: i.message.slice(0, 300), evidence: `Design preflight (${i.kind.replace('_', ' ')}): measured on the rendered file after the automatic repairs.`, suggestedCorrection: d.fix, responsibleAgent: 'layout', source: 'deterministic' });
+    }
   }
   return out;
 }

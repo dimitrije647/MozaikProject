@@ -58,6 +58,9 @@ export const TemplateContent = z.object({
   eyebrow: z.string().nullable(),
   /** The id of the copy variant the text came from. */
   variantId: z.string().nullable(),
+  /** shorter approved wordings of the call to action / the headline, longest first (used only when the full text does not fit; absent in older campaigns) */
+  ctaOptions: z.array(z.string()).optional(),
+  headlineOptions: z.array(z.string()).optional(),
 });
 export type TemplateContent = z.infer<typeof TemplateContent>;
 
@@ -110,6 +113,51 @@ export type TemplateSelectionPlan = z.infer<typeof TemplateSelectionPlan>;
 
 // ---- what happened to each planned creative --------------------------------------------------------------------------------------
 
+/**
+ * What the design preflight found for ONE creative and what was repaired automatically (templates/preflight.ts). Absent on creatives made
+ * before the preflight existed.
+ */
+export const DesignDiagnostics = z.object({
+  passed: z.boolean(),
+  checks: z.array(z.object({ id: z.string(), category: z.string(), status: z.enum(['pass', 'fail', 'warn', 'skip']), detail: z.string() })).max(32),
+  repairs: z.array(z.object({ kind: z.string(), target: z.string(), detail: z.string() })).max(40),
+  /** how many renders the creative needed (1 = it passed at once) */
+  renders: z.number().int(),
+  /** the templates tried, in order (the last one is the one delivered) */
+  templatesTried: z.array(z.string()).max(8),
+  templateChanged: z.boolean(),
+  /** passed = every layout check passed; warnings = only non-critical problems; unresolved = a critical problem remains (review it, not approved). Absent before V4.2. */
+  status: z.enum(['passed', 'warnings', 'unresolved']).optional(),
+  /** The adaptive composition that was chosen: template, layout variant, its score and why, and the best alternatives that lost (V4.2). */
+  composition: z
+    .object({
+      templateId: z.string(),
+      variant: z.string(),
+      score: z.number(),
+      considered: z.number().int(),
+      reasons: z.array(z.string()).max(6),
+      hard: z.array(z.string()).max(6),
+      rejected: z.array(z.object({ templateId: z.string(), variant: z.string(), score: z.number(), why: z.string() })).max(6),
+    })
+    .optional(),
+  crop: z.object({ fit: z.enum(['cover', 'contain']), zoom: z.number(), cropLoss: z.number(), subjectAware: z.boolean(), facesWhole: z.number().int(), faces: z.number().int() }).nullable().optional(),
+  text: z.object({ over: z.enum(['panel', 'picture', 'plain']), placement: z.string() }).optional(),
+  logo: z.object({ mode: z.enum(['logo', 'name']), moved: z.boolean(), enlarged: z.boolean(), plate: z.boolean(), contrast: z.number(), name: z.boolean().optional() }).nullable().optional(),
+  /**
+   * The CREATIVE CONCEPT of this creative (V4.3): its layout key (the template; a mirrored or compacted copy of it is the SAME key), its design
+   * family, and how it relates to the creatives already made for the same channel: a new creative direction, a layout adaptation (same template,
+   * another arrangement) or a copy variation (same layout, other words).
+   */
+  concept: z.object({ key: z.string(), family: z.string(), relation: z.enum(['creative_direction', 'layout_adaptation', 'copy_variation']), channel: z.string() }).optional(),
+  /** the advertising variation matrix cell this creative is (design x copy) and whether the design is really shared with its partner */
+  matrix: z.object({ group: z.string(), design: z.number().int(), copy: z.number().int(), shared: z.boolean(), note: z.string().nullable() }).nullable().optional(),
+  /** essential text replaced by a shorter approved wording because the full one did not fit */
+  shortened: z.array(z.object({ slot: z.string(), from: z.string(), to: z.string() })).max(6).optional(),
+  /** the picture this creative was built from, as the layout sees it (photograph, screenshot, ...), and a picture replaced because it could not serve as one */
+  picture: z.object({ kind: z.string(), replaced: z.string().nullable() }).nullable().optional(),
+});
+export type DesignDiagnostics = z.infer<typeof DesignDiagnostics>;
+
 export const TemplateCreativeRecord = z.object({
   slotId: z.string(),
   conceptId: z.string(),
@@ -134,13 +182,44 @@ export const TemplateCreativeRecord = z.object({
   origin: z.enum(ASSET_ORIGINS).nullable(),
   flags: z.array(z.string()),
   reason: z.string().nullable(),
+  /** The design preflight of this creative: the checks, the automatic repairs and the templates tried. */
+  design: DesignDiagnostics.optional(),
 });
 export type TemplateCreativeRecord = z.infer<typeof TemplateCreativeRecord>;
 
 export const TemplateQualityIssue = z.object({
   slotId: z.string().nullable(),
   assetId: z.string().nullable(),
-  kind: z.enum(['missing_render', 'missing_lineage', 'wrong_dimensions', 'duplicate_output', 'unreadable_file', 'text_trimmed', 'unsupported_pairing', 'design_mismatch', 'ineligible_source', 'logo_omitted']),
+  kind: z.enum([
+    'missing_render',
+    'missing_lineage',
+    'wrong_dimensions',
+    'duplicate_output',
+    'unreadable_file',
+    'text_trimmed',
+    'unsupported_pairing',
+    'design_mismatch',
+    'ineligible_source',
+    'logo_omitted',
+    // design preflight categories (V4.1): what remained after the automatic repairs
+    'text_issue',
+    'image_issue',
+    'crop_issue',
+    'occlusion_issue',
+    'logo_issue',
+    'safe_area_issue',
+    'template_mismatch',
+    'ui_contamination',
+    'duplicate_layout',
+    // V4.3: alignment and media rules, campaign-level concept repetition, picture kind and provenance
+    'alignment_issue',
+    'media_issue',
+    'repeated_concept',
+    'asset_mismatch',
+    'missing_provenance',
+    // MVP composition rules: empty panels, photo use, text density, text space
+    'composition_issue',
+  ]),
   severity: z.enum(['blocker', 'major', 'minor']),
   message: z.string(),
   repairable: z.boolean(),
@@ -202,6 +281,10 @@ export const LibraryImageRecord = z.object({
   /** how it entered the campaign: in the library before the run, or added by the Visual Researcher in automatic stock mode */
   via: z.enum(['library', 'auto_stock']),
   usedBySlots: z.array(z.string()),
+  /** the address the file was fetched from (website / stock), when it came from one; absent in older campaigns */
+  originalUrl: z.string().nullable().optional(),
+  /** what the picture is for a layout: photograph, screenshot, illustration, brand_graphic, text_heavy_graphic, logo (absent in older campaigns) */
+  assetKind: z.string().optional(),
 });
 export type LibraryImageRecord = z.infer<typeof LibraryImageRecord>;
 

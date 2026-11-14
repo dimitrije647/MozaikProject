@@ -4,3 +4,4 @@ export * from './sources';
 export * from './image-colors';
 export * from './analyze';
 export * from './suggest';
+export * from './official';

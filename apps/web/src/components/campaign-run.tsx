@@ -215,7 +215,8 @@ function RunBudget({ u }: { u: FactoryUsage }) {
         {cell('Remaining', b.remainingUsd === null ? (b.approvedUsd === null ? '—' : 'unknown') : fmtUsd(b.remainingUsd))}
       </dl>
       <p>
-        Text-model calls: <strong>{u.textCalls}</strong> · tokens <strong>{u.totalTokens.toLocaleString()}</strong>
+        Text-model calls: <strong>{u.textCalls}</strong>
+        {u.providerRequests && u.providerRequests > u.textCalls ? <> (provider requests: <strong>{u.providerRequests}</strong>, including answers cut off by their limit and requests that timed out)</> : null} · tokens of completed answers <strong>{u.totalTokens.toLocaleString()}</strong>
         {u.imagesGenerated > 0 ? ` · AI images (historical run): ${u.imagesGenerated}` : ' · AI images: 0'}
       </p>
       {[...b.notes, ...b.refusals].map((n, i) => (

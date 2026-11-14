@@ -118,6 +118,8 @@ export class InferenceGateway implements InferenceRunner {
   /** What the last request of an agent was given, and why it failed, for a specific and safe error message. */
   private readonly attempts = new Map<string, { limitMs: number; cap: number }>();
   private readonly failureNotes = new Map<string, string>();
+  /** the answers of an agent that were cut off by their cap (billed, unusable) before a larger re-ask: kept for the failure note */
+  private readonly cutOffs = new Map<string, { cap: number; outputTokens: number | null }[]>();
 
   constructor(
     client: OpenAIClient | TextTransport,
@@ -237,6 +239,7 @@ export class InferenceGateway implements InferenceRunner {
         // An answer cut off by the output cap is useless as JSON, and the same cap would cut it off again: ask once more, bigger.
         const cutOff = result.cutOff;
         if (cutOff && this.budget.escalateTo && cap < this.budget.escalateTo && escalated < 2) {
+          this.cutOffs.set(contextId, [...(this.cutOffs.get(contextId) ?? []), { cap, outputTokens: output.tokenUsage?.outputTokens ?? null }]);
           escalated++;
           this.escalations++;
           cap = Math.min(this.budget.escalateTo, cap * 2);
@@ -260,7 +263,9 @@ export class InferenceGateway implements InferenceRunner {
         if (stopped) return failure(stopped);
         if (pe.code === 'timeout') {
           const a = this.attempts.get(contextId);
-          if (a) this.failureNotes.set(contextId, `No answer arrived within ${a.limitMs < 10_000 ? (a.limitMs / 1000).toFixed(1) : Math.round(a.limitMs / 1000)} s (the answer could be up to ${a.cap} tokens long). The request had been sent, so it may still have been billed; it was not repeated automatically.`);
+          const cut = this.cutOffs.get(contextId) ?? [];
+          const before = cut.length ? ` Before it, ${cut.map((c) => `an answer reached its ${c.cap}-token limit and was cut off${c.outputTokens !== null ? ` (${c.outputTokens} output tokens, billed)` : ' (billed)'}`).join('; ')}, so it was asked once more with a larger limit.` : '';
+          if (a) this.failureNotes.set(contextId, `No answer arrived within ${a.limitMs < 10_000 ? (a.limitMs / 1000).toFixed(1) : Math.round(a.limitMs / 1000)} s (the answer could be up to ${a.cap} tokens long). The request had been sent, so it may still have been billed; it was not repeated automatically.${before}`);
         }
         if (!pe.retryable || attempt === this.budget.maxRetries) return failure(pe.code);
         const delay = pe.retryAfterMs ?? this.budget.retryBaseDelayMs * 2 ** attempt;

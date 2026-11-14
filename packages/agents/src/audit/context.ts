@@ -1,5 +1,6 @@
 import { ProductDiscoveryReportV2 } from '../discovery/f1/schemas';
 import { readStoredReport, type ReadNotes, type ReportFailure } from '../contracts/report-contract';
+import { readBrandFacts, type BrandFacts } from '../brand/official';
 
 /**
  * What F2 receives from F1: a compact, read-only view of ONE completed F1 report (its Product Manifest, its
@@ -16,6 +17,8 @@ export interface F1Context {
   findings: { id: string; agent: string; category: string; statement: string; classification: string; locator: string | null; excerpt: string | null; sourceKind: string | null; live: boolean; fixture: boolean }[];
   sources: { id: string; kind: string; label: string; url: string | null; status: string; live: boolean; fixture: boolean }[];
   palette: string[];
+  /** Verified brand facts of the business's own website (official slogan, name, contact); null in older reports or when nothing was read. */
+  brandFacts?: BrandFacts | null;
 }
 
 interface StoredMeta {
@@ -23,6 +26,7 @@ interface StoredMeta {
   model?: string;
   findings?: { id: string; agent: string; category: string; statement: string; classification: string; locator?: string | null; excerpt?: string | null; sourceId?: string | null }[];
   sources?: { id: string; kind: string; label: string; url?: string | null; status: string; live?: boolean; fixture?: boolean }[];
+  brandFacts?: unknown;
 }
 
 export type ReadF1 = { ok: true; context: F1Context; notes: ReadNotes } | { ok: false; failure: ReportFailure };
@@ -51,6 +55,7 @@ export function readF1Report(row: { id: string; schemaVersion: number; reportJso
     }),
     sources,
     palette: parsed.data.productManifest.brand?.palette ?? [],
+    brandFacts: readBrandFacts(meta.brandFacts),
   };
   return { ok: true, context, notes: read.notes };
 }

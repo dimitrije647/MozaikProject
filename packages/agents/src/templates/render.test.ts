@@ -7,7 +7,7 @@ import { EDITORIAL_BRAND } from './library/editorial-brand';
 import { HOSPITALITY } from './library/hospitality';
 import { TECH_SAAS } from './library/tech-saas';
 import { PREVIEW_PALETTE, placeholderImage } from './preview';
-import { renderTemplate, safeAreaFor } from './render';
+import { isInfoFlag, renderTemplate, safeAreaFor } from './render';
 import { FORMAT_CLASSES, type CreativeContent, type FormatClass, type TemplateDef, type TemplateRenderInput } from './schema';
 import { tokenize, xmlEscape } from './text-fit';
 
@@ -130,7 +130,7 @@ describe('renderTemplate: reference templates', () => {
         const meta = await sharp(r.png).metadata();
         assert.deepEqual([meta.format, meta.width, meta.height, meta.space, meta.hasAlpha], ['png', w, h, 'srgb', false], `${t.id} ${cls}`);
         assert.deepEqual([r.width, r.height], [w, h]);
-        assert.deepEqual(r.flags.filter((f) => f !== 'logo_missing_name_used'), [], `${t.id} ${cls} renders its sample without warnings`);
+        assert.deepEqual(r.flags.filter((f) => f !== 'logo_missing_name_used' && !isInfoFlag(f)), [], `${t.id} ${cls} renders its sample without warnings`);
         assert.ok(r.drawn.includes('headline'));
         assert.ok(r.layers.length >= 4, `${t.id} ${cls}`);
       }
@@ -510,8 +510,10 @@ describe('renderTemplate: logo', () => {
     for (let y = 0; y < 300; y++) for (let x = 0; x < px.w; x++) if (!near(px, y * px.w + x, rgb('#ffffff'), 40)) ink++;
     assert.ok(ink > 200, 'name drawn');
     let outside = 0;
-    for (let y = 0; y < 300; y++) for (let x = 0; x < px.w; x++) if (!near(px, y * px.w + x, rgb('#ffffff'), 40) && (x < region.l - 3 || x > region.r + 3 || y < region.t - 3 || y > region.b + 3)) outside++;
-    assert.equal(outside, 0, 'the name stays inside the logo box');
+    // the business name is essential: it is never cut; when the box is too narrow it runs on to the right (free width), never up, down or left
+    for (let y = 0; y < 300; y++) for (let x = 0; x < px.w; x++) if (!near(px, y * px.w + x, rgb('#ffffff'), 40) && (x < region.l - 3 || y < region.t - 3 || y > region.b + 3)) outside++;
+    assert.equal(outside, 0, 'the name stays in the rows of the logo box, starting at its left edge');
+    assert.ok(!r.flags.includes('text_trimmed:logo'), 'the name is not cut');
     const none = await renderOk(input(logoTpl('left'), { brandName: '   ' }));
     assert.ok(none.flags.includes('logo_missing_no_name'));
     assert.ok(!none.layers.includes('logo'));

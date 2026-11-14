@@ -65,6 +65,7 @@ async function gatherWeb(env: F1Env, agent: F1Agent): Promise<Gathered> {
       return null;
     }
     const { page, fetched } = res;
+    (env.brandPages ??= []).push({ url: fetched.finalUrl, page });
     const rec = addSource(
       env,
       agent,

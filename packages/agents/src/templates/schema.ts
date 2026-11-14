@@ -101,6 +101,11 @@ export const ImageLayer = z.object({
   shadow: z.boolean().optional(),
   /** What is drawn in the box when no image exists (the template is only chosen without an image when this is set). */
   fallback: z.enum(['brandPattern', 'gradient', 'none']).optional(),
+  /** cover (default) crops the picture to fill the box; contain shows the WHOLE picture letterboxed in its own border colour (set by the
+   *  adaptive composition when any crop would cut people; flat graphics are always fitted). */
+  fit: z.enum(['cover', 'contain']).optional(),
+  /** the picture kinds this area takes (default inferred: a photograph when text is written over it, else also a screenshot or an illustration) */
+  accepts: z.array(z.enum(['photograph', 'screenshot', 'illustration'])).optional(),
 });
 export const TextLayer = z.object({
   ...base,
@@ -300,6 +305,105 @@ export interface TemplateRenderInput {
    * plate is drawn behind it. Off by default: a campaign without an approved logo renders exactly as before.
    */
   logoAdapt?: boolean;
+  /**
+   * Where the people, the faces and the subject of the HERO picture are (imagery/subject.ts, fractions of the picture). With it the crop keeps
+   * faces whole and the subject inside the frame, a flat graphic (logo banner, text on colour) is fitted instead of cropped, and the report
+   * measures how visible every face stays in the finished creative.
+   */
+  subject?: RenderSubject;
+  /** Deterministic adjustments asked for by the design preflight after an earlier render of the same creative failed a check. */
+  tune?: RenderTune;
+  /**
+   * SHORTER APPROVED WORDINGS of essential text, longest first (the Content Writer's short call to action / headline, or a shortening that only
+   * drops words of the original). When the full text does not fit even after the layout adjustments, the first one that fits COMPLETELY is drawn;
+   * a cut text ("Start the free Management and Risk Chec…") is never the answer.
+   */
+  alternatives?: Partial<Record<'cta' | 'headline', string[]>>;
+}
+
+/** [x, y, w, h] as fractions (0..1). */
+export type UnitBox = [number, number, number, number];
+
+export interface RenderSubject {
+  faces: UnitBox[];
+  subject: UnitBox;
+  graphic: boolean;
+}
+
+/**
+ * Repairs the preflight may ask for. Text never gets transparency: only decorative layers are made lighter, smaller or hidden.
+ *   layerOpacity  multiplies the opacity of decorative layers (rect, polygon, ellipse, pattern, line) and of a picture's scrim/tint (`<imageLayerId>:scrim`, `:tint`)
+ *   hide          decorative layers that are left out (never text, button, logo or picture)
+ *   avoid         canvas regions (fractions) the crop keeps the faces and the subject out of (under a panel, a band, a text block)
+ *   logoScale     the logo box is enlarged by this factor, anchored at its alignment, inside the safe area
+ *   logoPlate     a quiet plate is drawn behind the logo when it would not read against what is behind it
+ *   textBacking   text layers that get a tight solid backing (the text itself stays fully opaque)
+ *   shrinkDecor   decorative layers that are drawn smaller around their own centre (factor 0.4..1)
+ */
+export interface RenderTune {
+  layerOpacity?: Record<string, number>;
+  hide?: string[];
+  avoid?: UnitBox[];
+  logoScale?: number;
+  logoPlate?: boolean;
+  textBacking?: string[];
+  shrinkDecor?: Record<string, number>;
+  /** canvas regions (fractions) the logo keeps out of: it moves to another corner of its template (text it collided with, a face) */
+  logoAvoid?: UnitBox[];
+  /** draw the business NAME next to a logo mark that does not spell it (a shield, a symbol): print must say who is advertising */
+  brandName?: boolean;
+  /** buttons put back on the axis of their group: centre / left edge / right edge at x (fraction of the width) */
+  alignX?: Record<string, { mode: 'center' | 'left' | 'right'; x: number }>;
+}
+
+export interface PxRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** What the renderer really drew, in canvas pixels: the input of the deterministic design preflight. */
+export interface RenderReport {
+  width: number;
+  height: number;
+  safe: { l: number; t: number; r: number; b: number };
+  hero: null | {
+    layerId: string;
+    rect: PxRect;
+    fit: 'cover' | 'contain';
+    /** 1 = the smallest scale that covers the box; > 1 zoomed in on the people */
+    zoom: number;
+    graphic: boolean;
+    rotated: boolean;
+    /** share of the picture's area that the crop left out (0 = the whole picture is shown) */
+    cropLoss: number;
+    /** share of the subject box inside the visible frame */
+    subjectInFrame: number;
+    /** visible subject area as a share of the canvas */
+    subjectShare: number;
+    /** 0..1 how unchanged the subject area looks in the finished creative (1 = nothing is drawn over it) */
+    subjectVisibility: number | null;
+    /** 0..1 how unchanged the whole visible picture looks (panels, scrims and bands lower it) */
+    pictureVisibility: number | null;
+    faces: { rect: PxRect; area: number; inFrame: number; visibility: number | null }[];
+  };
+  texts: { layerId: string; slot: TextSlot; rect: PxRect; size: number; contrast: number; busy: number; trimmed: boolean; backed: boolean; /** relative luminance of the text colour */ lum: number; /** the words really drawn */ text?: string; align?: 'left' | 'center' | 'right' }[];
+  buttons: { layerId: string; rect: PxRect; trimmed: boolean; widened: boolean; arrowDropped: boolean; text?: string }[];
+  logo: null | {
+    layerId: string;
+    rect: PxRect;
+    mode: 'logo' | 'name';
+    contrast: number;
+    plate: boolean;
+    /** the business name was drawn next to the mark */
+    name?: boolean;
+    /** how the logo was set: directly, on the template's own plate, recoloured (single-colour logo), on a recoloured plate, on an added plate */
+    treatment?: 'direct' | 'template_plate' | 'recoloured' | 'plate_recoloured' | 'plate_added';
+  };
+  /** essential text replaced by a shorter approved wording because the full one did not fit */
+  shortened?: { slot: TextSlot; from: string; to: string }[];
+  decor: { layerId: string; type: string; rect: PxRect; opacity: number; area: number; afterHero: boolean; /** relative luminance of its fill (null: no solid fill) */ lum: number | null; /** filled with a gradient (a scrim fading out, not a solid panel) */ gradient?: boolean }[];
 }
 
 export type TemplateRenderResult =
@@ -314,5 +418,7 @@ export type TemplateRenderResult =
       drawn: TextSlot[];
       /** The layers that were drawn, in painting order (layer ids). */
       layers: string[];
+      /** The geometry and measurements of what was drawn (for the design preflight). */
+      report: RenderReport;
     }
   | { ok: false; reason: TemplateRenderFailure; message: string };

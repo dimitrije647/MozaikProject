@@ -67,6 +67,7 @@ export function defaultCopy(userText: string): CopyOutput {
         text: fit(`${OPENER[p] ?? ''} ${vp}. ${FLAVOR[p] ?? ''} Idea ${i + 1} on ${p}: ${h.angle.toLowerCase()}.`.trim(), p, 'social_post', 'body', 400),
         visualLine: fit(`${vp}.`, p, 'social_post', 'body', 100),
         cta: 'Learn more',
+        ctaShort: '',
         ctaType: 'learn_more',
         hashtags: p === 'linkedin' || p === 'x' ? [] : ['#getstarted'],
         postingFormat: p === 'tiktok' ? 'Vertical 9:16 video with the cover image as thumbnail' : 'Single image post',
@@ -77,11 +78,11 @@ export function defaultCopy(userText: string): CopyOutput {
     }
   });
   const lead = concepts.slice(0, Math.min(2, n));
-  const ads: CopyOutput['ads'] = lead.flatMap((c, i) => (['web_ad', 'display_ad'] as const).map((kind) => ({ conceptKey: c.key, kind, headline: fit(HOOKS[i % HOOKS.length].headline, 'google_search', kind, 'headline', 30), description: fit(`${vp}.`, 'google_search', kind, 'body', 90), cta: 'Learn more', ctaType: 'learn_more' as const, claims, principles: ['P1', 'P4', 'P11'] })));
-  const print: CopyOutput['print'] = [
-    { conceptKey: 'c1', kind: 'billboard', headline: HOOKS[0].headline, body: '', visualLine: '', cta: 'Learn more', ctaType: 'learn_more', claims, principles: ['P1', 'P12'] },
-    { conceptKey: 'c1', kind: 'flyer', headline: HOOKS[0].headline, body: `${vp}. Everything you need to decide what to do next.`, visualLine: fit(`${vp}.`, 'organic_content', 'flyer', 'body', 100), cta: 'Learn more', ctaType: 'learn_more', claims, principles: ['P1', 'P4', 'P11'] },
-  ];
+  const ads: CopyOutput['ads'] = lead.flatMap((c, i) => (['web_ad', 'display_ad'] as const).map((kind) => ({ conceptKey: c.key, kind, headline: fit(HOOKS[i % HOOKS.length].headline, 'google_search', kind, 'headline', 30), description: fit(`${vp}.`, 'google_search', kind, 'body', 90), headlineShort: '', cta: 'Learn more', ctaShort: '', ctaType: 'learn_more' as const, claims, principles: ['P1', 'P4', 'P11'] })));
+  const print: CopyOutput['print'] = lead.flatMap((c, i) => [
+    { conceptKey: c.key, kind: 'billboard' as const, headline: HOOKS[i % HOOKS.length].headline, body: '', visualLine: '', headlineShort: '', cta: 'Learn more', ctaShort: '', ctaType: 'learn_more' as const, claims, principles: ['P1', 'P12'] },
+    { conceptKey: c.key, kind: 'flyer' as const, headline: HOOKS[i % HOOKS.length].headline, body: `${vp}. Everything you need to decide what to do next.`, visualLine: fit(`${vp}.`, 'organic_content', 'flyer', 'body', 100), headlineShort: '', cta: 'Learn more', ctaShort: '', ctaType: 'learn_more' as const, claims, principles: ['P1', 'P4', 'P11'] },
+  ]);
   return { summary: `${n} concept(s) with posts for ${platforms.join(', ')}, ad and print copy.`, concepts, posts, ads, print, missingInformation: ['No customer testimonials were supplied, so none are used.'] };
 }
 
@@ -104,6 +105,7 @@ export function defaultCopyRevision(userText: string): CopyRevisionOutput {
         body: fit(sanitize(v.body, 'Learn what is offered and decide at your own pace.'), channel, v.placement ?? '', 'body', 400),
         visualLine: v.visualLine ? sanitize(v.visualLine, '').slice(0, 100) : '',
         ctaText: v.cta?.text ?? 'Learn more',
+        ctaShort: '',
         hashtags: v.hashtags ?? [],
         claims: (v.claims ?? []).filter((c) => c.support !== 'hypothesis'),
       };

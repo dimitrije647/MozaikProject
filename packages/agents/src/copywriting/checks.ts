@@ -26,6 +26,47 @@ const URGENCY: RegExp[] = [
   /\bnur heute\b/, /\bletzte chance\b/, /\bjetzt zugreifen\b/, /\bnur noch \d+\b/, /\bbegrenzte? (platze|anzahl|zeit)\b/, /\bsolange der vorrat\b/,
 ];
 
+/**
+ * UNNATURAL PROMOTIONAL LANGUAGE (MVP heuristic, folded text: no diacritics, lower case). Not a list of one bad sentence but of the TYPES of
+ * lines that make local promotion sound stiff or machine-written:
+ *   age_hook      an age limit used as the hook or the reason to come ("Punoletni ste i planirate izlazak?", "If you are of legal age ...")
+ *   strategy      strategy vocabulary leaking into consumer copy ("publika", "ciljna grupa", "komunikacija", "povod za posetu", "target audience")
+ *   bureaucratic  stiff, administrative verbs ("planirate izlazak", "u cilju", "ukoliko", "realizovati", "plan an outing", "in order to")
+ *   cliche        empty hospitality clichés ("nezaboravno iskustvo", "savrseno mesto za", "unforgettable experience", "the perfect place to")
+ * Serbian/Croatian/Bosnian (Latin), English and German. The model review judges everything else.
+ */
+export const UNNATURAL: { type: 'age_hook' | 'strategy' | 'bureaucratic' | 'cliche'; re: RegExp }[] = [
+  { type: 'age_hook', re: /\b(punoletn\w*|ako ste (stariji|starija|stariji) od 18|stariji od 18|starije od 18|ste (li )?(stariji|punoletni)|imate (li )?18|18\+? (ste|godina i)|if you(?:'re| are) (?:over 18|18|an adult|of (?:legal|drinking) age)|of legal (?:drinking )?age|volljahrig\w*|uber 18 (?:jahre )?(?:und|alt))\b/ },
+  { type: 'strategy', re: /\b(ciljn\w* (grup\w*|publik\w*)|(punoletn\w*|ciljn\w*|siroj|sira|mlad\w*) publik\w*|publici|(nas\w*|ova|ovu|tu) komunikacij\w*|komunikacij\w* (usmer\w*|prema)|segment\w* (publik\w*|kupac\w*|gost\w*)|usmeravamo|povod za posetu|zaseban povod|konkretn\w* (pocetak|opcij\w*|povod\w*|kategorij\w*)|kategorij\w* jela|target (?:audience|group)|our (?:communication|messaging)|we (?:address|target)|reason to visit|visit occasion|zielgruppe\w*|kommunikation\w*)\b/ },
+  { type: 'bureaucratic', re: /\b(planira(te|s|mo|ju)? (izlaz\w*|druzenj\w*|posetu|obrok|vecer\w*|vikend)|u cilju|ukoliko|realizova\w*|vrsi(ti|mo|te)|predstavlja(mo)? (zaseban|jedinstven\w*|poseban)|upoznajte (i )?(vecernj\w*|dnevn\w*) stran\w*|navodi (salat\w*|jela|ponud\w*|i vikend)|plan(?:ning)? (?:an|your) (?:outing|night out|visit)|in order to|is available for|zwecks|im rahmen)\b/ },
+  { type: 'cliche', re: /\b(nezaboravn\w* (iskustv\w*|dozivljaj\w*|vece|vecer\w*|provod\w*|trenut\w*)|savrsen\w* mest\w* za|idealn\w* mest\w* za|jedinstven\w* (iskustv\w*|ambijent\w*|atmosfer\w*|dozivljaj\w*)|uzivajte u|ne propustite|unforgettable (?:experience|night|evening|moments?)|the (?:perfect|ideal) (?:place|spot|venue) (?:to|for)|unique (?:experience|atmosphere)|look no further|elevate your|indulge in|vibrant atmosphere|culinary journey|unvergesslich\w* (?:erlebnis|abend)|der perfekte ort)\b/ },
+];
+
+/** The unnatural phrases in a text (folded), with their type. */
+export function unnaturalPhrases(text: string): { type: (typeof UNNATURAL)[number]['type']; phrase: string }[] {
+  const t = fold(text);
+  return UNNATURAL.map((u) => ({ type: u.type, phrase: t.match(u.re)?.[0] ?? '' })).filter((x) => !!x.phrase);
+}
+
+/**
+ * A NOTE OR PLACEHOLDER instead of copy ("Izostavljeno iz kampanje", "Omitted", "N/A", "Not applicable", "TBD", "[headline]"): never publishable,
+ * never shown on a visual. Used to refuse such a revision and by the copy checks.
+ */
+export function isPlaceholderCopy(text: string | null | undefined): boolean {
+  const t = fold(text ?? '').replace(/[^\p{L}\p{N}\s/[\]]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!t) return false;
+  if (/^(n\/a|tbd|todo|placeholder|none|null|\[.*\])$/.test(t)) return true;
+  return (
+    /^(izostavlj\w*|nije primenljiv\w*|nije primjenjiv\w*|nema objave|bez objave|omitted|left out|not applicable|entfallt|nicht anwendbar)(\s.{0,40})?$/.test(t) ||
+    /\b(izostavljen\w* iz kampanj\w*|omitted from (?:the )?campaign|left out of (?:the )?campaign|not part of (?:the|this) campaign)\b/.test(t)
+  );
+}
+
+/** A copy revision that must be refused (the earlier version stays): it replaces the copy with a note or placeholder, or drops the call to action. */
+export function refusedRevision(previous: { ctaText: string }, rev: { headline: string; body?: string | null; ctaText: string }): boolean {
+  return isPlaceholderCopy(rev.headline) || isPlaceholderCopy(rev.body) || (!!previous.ctaText.trim() && (!rev.ctaText.trim() || isPlaceholderCopy(rev.ctaText)));
+}
+
 const JARGON = /\b(synerg\w*|leverag\w*|paradigm\w*|holistic\w*|disrupt\w*|empower\w*|ecosystem\w*|best practices?|value[- ]add\w*|scalab\w*|robust)\b/g;
 
 const sentences = (s: string) => s.split(/(?<=[.!?])\s+|\n+/).map((x) => x.trim()).filter((x) => x.split(/\s+/).length > 2);
@@ -65,6 +106,20 @@ export function copyCraftFindings({ variants, plan, corpus = '' }: CraftInput): 
     const banned = forbidden.filter((x) => t.includes(x) && !own.includes(x));
     const hits = [...new Set([...generic, ...banned])];
     if (hits.length) out.push(f('generic_copy', v.placement === 'social_post' ? 'minor' : 'major', v, `The ${where(v)} uses generic or forbidden wording: "${hits.slice(0, 3).join('", "')}".`, 'Phrase list of the copywriting checks and the brand voice profile.', 'Replace it with a specific, evidenced statement about this business (P2) or a tangible situation (P6).'));
+    // 1b. a note or placeholder instead of copy ("Izostavljeno iz kampanje"): never publishable
+    if (isPlaceholderCopy(v.headline) || (v.ctaText.trim() && isPlaceholderCopy(v.ctaText))) out.push(f('weak_headline', 'major', v, `The ${where(v)} shows a note instead of copy ("${v.headline.slice(0, 60)}").`, 'A placeholder such as "omitted" is not publishable and would be printed on the visual.', 'Write real copy for this piece (a hook, the post text and a call to action).'));
+    // 1c. unnatural promotional language: an age limit as the hook, strategy vocabulary, stiff verbs, hospitality clichés
+    const hookHits = unnaturalPhrases(v.headline);
+    // the research and strategy naturally use strategy words: only a cliché that is the business's own wording is excused
+    const excused = (h: { type: string; phrase: string }) => h.type === 'cliche' && own.includes(h.phrase);
+    const bodyHits = unnaturalPhrases(`${v.body}\n${v.visualLine ?? ''}`).filter((h) => !hookHits.some((x) => x.phrase === h.phrase) && !excused(h));
+    const NOTE: Record<string, string> = { age_hook: 'an age limit used as the hook', strategy: 'strategy vocabulary', bureaucratic: 'stiff, administrative wording', cliche: 'a hospitality cliché' };
+    const FIX: Record<string, string> = { age_hook: 'Lead with the moment and the place (the terrace, Friday night, the friends you go with); keep the age limit as a short "18+" note only.', strategy: 'Say what the guest gets or does, in everyday words; leave audience, communication and occasion vocabulary in the strategy.', bureaucratic: 'Say it the way a local would: short, active and warm.', cliche: 'Name something real and specific about this place instead.' };
+    for (const [hits, sev] of [[hookHits.filter((h) => !excused(h)), 'major'], [bodyHits, 'minor']] as const) {
+      if (!hits.length) continue;
+      const h = hits[0];
+      out.push(f('brand_tone', sev, v, `The ${where(v)} sounds unnatural for local promotion: ${NOTE[h.type]} ("${h.phrase}")${sev === 'major' ? ' in its hook' : ''}.`, 'Unnatural-language heuristic of the copywriting checks (age-limit hooks, strategy vocabulary, stiff verbs, clichés).', FIX[h.type]));
+    }
     // 2. artificial urgency without evidence
     const urgent = URGENCY.map((re) => t.match(re)?.[0]).filter((m): m is string => !!m);
     if (urgent.length && !plan?.evidence.urgency) out.push(f('false_urgency', 'major', v, `The ${where(v)} creates urgency ("${urgent[0]}") that no deadline, season, capacity or offer in the material supports.`, 'The copywriting plan has no verified urgency (P8 excluded).', 'Remove the pressure; give the real value and a clear next step instead.'));

@@ -21,6 +21,7 @@ export { safeName, type ExportFile, type ExportManifest, type ExportSource };
  *   campaign/sources/                        every picture's source, license and credit (CREDITS.txt), originals where the license allows
  *   campaign/review/quality.json             the quality review, the repairs and the remaining findings
  *   campaign/review/copywriting-plan.json    the copywriting plan the copy was written and reviewed against (purpose, principles, voice)
+ *   campaign/review/design-checks.json       per creative: the design preflight checks (passed/failed), the automatic repairs and the templates tried
  *   campaign/campaign.json, campaign/manifest.json
  *
  * Only files that exist are written: a missing deliverable is listed in the README with its reason, never as an empty placeholder file.
@@ -110,11 +111,26 @@ function readme(pkg: CampaignPackage, pathOf: Map<string, string>, conceptNo: (i
   const conceptName = (id: string) => pkg.concepts.find((c) => c.id === id)?.name ?? id;
   const lines = [`# ${pkg.campaignName}`, ''];
   lines.push(`Created ${pkg.createdAt} · language ${pkg.language} · quality status **${pkg.approval.status}**: ${pkg.approval.note}`, '');
-  lines.push('## What is inside', '', '- `strategy/` the campaign strategy and the concepts', '- `social/<platform>/` post visuals and post texts for X, TikTok, Facebook, Instagram and LinkedIn (TikTok: cover image and a video script to film)', '- `ads/web/`, `ads/display/` web banner and display ad designs with their copy', '- `print/billboards/`, `print/flyers/` print designs with their copy', '- `brand/` palette, template collection, the approved logo and the brand voice the copy was written in (`voice.md`)', '- `sources/` where every picture comes from, its license and the credits to show', '- `review/quality.json` the quality review and the corrections that were made', '');
+  lines.push('## What is inside', '', '- `strategy/` the campaign strategy and the concepts', '- `social/<platform>/` post visuals and post texts for X, TikTok, Facebook, Instagram and LinkedIn (TikTok: cover image and a video script to film)', '- `ads/web/`, `ads/display/` web banner and display ad designs with their copy', '- `print/billboards/`, `print/flyers/` print designs with their copy', '- `brand/` palette, template collection, the approved logo and the brand voice the copy was written in (`voice.md`)', '- `sources/` where every picture comes from, its license and the credits to show', '- `review/quality.json` the quality review and the corrections that were made', '- `review/design-checks.json` per creative: which design checks passed or failed and what was repaired automatically', '');
   lines.push(`## Deliverables: ${d.counts.delivered} of ${d.counts.planned} delivered`, '', `${d.counts.withPicture} with an approved real picture, ${d.counts.typographyFirst} typography-first. No AI image was generated.`, '');
   lines.push('| Concept | Deliverable | Format | File |', '| --- | --- | --- | --- |');
   for (const i of d.items) lines.push(`| ${conceptNo(i.conceptId)} ${conceptName(i.conceptId)} | ${i.label} | ${i.width}×${i.height} | ${i.status === 'delivered' && i.assetId && pathOf.get(i.assetId) ? `\`${pathOf.get(i.assetId)!.replace(`${ROOT}/`, '')}\`` : `missing: ${i.reason ?? 'not produced'}`} |`);
   if (d.notPlanned.length) lines.push('', '### Not delivered', '', ...d.notPlanned.map((n) => `- ${n.label}${n.conceptId ? ` (${conceptName(n.conceptId)})` : ''}: ${n.reason}`));
+  // the design quality gate, honestly: a file existing is not the same as a finished design
+  const review = (pkg.hybrid?.creatives ?? []).filter((c) => c.design?.status === 'unresolved' && c.assetId && pathOf.get(c.assetId));
+  // V4.3: the deliverable's own verdict also counts open blocker/major review findings
+  const notReady = d.items.filter((i) => i.status === 'delivered' && i.publishReady === false && i.assetId && pathOf.get(i.assetId) && !review.some((c) => c.assetId === i.assetId));
+  if (d.counts.publishReady !== undefined) lines.push('', `**Ready to publish: ${d.counts.publishReady} of ${d.counts.delivered}.** A produced file is not automatically ready: the ones below need review.`);
+  if (review.length || notReady.length) {
+    lines.push('', '### Needs design review (not production-ready)', '', 'These files were produced, but a critical problem remained after the automatic repairs. Check them before publishing:');
+    for (const c of review) lines.push(`- \`${pathOf.get(c.assetId!)!.replace(`${ROOT}/`, '')}\`: ${c.design!.checks.filter((x) => x.status === 'fail').map((x) => x.detail).join(' ').slice(0, 300)}`);
+    for (const i of notReady) lines.push(`- \`${pathOf.get(i.assetId!)!.replace(`${ROOT}/`, '')}\`: ${(i.blockers ?? []).join(' ').slice(0, 300) || 'an open review finding'}`);
+  }
+  const matrices = [...new Set(d.items.filter((i) => i.matrix).map((i) => i.matrix!.group))];
+  if (matrices.length) {
+    lines.push('', '### Advertising variation matrix', '', 'Two different designs, each with two copy alternatives (the two lead concepts):', '', '| Deliverable | Design | Copy | Same design as its partner | File |', '| --- | --- | --- | --- | --- |');
+    for (const i of d.items.filter((x) => x.matrix)) lines.push(`| ${i.label} | D${i.matrix!.design} | T${i.matrix!.copy} (${conceptName(i.conceptId)}) | ${i.matrix!.shared ? 'yes' : i.matrix!.copy === 1 ? '(first)' : 'no'} | ${i.assetId && pathOf.get(i.assetId) ? `\`${pathOf.get(i.assetId)!.replace(`${ROOT}/`, '')}\`` : 'missing'} |`);
+  }
   lines.push('', '## Before you publish', '', '- Check every call to action points to a real destination (no web address was invented).', '- Keep the picture credits listed in `sources/CREDITS.txt` where a license asks for them.', '- TikTok: film the video from `social/tiktok/*-video-script.md`; use the cover image as its thumbnail.');
   if (pkg.limitations.length) lines.push('', '## Notes and limitations', '', ...pkg.limitations.map((l) => `- ${l}`));
   if (pkg.cost) lines.push('', '## Cost', '', `Known spend: $${pkg.cost.spentUsd.toFixed(4)} (text only)${pkg.cost.approvedUsd !== null ? ` of the approved $${pkg.cost.approvedUsd.toFixed(2)}` : ''}. ${pkg.cost.note}`);
@@ -142,6 +158,7 @@ export async function buildCampaignZip(pkg: CampaignPackage, assets: AssetStore,
 
   // ---- the deliverables (current versions only) ----
   const pathOf = new Map<string, string>();
+  const usedNames = new Set<string>();
   const current = new Map(pkg.imageAssets.filter((a) => a.status !== 'superseded').map((a) => [a.id, a]));
   for (const item of d.items) {
     if (item.status !== 'delivered' || !item.assetId) continue;
@@ -157,7 +174,12 @@ export async function buildCampaignZip(pkg: CampaignPackage, assets: AssetStore,
       missing.push(a.id);
       continue;
     }
-    const f = await put(`${item.folder}/${conceptNo(item.conceptId)}-${safeName(item.kind === 'social_post' ? item.format : item.kind)}.png`, bytes, 'image', a.id);
+    // a matrix cell names its design (concept = its text); any other second creative of the same concept and kind gets a number: never one file name twice
+    let name = `${item.folder}/${conceptNo(item.conceptId)}-${safeName(item.kind === 'social_post' ? item.format : item.kind)}${item.matrix ? `-design-${item.matrix.design}` : ''}`;
+    const baseName = name;
+    for (let n = 2; usedNames.has(name) && n < 100; n++) name = `${baseName}-v${n}`;
+    usedNames.add(name);
+    const f = await put(`${name}.png`, bytes, 'image', a.id);
     Object.assign(f, { origin: originOf(a), width: a.width, height: a.height, ...(a.templateId ? { templateId: a.templateId } : {}), ...(a.templateVersion != null ? { templateVersion: a.templateVersion } : {}), ...(a.rights ? { rights: a.rights.basis } : {}) });
     pathOf.set(a.id, f.path);
   }
@@ -219,6 +241,15 @@ export async function buildCampaignZip(pkg: CampaignPackage, assets: AssetStore,
   }
   // ---- quality review ----
   await put('review/quality.json', JSON.stringify({ approval: pkg.approval, quality: pkg.quality, findings: pkg.reviewFindings, revisions: pkg.revisions, templateQuality: pkg.hybrid?.quality ?? null }, null, 2), 'json');
+  // the design preflight of every delivered creative: checks, automatic repairs (crop, opacity, position, size, template) and templates tried
+  const designed = (pkg.hybrid?.creatives ?? []).filter((c) => c.design && c.assetId && pathOf.has(c.assetId));
+  if (designed.length) {
+    const rows = designed.map((c) => ({ slotId: c.slotId, file: pathOf.get(c.assetId!)!.replace(`${ROOT}/`, ''), format: c.format, template: c.templateId, ...c.design! }));
+    const statusOf = (r: (typeof rows)[number]) => r.status ?? (r.passed ? 'passed' : 'warnings');
+    const readyOf = (slotId: string) => d.items.find((i) => i.id === slotId);
+    const rowsOut = rows.map((r) => ({ ...r, quality: readyOf(r.slotId)?.quality ?? null, publishReady: readyOf(r.slotId)?.publishReady ?? null }));
+    await put('review/design-checks.json', JSON.stringify({ summary: { creatives: rows.length, passed: rows.filter((r) => statusOf(r) === 'passed').length, warnings: rows.filter((r) => statusOf(r) === 'warnings').length, unresolved: rows.filter((r) => statusOf(r) === 'unresolved').length, repaired: rows.filter((r) => r.repairs.length > 0).length, templateChanged: rows.filter((r) => r.templateChanged).length, adapted: rows.filter((r) => r.composition && r.composition.variant !== 'base').length, publishReady: d.counts.publishReady ?? null, shortenedText: rows.filter((r) => (r.shortened ?? []).length > 0).length, matrix: d.items.filter((i) => i.matrix).length }, creatives: rowsOut }, null, 2), 'json');
+  }
   // ---- the copywriting plan (internal: why the copy says what it says) and the brand voice the team wrote in ----
   if (pkg.copywriting) {
     const cp = pkg.copywriting;

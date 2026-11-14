@@ -78,6 +78,8 @@ export const LlmPost = z.object({
   /** The short supporting line shown ON the rendered visual next to the hook (not a cut-off caption). */
   visualLine: text(110),
   cta: text(40),
+  /** The same call to action in at most 22 characters (words of "cta" only; no new offer, number or service). Empty when "cta" is already that short. */
+  ctaShort: text(30).default(''),
   ctaType: CtaType,
   hashtags: list(40, 8),
   /** How to publish it: e.g. "Single image post, 4:5, carousel optional". */
@@ -92,8 +94,11 @@ export const LlmAdCopy = z.object({
   conceptKey: z.string().max(8),
   kind: z.enum(['web_ad', 'display_ad']),
   headline: z.string().min(2).max(60),
+  /** The same headline in at most 6 words (no new claim). */
+  headlineShort: text(60).default(''),
   description: text(120),
   cta: text(30),
+  ctaShort: text(30).default(''),
   ctaType: CtaType,
   claims: z.array(Claim).max(3),
   principles: Principles,
@@ -108,7 +113,10 @@ export const LlmPrintCopy = z.object({
   body: text(400),
   /** Flyer: the short supporting line on the visual; a billboard leaves it empty. */
   visualLine: text(110),
+  /** The same headline in at most 6 words (no new claim). */
+  headlineShort: text(60).default(''),
   cta: text(40),
+  ctaShort: text(30).default(''),
   ctaType: CtaType,
   claims: z.array(Claim).max(3),
   principles: Principles,
@@ -126,7 +134,7 @@ export type CopyOutput = z.infer<typeof CopyOutput>;
 
 export const CopyRevisionOutput = z.object({
   revisions: z
-    .array(z.object({ variantId: z.string().max(8), headline: z.string().min(2).max(90), body: z.string().max(1500), visualLine: text(110), ctaText: text(40), hashtags: list(40, 8), claims: z.array(Claim).max(4) }))
+    .array(z.object({ variantId: z.string().max(8), headline: z.string().min(2).max(90), body: z.string().max(1500), visualLine: text(110), ctaText: text(40), ctaShort: text(30).default(''), hashtags: list(40, 8), claims: z.array(Claim).max(4) }))
     .max(12),
 });
 export type CopyRevisionOutput = z.infer<typeof CopyRevisionOutput>;
@@ -225,6 +233,9 @@ export const CopyVariantRecord = z.object({
   visualLine: z.string().nullable().optional(),
   /** the copywriting principles this piece applies (absent in older campaigns) */
   principles: z.array(z.string()).optional(),
+  /** a shorter wording of the call to action / the headline by the Content Writer, used only when the full one does not fit (absent in older campaigns) */
+  ctaShort: z.string().nullable().optional(),
+  headlineShort: z.string().nullable().optional(),
 });
 export type CopyVariantRecord = z.infer<typeof CopyVariantRecord>;
 
@@ -360,11 +371,23 @@ export const DeliverableRecord = z.object({
   /** Where it goes in the ZIP, e.g. social/instagram, ads/web, print/billboards. */
   folder: z.string(),
   status: z.enum(['delivered', 'missing']),
+  /** The design quality gate of a delivered creative: passed, warnings (non-critical) or unresolved (a critical layout problem: review it). Absent before V4.2. */
+  design: z.enum(['passed', 'warnings', 'unresolved']).nullable().optional(),
   assetId: z.string().nullable(),
   variantId: z.string().nullable(),
   /** true = an approved real picture is drawn in it; false = typography-first. */
   withPicture: z.boolean(),
   reason: z.string().nullable(),
+  /**
+   * QUALITY STATE (V4.3): produced (the file exists, nothing more is claimed), passed, passed_with_warnings (non-critical problems only) or unresolved
+   * (a critical design problem or an open blocker/major review finding). `publishReady` is true only for passed / passed_with_warnings; `blockers`
+   * says why not. Absent in older campaigns.
+   */
+  quality: z.enum(['produced', 'passed', 'passed_with_warnings', 'unresolved']).nullable().optional(),
+  publishReady: z.boolean().optional(),
+  blockers: z.array(z.string()).max(8).optional(),
+  /** the variation matrix cell (design x copy) of an ad or billboard */
+  matrix: z.object({ group: z.string(), design: z.number().int(), copy: z.number().int(), shared: z.boolean() }).nullable().optional(),
 });
 export type DeliverableRecord = z.infer<typeof DeliverableRecord>;
 
@@ -375,7 +398,7 @@ export const DeliverablesBlock = z.object({
   /** Deliverables the plan could not include at all (the collection cannot draw the format, there is no copy...), with the reason. */
   notPlanned: z.array(z.object({ kind: z.enum(DELIVERABLE_KINDS), label: z.string(), format: z.string(), conceptId: z.string().nullable(), reason: z.string() })),
   rules: z.array(z.string()),
-  counts: z.object({ planned: z.number(), delivered: z.number(), missing: z.number(), withPicture: z.number(), typographyFirst: z.number() }),
+  counts: z.object({ planned: z.number(), delivered: z.number(), missing: z.number(), withPicture: z.number(), typographyFirst: z.number(), publishReady: z.number().optional(), needsReview: z.number().optional() }),
 });
 export type DeliverablesBlock = z.infer<typeof DeliverablesBlock>;
 

@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import { toSafeError, type SafeProviderError } from '../../../ai/errors';
 import { CREATIVE_INFO } from '../../../creative/board';
-import { assetFindings, channelFindings, claimFindings, conceptFindings, consistencyFindings, corpusOf, dedupe, scoreFindings, templateFindings, type RawFinding } from '../../../creative/checks';
+import { assetFindings, channelFindings, claimFindings, conceptFindings, consistencyFindings, corpusOf, dedupe, scoreFindings, templateFindings, brandFindings, type RawFinding } from '../../../creative/checks';
 import { copyCraftFindings } from '../../../copywriting/checks';
 import { CREATIVE_INSTRUCTIONS, copyRevisionMessage, reviewTextMessage, reviewVisionMessage, writerMessage } from '../../../creative/prompts';
 import { CopyOutput, CopyRevisionOutput, ReviewOutput, type Rubric } from '../../../creative/schemas';
@@ -49,13 +49,15 @@ export function buildWriter(env: F4Env): PhaseAgent {
       specification: new OnEventTypes(['task.assigned']),
       processor: guarded(ctx.guard(name), ({ event }) => {
         if ((event.payload as { agent: string }).agent !== name) return;
-        if (!self.openTask(settings.agentTimeoutMs, () => ctx.emit('task.completed', { agent: name, outcome: 'failed', error: toSafeError('timeout') }, self.participant))) return;
+        if (!self.openTask(settings.writerTimeoutMs, () => ctx.emit('task.completed', { agent: name, outcome: 'failed', error: toSafeError('timeout') }, self.participant))) return;
         self.runJob({
           kind: 'analysis',
           message: writerMessage(env.f1, env.f3, env.input, env.copyPlan),
           schema: CopyOutput,
           schemaName: 'campaign_copy',
           maxOutputTokens: settings.writerTokens,
+          // the whole campaign's copy in one structured answer: its request clock grows with its output cap
+          longAnswer: true,
           onSuccess: (out) => {
             self.closeTask();
             ctx.emit('copy.proposed', { agent: name, summary: out.summary, concepts: out.concepts, posts: out.posts, ads: out.ads, print: out.print, missingInformation: out.missingInformation }, self.participant);
@@ -81,7 +83,8 @@ export function buildWriter(env: F4Env): PhaseAgent {
           message: copyRevisionMessage(env.input, env.board.snapshot(), findings, variantIds, env.copyPlan),
           schema: CopyRevisionOutput,
           schemaName: 'copy_revision',
-          maxOutputTokens: settings.writerTokens,
+          maxOutputTokens: settings.revisionTokens,
+          longAnswer: true,
           timeoutMs: settings.repairTimeoutMs,
           onSuccess: (out) => {
             const revisions = out.revisions.filter((r) => variantIds.includes(r.variantId));
@@ -170,7 +173,7 @@ export function buildReviewer(env: F4Env): PhaseAgent {
         try {
           const hy = env.hybrid;
           const design = hy.design && hy.collection ? { collectionId: hy.collection.id, collectionVersion: hy.collection.version, templateIds: hy.collection.templateIds, paletteKey: paletteKeyOf(hy.design.palette) } : null;
-          templateQuality = await verifyTemplateExport({ allowedSources: new Set((env.board.imagery?.library ?? []).map((l) => l.id)), design, selection: env.board.selection, creatives: env.board.templateCreatives, assets: env.board.assets, load: (id) => tools.assets.load(id) });
+          templateQuality = await verifyTemplateExport({ allowedSources: new Set((env.board.imagery?.library ?? []).map((l) => l.id)), library: env.board.imagery?.library ?? null, slots: (env.board.hybridPlan?.slots ?? []).map((s) => ({ slotId: s.slotId, kind: s.kind ?? null, channel: s.channel, matrix: s.matrix ?? null })), design, selection: env.board.selection, creatives: env.board.templateCreatives, assets: env.board.assets, load: (id) => tools.assets.load(id) });
         } catch {
           templateQuality = null;
         }
@@ -186,6 +189,7 @@ export function buildReviewer(env: F4Env): PhaseAgent {
           ...(p.round === 1 ? conceptFindings(snap) : []),
           ...assetFindings({ board: snap, hasLogo: !!env.logo, hasPalette: env.hasBrandPalette }),
           ...templateFindings({ board: snap }),
+          ...brandFindings({ board: snap, officialSlogan: env.f1.brandFacts?.officialSlogan?.text ?? null }),
         ]);
         const known = new Set([...snap.assets.map((a) => a.id), ...snap.variants.map((v) => v.id), ...snap.concepts.map((c) => c.id)]);
         const ownerOf = (ref: string | null, claimed: RawFinding['responsibleAgent']): RawFinding['responsibleAgent'] => (ref && snap.variants.some((v) => v.id === ref) ? 'copywriter' : claimed === 'landing' ? 'copywriter' : claimed);

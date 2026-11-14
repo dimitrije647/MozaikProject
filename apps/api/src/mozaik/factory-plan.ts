@@ -152,7 +152,8 @@ export interface ResearchCandidate {
 /**
  * Business Research is the only stage that is reused: it describes the business, not the campaign. It is reused when the newest usable report
  * is newer than every change to the project's information (intake, uploads, approved brand content); otherwise, or when asked, it runs again.
- * The strategy and the creative stage always run, because they depend on this campaign's objective, audience and design.
+ * The strategy runs for each campaign (it depends on its objective and audience) except when a campaign whose creative stage failed is continued
+ * with unchanged settings (planStrategyResume); the creative stage always runs.
  */
 export function planResearch(candidates: ResearchCandidate[], inputsChangedAt: Date | null, refresh: boolean): { reuse: ResearchCandidate | null; note: string | null } {
   if (refresh) return { reuse: null, note: 'Business Research runs again, as requested.' };
@@ -168,8 +169,41 @@ export interface PlannedPhase {
   reuse: ResearchCandidate | null;
 }
 
-export function buildPhasePlan(research: ResearchCandidate | null): PlannedPhase[] {
-  return PHASE_ORDER.map((phase) => (phase === 'discovery' && research ? { phase, action: 'reuse' as const, reuse: research } : { phase, action: 'run' as const, reuse: null }));
+/** The settings a strategy depends on: two campaigns with the same key and the same Business Research need the same strategy. */
+export function strategySettingsKey(s: Pick<CampaignSettings, 'objective' | 'targetAudience' | 'competitorUrls' | 'useHolidayCalendar'>): string {
+  return JSON.stringify([s.objective ?? null, s.targetAudience ?? null, [...(s.competitorUrls ?? [])].sort(), s.useHolidayCalendar === true]);
+}
+
+/** A strategy saved by an earlier campaign that STOPPED before its creative stage finished. */
+export interface StrategyResumeCandidate {
+  /** the saved strategy report */
+  strategy: ResearchCandidate;
+  /** the Business Research it was built on */
+  f1ReportId: string;
+  /** strategySettingsKey of the campaign that made it */
+  settingsKey: string;
+  /** that campaign's creative stage did not produce a campaign (failed, cancelled, interrupted, not started) */
+  creativeUnfinished: boolean;
+}
+
+/**
+ * CONTINUING AFTER A FAILED CREATIVE STAGE. A strategy is normally made for each campaign. It is reused - so a campaign whose Creative Production
+ * failed does not pay for research and strategy again - ONLY when all of this holds: the Business Research is reused (the same report), the
+ * strategy was saved by the newest earlier campaign of the project whose creative stage did not finish, it was built on that same research,
+ * the strategy settings (objective, audience, competitors, holiday calendar) are unchanged, the project did not change after it, and the user did
+ * not ask for fresh research. Anything else: the strategy runs again.
+ */
+export function planStrategyResume(o: { research: ResearchCandidate | null; candidate: StrategyResumeCandidate | null; settingsKey: string; inputsChangedAt: Date | null; refresh: boolean }): { reuse: ResearchCandidate | null; note: string | null } {
+  const c = o.candidate;
+  if (o.refresh || !o.research || !c || !c.creativeUnfinished || !c.strategy.usable) return { reuse: null, note: null };
+  if (c.f1ReportId !== o.research.id) return { reuse: null, note: null };
+  if (c.settingsKey !== o.settingsKey) return { reuse: null, note: 'The campaign settings that shape the strategy changed since the last attempt, so the strategy runs again.' };
+  if (o.inputsChangedAt && o.inputsChangedAt > c.strategy.createdAt) return { reuse: null, note: null };
+  return { reuse: c.strategy, note: `The Marketing Strategy saved on ${c.strategy.createdAt.toISOString().slice(0, 10)} by the last campaign, whose Creative Production did not finish, is reused (no paid request for it). Only the creative stage runs again.` };
+}
+
+export function buildPhasePlan(research: ResearchCandidate | null, strategy: ResearchCandidate | null = null): PlannedPhase[] {
+  return PHASE_ORDER.map((phase) => (phase === 'discovery' && research ? { phase, action: 'reuse' as const, reuse: research } : phase === 'strategy' && strategy && research ? { phase, action: 'reuse' as const, reuse: strategy } : { phase, action: 'run' as const, reuse: null }));
 }
 
 export function initialPhases(plan: PlannedPhase[]): FactoryPhaseState[] {

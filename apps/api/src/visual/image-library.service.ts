@@ -3,6 +3,8 @@ import {
   GitHubRepositoryTool,
   WebFetchTool,
   analyzeImage,
+  categoryOfPixels,
+  unwrapImageUrl,
   toCampaignRaster,
   attestRights,
   candidateRights,
@@ -40,6 +42,7 @@ import {
   type ScoreContext,
   type ScoreSubject,
   type SocialSourceInfo,
+  type WebsiteImageCategory,
   type WebsiteImageDiscovery,
 } from '@launchpilot/agents';
 import { ActivityLogService } from '../activity-log/activity-log.service';
@@ -68,7 +71,8 @@ export interface ImageSourceReaders {
 }
 
 export const defaultImageSources = (): ImageSourceReaders => ({
-  website: (url, o) => discoverWebsiteImages(url, { maxPages: 5, logoBrand: o?.logoBrand, signal: o?.signal }),
+  // bounded: at most 8 same-site pages, 6 MB of HTML and 30 s (the callers' own timers are longer); robots.txt is respected for pages and pictures
+  website: (url, o) => discoverWebsiteImages(url, { maxPages: 8, budgetMs: 30_000, logoBrand: o?.logoBrand, signal: o?.signal }),
   repository: (url, o) => discoverRepositoryImages(url, { token: process.env.GITHUB_TOKEN, logoBrand: o?.logoBrand, signal: o?.signal }),
   fetchWebsiteSvg: async (url) => {
     const r = await new WebFetchTool({ timeoutMs: 15_000, maxAssets: 1, maxPages: 1, userAgent: 'LaunchPilotBot/1.0 (logo import after owner confirmation; honors robots.txt)' }).fetchAsset(url, { kind: 'svg' });
@@ -136,6 +140,12 @@ export interface LibraryItemView {
   needs: 'attestation' | 'review' | null;
   note: string | null;
   actions: ('approve' | 'reject' | 'restore' | 'view_source' | 'search_alternatives')[];
+  /** what the picture shows (website discovery and the pixel check at import); null when unknown */
+  category: WebsiteImageCategory | null;
+  /** one of the (at most 10) website pictures recommended for the campaign library */
+  recommended: boolean;
+  /** why it is (or is not) recommended */
+  recommendation: string | null;
 }
 
 const asRights = (j: unknown): ImageRights => j as ImageRights;
@@ -281,6 +291,9 @@ export class ImageLibraryService {
       needs,
       note: (meta.note as string | undefined) ?? null,
       actions,
+      category: (meta.category as WebsiteImageCategory | undefined) ?? null,
+      recommended: meta.recommended === true && status !== 'rejected',
+      recommendation: (meta.why as string | undefined) ?? null,
     };
   }
 
@@ -311,6 +324,9 @@ export class ImageLibraryService {
       id: `stock:${c.provider}:${c.id}`,
       source: 'stock',
       status: 'candidate',
+      category: null,
+      recommended: false,
+      recommendation: null,
       title: c.title,
       pageUrl: c.pageUrl,
       creator: c.creator,
@@ -394,12 +410,16 @@ export class ImageLibraryService {
           let created = 0;
           for (const c of d.candidates) {
             const key = imageStem(c.url);
-            const file = decodeURIComponent(new URL(c.url).pathname.split('/').pop() ?? '');
+            const file = decodeURIComponent((unwrapImageUrl(c.url) ?? new URL(c.url)).pathname.split('/').pop() ?? '');
             const title = (c.alt || c.title || c.context || file).slice(0, 160);
-            const data = { title, pageUrl: c.pageUrl, remoteUrl: c.url, width: c.width, height: c.height, text: textOfImage({ title: c.title, alt: c.alt, fileName: file, context: c.context }), metaJson: { where: c.where, firstParty: c.firstParty, prominence: c.prominence } as never };
-            const existing = await this.prisma.projectImage.findUnique({ where: { projectId_source_dedupeKey: { projectId, source: 'website', dedupeKey: key } } });
+            const meta = { where: c.where, firstParty: c.firstParty, prominence: c.prominence, category: c.category ?? null, pageRole: c.pageRole ?? null, recommended: c.recommended === true, rank: c.rank ?? null, why: c.why ?? null };
+            const data = { title, pageUrl: c.pageUrl, remoteUrl: c.url, width: c.width, height: c.height, text: textOfImage({ title: c.title, alt: c.alt, fileName: file, context: c.context }), metaJson: meta as never };
+            // the same picture may already be a row under an OLDER key (earlier versions merged image-CDN addresses): it is found by its address and kept
+            const existing = (await this.prisma.projectImage.findUnique({ where: { projectId_source_dedupeKey: { projectId, source: 'website', dedupeKey: key } } })) ?? (await this.prisma.projectImage.findFirst({ where: { projectId, source: 'website', role: 'photo', remoteUrl: c.url } }));
             if (existing) {
               if (existing.status === 'candidate' && !existing.assetId) await this.prisma.projectImage.update({ where: { id: existing.id }, data });
+              // a decided picture keeps its decision, title and file; only the discovery's description is refreshed
+              else await this.prisma.projectImage.update({ where: { id: existing.id }, data: { metaJson: { ...((existing.metaJson ?? {}) as Obj), ...meta, category: ((existing.metaJson ?? {}) as Obj).pixelCategory ?? meta.category } as never } });
               continue;
             }
             await this.prisma.projectImage.create({ data: { projectId, source: 'website', status: 'candidate', dedupeKey: key, rightsJson: candidateRights('website', { firstParty: c.firstParty }) as never, ...data } });
@@ -570,6 +590,9 @@ export class ImageLibraryService {
       if (Math.max(dims.width, dims.height) < MIN_IMPORT_SIDE) throw new UnprocessableEntityException({ statusCode: 422, code: 'too_small', message: `The picture is only ${dims.width}x${dims.height} pixels; at least ${MIN_IMPORT_SIDE} on the long side is needed so it stays sharp in a creative.` });
       const twin = analysis ? await this.findNearDuplicate(projectId, analysis.phash, row.id) : null;
       if (twin) throw new UnprocessableEntityException({ statusCode: 422, code: 'duplicate', message: `This picture is nearly identical to "${twin.title}", which is already in the library, so it was not added again.` });
+      // what the pixels show (a flat graphic without a face is a brand graphic, whatever the page called it): kept apart from the photograph count
+      const pixels = await categoryOfPixels(got.data, (meta.category as WebsiteImageCategory | undefined) ?? null).catch(() => null);
+      const metaAfter = pixels ? { ...meta, category: pixels.category, pixelCategory: pixels.category, faces: pixels.faces } : meta;
       const ext = raster.ext;
       const name = `${row.source}-${row.id}${ext}`.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80);
       const key = await this.storage.save(projectId, name, got.data);
@@ -577,7 +600,7 @@ export class ImageLibraryService {
       const sha = (await import('node:crypto')).createHash('sha256').update(got.data).digest('hex');
       const asset = await this.prisma.projectAsset.create({ data: { projectId, type: 'image', originalName: String(row.title).slice(0, 100) + ext, mimeType: got.contentType.startsWith('image/') ? got.contentType.split(';')[0] : 'image/jpeg', filePath: key, fileSize: got.data.length } });
       await this.prisma.imageProvenance.create({ data: { projectId, assetId: asset.id, provider: row.source, providerImageId: row.dedupeKey.slice(0, 200), pageUrl: row.pageUrl ?? row.remoteUrl ?? '', creator: null, creatorUrl: null, license: attested.license, licenseUrl: null, attribution: null, attributionRequired: false, licenseBasis: 'user_attested', sha256: sha, width: dims.width, height: dims.height, acquiredById: userId, sourceKind: 'BRAND_ASSET', originalUrl: row.remoteUrl ?? row.pageUrl ?? null, perceptualHash: analysis?.phash ?? null, rightsJson: attested as never } });
-      await this.prisma.projectImage.update({ where: { id: row.id }, data: { status: 'approved', assetId: asset.id, width: dims.width, height: dims.height, analysisJson: (analysis ?? undefined) as never, rightsJson: attested as never, decidedAt: new Date() } });
+      await this.prisma.projectImage.update({ where: { id: row.id }, data: { status: 'approved', assetId: asset.id, width: dims.width, height: dims.height, analysisJson: (analysis ?? undefined) as never, rightsJson: attested as never, metaJson: metaAfter as never, decidedAt: new Date() } });
       await this.activity.log(userId, 'image.attested_imported', projectId, { source: row.source });
       return { item: await this.itemOf(userId, projectId, row.id) };
     }
@@ -697,7 +720,8 @@ export class ImageLibraryService {
         analysis = await analyzeImage(data);
         if (analysis) await this.prisma.projectImage.update({ where: { id: r.id }, data: { analysisJson: analysis as never } }).catch(() => undefined);
       }
-      images.push({ id: r.assetId!, name: r.asset!.originalName.slice(0, 120), data, library: { rights: asRights(r.rightsJson), analysis, text: `${r.title} ${r.text}`.slice(0, 500), width: analysis?.width ?? r.width, height: analysis?.height ?? r.height, pageUrl: r.pageUrl, via: 'library' } });
+      const category = ((r.metaJson ?? {}) as Obj).category;
+      images.push({ id: r.assetId!, name: r.asset!.originalName.slice(0, 120), data, library: { rights: asRights(r.rightsJson), analysis, text: `${r.title} ${r.text}`.slice(0, 500), width: analysis?.width ?? r.width, height: analysis?.height ?? r.height, pageUrl: r.pageUrl, via: 'library', category: typeof category === 'string' ? category : null, originalUrl: r.remoteUrl ?? null } });
     }
     return { images, count: images.length, skipped };
   }

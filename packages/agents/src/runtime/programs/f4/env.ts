@@ -31,6 +31,10 @@ export interface F4Settings {
   visual: HybridSettings;
   approvedBudgetUsd: number | null;
   agentTimeoutMs: number;
+  /** The Content Writer's task (its long first answer and at most one larger re-ask), from its output cap. */
+  writerTimeoutMs: number;
+  /** Output cap of a copy revision (a few pieces of copy, never the whole campaign). */
+  revisionTokens: number;
   sourcingTimeoutMs: number;
   designTimeoutMs: number;
   reviewTimeoutMs: number;
@@ -62,6 +66,10 @@ export interface LibraryImageInfo {
   height: number | null;
   pageUrl: string | null;
   via: 'library' | 'auto_stock';
+  /** what the picture shows (website discovery / the pixel check at import): 'brand_graphic' is not a photograph. Absent = unknown. */
+  category?: string | null;
+  /** the address the file was fetched from (website or provider), part of its provenance; absent = an upload or unknown */
+  originalUrl?: string | null;
 }
 
 /** A licensed picture the Visual Researcher chose in automatic stock mode: downloaded through the guarded fetcher, stored with its provenance. */

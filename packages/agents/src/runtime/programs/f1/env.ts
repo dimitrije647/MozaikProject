@@ -48,4 +48,6 @@ export interface F1Env {
   policyIssues: PolicyIssue[];
   /** Measured palette of analyzed images (hex), set by the Business Researcher's image step. */
   palette: string[];
+  /** The pages of the business's own website that were read (for the deterministic brand facts: official slogan, name, contact). */
+  brandPages?: { url: string; page: import('../../../tools/html').ExtractedPage }[];
 }

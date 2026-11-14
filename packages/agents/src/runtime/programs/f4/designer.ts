@@ -3,16 +3,35 @@ import { CREATIVE_INFO } from '../../../creative/board';
 import type { AssetRecord, LayoutRecord, SkippedLayout } from '../../../creative/schemas';
 import type { RerenderOp } from '../../../creative/repair';
 import { paletteKeyOf } from '../../../collections/design';
-import { contentForSlot, renderContent } from '../../../hybrid/content';
+import { contentForSlot, renderContent, visualTextBudget } from '../../../hybrid/content';
 import { exportEligibility, rightsSummary, uploadRights } from '../../../imagery/rights';
-import { RIGHTS_BY_ORIGIN, type TemplateContent, type TemplateCreativeRecord, type TemplateSelectionItem } from '../../../hybrid/records';
+import { RIGHTS_BY_ORIGIN, type DesignDiagnostics, type TemplateContent, type TemplateCreativeRecord, type TemplateSelectionItem } from '../../../hybrid/records';
 import type { TemplateSlot } from '../../../hybrid/plan';
 import { selectTemplates, type SelectorContext } from '../../../hybrid/selector';
+import { analyzeSubject } from '../../../imagery/subject';
+import sharp from 'sharp';
+import { NEVER_A_PICTURE, assetKindOf, rankCompositions, shortlistCompositions, type AssetKind, type Composition, type CompositionContext, type ContentProfile, type VariantId } from '../../../templates/adapt';
+import { isBetter, repairLoop, type DesignAttempt } from '../../../templates/design-loop';
+import { designStatus, preflight } from '../../../templates/preflight';
 import { renderTemplate } from '../../../templates/render';
-import type { TemplateDef } from '../../../templates/schema';
+import { formatClassOf, type RenderSubject, type TemplateDef } from '../../../templates/schema';
 import { OnEventTypes, guarded } from '../../run-context';
 import { PhaseAgent } from '../f1/agent';
 import type { F4Env } from './env';
+
+/** What each layout variant did, for people. */
+const VARIANT_NOTE: Record<VariantId, string> = {
+  base: 'The template as designed.',
+  mirror: 'Mirrored the composition (text and picture swap sides) so the text sits in the free part of the picture.',
+  compact: 'Shrank the text panel/band to the text and shortened the stripes, so the people stay visible.',
+  'mirror+compact': 'Mirrored the composition and shrank the text panel to the text.',
+  top: 'Moved the text group to the top, where the picture has free space.',
+  bottom: 'Moved the text group to the bottom, where the picture has free space.',
+  'top+compact': 'Moved the text group to the top and shrank its panel to the text.',
+  'bottom+compact': 'Moved the text group to the bottom and shrank its panel to the text.',
+  contain: 'Showed the whole photograph (letterboxed in its own border colour): any crop of this format would have cut people.',
+  'photo-panel': 'Filled the large empty colour panel of the layout with the approved photograph instead of leaving a block of colour.',
+};
 
 const clean = (s: string, max: number) => s.replace(/[<>\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 
@@ -65,6 +84,49 @@ export function buildDesigner(env: F4Env): PhaseAgent {
   const name = CREATIVE_INFO.designer.name;
   const hy = env.hybrid;
   const library = new Map<string, TemplateDef>(hy.library.map((t) => [t.id, t]));
+  /** how many delivered creatives of this run use each library picture (a replacement picture prefers one the campaign uses less) */
+  const pictureUses = new Map<string, number>();
+  /** the verified web address of the business (the one the owner supplied), as print shows it: the host only */
+  const site = (() => {
+    try {
+      return env.input.websiteUrl ? new URL(env.input.websiteUrl).hostname.replace(/^www\./, '') : null;
+    } catch {
+      return null;
+    }
+  })();
+  /**
+   * MEDIA-SPECIFIC CONTENT. A billboard is read in seconds and cannot be clicked: one headline, the business named, and the verified address as
+   * its next step (nothing when there is none). A flyer is printed: its call to action becomes a written next step with the verified address.
+   * Social posts and digital ads keep their call to action (a button where the layout has one).
+   */
+  const mediaContent = (c: TemplateContent, kind: string | null): TemplateContent => {
+    if (kind === 'billboard') return { ...c, support: null, eyebrow: null, cta: site, ctaOptions: [] };
+    if (kind === 'flyer') {
+      const cta = c.cta ? (site ? `${c.cta} \u2013 ${site}` : c.cta) : site;
+      return { ...c, cta, ctaOptions: site ? [...(c.ctaOptions ?? []).map((x) => `${x} \u2013 ${site}`), site] : c.ctaOptions };
+    }
+    return c;
+  };
+  /** what a library picture is, for a layout (photograph, screenshot, brand graphic, ...): its category, its words and its pixels */
+  const kinds = new Map<string, AssetKind>();
+  const pictureKind = async (id: string): Promise<AssetKind> => {
+    if (kinds.has(id)) return kinds.get(id)!;
+    const b = hy.brandImages.find((x) => x.id === id);
+    const k = b ? assetKindOf({ category: b.library?.category ?? null, text: `${b.name} ${b.library?.text ?? ''}`, subject: await analyzeSubject(b.data) }) : 'photograph';
+    kinds.set(id, k);
+    return k;
+  };
+  /** the best other approved PHOTOGRAPH for a format: the shape that suits it, then the one the campaign uses least */
+  const otherPhotograph = async (exclude: string, aspect: number): Promise<string | null> => {
+    const alts: { id: string; d: number }[] = [];
+    for (const b of hy.brandImages) {
+      if (b.id === exclude || !exportEligibility(b.library?.rights ?? uploadRights()).eligible) continue;
+      if ((await pictureKind(b.id)) !== 'photograph') continue;
+      const sz = await pictureSize(b.id);
+      if (sz) alts.push({ id: b.id, d: Math.abs(Math.log(sz.w / sz.h / aspect)) + 0.12 * (pictureUses.get(b.id) ?? 0) });
+    }
+    return alts.sort((a, b) => a.d - b.d || (a.id < b.id ? -1 : 1))[0]?.id ?? null;
+  };
   const instruction = 'Creative Designer. Chooses a template of the approved collection for every planned deliverable and renders it locally with the approved copy, palette, logo and picture. Never generates an image; makes no model call.';
 
   const record = (item: TemplateSelectionItem, status: TemplateCreativeRecord['status'], extra: Partial<TemplateCreativeRecord> = {}): TemplateCreativeRecord => ({
@@ -94,82 +156,282 @@ export function buildDesigner(env: F4Env): PhaseAgent {
 
   type Attempt = { ok: true; asset: AssetRecord; layout: LayoutRecord; tc: TemplateCreativeRecord; item: TemplateSelectionItem } | { ok: false; reason: string };
 
-  /** Renders ONE creative. `version` > 1 makes it a new version of an existing creative; `swap` starts with the first alternative template. */
-  const renderItem = async (item: TemplateSelectionItem, o: { dropSupport?: boolean; version?: number; swap?: boolean } = {}): Promise<Attempt> => {
-    let current = item;
-    let dropSupport = o.dropSupport === true;
-    const tried = new Set<string>([item.templateId]);
-    if (o.swap) {
-      const next = item.alternatives.map((a) => a.templateId).find((id) => !tried.has(id) && library.has(id));
-      if (next) {
-        tried.add(next);
-        current = withTemplate(item, library.get(next)!, 'the review asked for another layout');
+  /** The pictures a template draws for a creative: rights-gated again, with the subject map of the hero picture. */
+  type Pictures = { hero?: Buffer; secondary?: Buffer; heroFocus?: [number, number]; subject?: RenderSubject; sourceIds: string[]; credits: string[] };
+  const picturesFor = async (tpl: TemplateDef, current: TemplateSelectionItem): Promise<Pictures | { error: string }> => {
+    // the picture is the one the Visual Researcher assigned to THIS creative, from the approved library, and nothing else. It passes the rights gate
+    // again here: a picture that may not be exported is never drawn, whatever reached this point.
+    const credits: string[] = [];
+    const take = (id: string | null | undefined): { data: Buffer; focus: [number, number] | null; id: string } | { error: string } | null => {
+      if (!id) return null;
+      const b = hy.brandImages.find((x) => x.id === id);
+      if (!b) return { error: `Its picture (${id}) is not in the approved library.` };
+      const info = b.library?.rights ?? uploadRights();
+      const gate = exportEligibility(info);
+      if (!gate.eligible) return { error: `Its picture "${b.name}" may not be used in a creative: ${gate.reason}` };
+      credits.push(rightsSummary(info));
+      return { data: b.data, focus: b.library?.analysis?.focus ?? null, id: b.id };
+    };
+    const out: Pictures = { sourceIds: [], credits };
+    // a picture is a SOURCE of this creative only if the template really draws it (no false credit or provenance entries)
+    if (tpl.layers.some((l) => l.type === 'image' && l.slot !== 'secondary')) {
+      const h = take(current.imageId);
+      if (h && 'error' in h) return h;
+      if (h) {
+        out.hero = h.data;
+        out.sourceIds.push(`brand:${h.id}`);
+        out.heroFocus = current.focus ? [current.focus[0], current.focus[1]] : (h.focus ?? undefined);
+        // where the people, faces and subject are (local pixel analysis, cached per picture): the crop keeps them whole and visible
+        const m = await analyzeSubject(h.data);
+        if (m) out.subject = { faces: m.faces, subject: m.subject, graphic: m.graphic };
       }
     }
-    for (let step = 0; step < 4; step++) {
-      const tpl = library.get(current.templateId);
-      if (!tpl) return { ok: false, reason: `Template ${current.templateId} is not in the collection.` };
-      // the picture is the one the Visual Researcher assigned to THIS creative, from the approved library, and nothing else. It passes the rights gate
-      // again here: a picture that may not be exported is never drawn, whatever reached this point.
-      const credits: string[] = [];
-      const take = (id: string | null | undefined): { data: Buffer; focus: [number, number] | null; id: string } | { error: string } | null => {
-        if (!id) return null;
-        const b = hy.brandImages.find((x) => x.id === id);
-        if (!b) return { error: `Its picture (${id}) is not in the approved library.` };
-        const info = b.library?.rights ?? uploadRights();
-        const gate = exportEligibility(info);
-        if (!gate.eligible) return { error: `Its picture "${b.name}" may not be used in a creative: ${gate.reason}` };
-        credits.push(rightsSummary(info));
-        return { data: b.data, focus: b.library?.analysis?.focus ?? null, id: b.id };
-      };
-      const sourceIds: string[] = [];
-      let hero: Buffer | undefined;
-      let secondary: Buffer | undefined;
-      let heroFocus: [number, number] | undefined;
-      // a picture is a SOURCE of this creative only if the template really draws it (no false credit or provenance entries)
-      if (tpl.layers.some((l) => l.type === 'image' && l.slot !== 'secondary')) {
-        const h = take(current.imageId);
-        if (h && 'error' in h) return { ok: false, reason: h.error };
-        if (h) {
-          hero = h.data;
-          sourceIds.push(`brand:${h.id}`);
-          heroFocus = current.focus ? [current.focus[0], current.focus[1]] : (h.focus ?? undefined);
-        }
+    if (tpl.layers.some((l) => l.type === 'image' && l.slot === 'secondary')) {
+      const s = take(current.secondaryImageId);
+      if (s && 'error' in s) return s;
+      if (s) {
+        out.secondary = s.data;
+        out.sourceIds.push(`brand:${s.id}`);
       }
-      if (tpl.layers.some((l) => l.type === 'image' && l.slot === 'secondary')) {
-        const s = take(current.secondaryImageId);
-        if (s && 'error' in s) return { ok: false, reason: s.error };
-        if (s) {
-          secondary = s.data;
-          sourceIds.push(`brand:${s.id}`);
-        }
+    }
+    return out;
+  };
+
+  /** Pixel size of a library picture (from its stored analysis, else read once) and of the logo. */
+  const sizes = new Map<string, { w: number; h: number } | null>();
+  const pictureSize = async (id: string): Promise<{ w: number; h: number } | null> => {
+    if (sizes.has(id)) return sizes.get(id)!;
+    const b = hy.brandImages.find((x) => x.id === id);
+    let out: { w: number; h: number } | null = null;
+    if (b?.library?.analysis?.width && b.library.analysis.height) out = { w: b.library.analysis.width, h: b.library.analysis.height };
+    else if (b) out = await sharp(b.data).metadata().then((m) => (m.width && m.height ? ((m.orientation ?? 1) >= 5 ? { w: m.height, h: m.width } : { w: m.width, h: m.height }) : null)).catch(() => null);
+    sizes.set(id, out);
+    return out;
+  };
+  let logoSize: { w: number; h: number } | null | undefined;
+  const logoDims = async () => {
+    if (logoSize === undefined) logoSize = env.logo ? await sharp(env.logo).metadata().then((m) => (m.width && m.height ? { w: m.width, h: m.height } : null)).catch(() => null) : null;
+    return logoSize;
+  };
+
+  /** The content of a creative as the composition scorer sees it: the picture (size, faces, subject, busy map), the copy, the logo, the format. */
+  const profileFor = async (current: TemplateSelectionItem, imageId: string | null | undefined, dropSupport: boolean, kind: string | null): Promise<ContentProfile> => {
+    const copy = renderContent(current.content, hy.brandName, settings.visual.facts, dropSupport) as ContentProfile['copy'];
+    let picture: ContentProfile['picture'] = null;
+    const b = imageId ? hy.brandImages.find((x) => x.id === imageId) : undefined;
+    if (b && exportEligibility(b.library?.rights ?? uploadRights()).eligible) {
+      const size = await pictureSize(b.id);
+      const m = await analyzeSubject(b.data);
+      if (size) picture = { w: size.w, h: size.h, focus: current.focus ? [current.focus[0], current.focus[1]] : (b.library?.analysis?.focus ?? null), subject: m, kind: await pictureKind(b.id) };
+    }
+    const second = !!current.secondaryImageId && hy.brandImages.some((x) => x.id === current.secondaryImageId);
+    const slot = env.board.hybridPlan?.slots.find((s) => s.slotId === current.slotId);
+    const fastScroll = !!slot && !!visualTextBudget(slot)?.fastScroll;
+    return { width: current.width, height: current.height, picture, hasSecondPicture: second, logo: await logoDims(), copy, kind, fastScroll };
+  };
+
+  /**
+   * Renders ONE creative by ADAPTIVE COMPOSITION (templates/adapt.ts) validated by the DESIGN PREFLIGHT:
+   *   1. the content is analysed (the picture's faces, subject and busy areas, the copy, the logo, the format)
+   *   2. every template of the collection that can draw the format is turned into its few layout variants and scored against that content
+   *      BEFORE rendering (critical problems are hard failures, not penalties)
+   *   3. the best MAX_COMPOSITIONS compositions (preferring different templates) are rendered and checked by the preflight, which repairs in
+   *      place (crop, logo position and size, overlay opacity, decoration, text backing) within a bounded number of renders
+   *   4. if the best result still has a CRITICAL problem and another approved picture suits the format better, the best composition for that
+   *      picture is tried once
+   * The best attempt is delivered with its diagnostics and an honest status (passed / warnings / unresolved).
+   * `version` > 1 makes it a new version of an existing creative; `swap` (asked for by the review) ranks the delivered layout last; `avoid`
+   * lists the layouts (template -> variants) already used in this format.
+   */
+  const MAX_COMPOSITIONS = 3;
+  type MatrixOpts = { force?: { templateId: string; variant: string } | null; exclude?: ReadonlySet<string> };
+  const renderItem = async (planned: TemplateSelectionItem, o: { dropSupport?: boolean; version?: number; swap?: boolean; avoid?: ReadonlyMap<string, ReadonlySet<string>>; families?: ReadonlySet<string>; matrix?: MatrixOpts } = {}): Promise<Attempt> => {
+    const slot = env.board.hybridPlan?.slots.find((s) => s.slotId === planned.slotId);
+    const kind = slot?.kind ?? null;
+    let item: TemplateSelectionItem = { ...planned, content: mediaContent(planned.content, kind) };
+    // a picture that cannot BE a picture (a brand graphic with its own text and logo, a logo) is replaced by another approved photograph, never
+    // written over; without one the creative is photo-free. The same unsuitable picture is never inserted again.
+    let replaced: string | null = null;
+    if (item.imageId && NEVER_A_PICTURE.has(await pictureKind(item.imageId))) {
+      replaced = item.imageId;
+      const alt = await otherPhotograph(item.imageId, item.width / item.height);
+      item = { ...item, imageId: alt, focus: null, secondaryImageId: item.secondaryImageId === alt ? null : item.secondaryImageId };
+    }
+    if (item.secondaryImageId && NEVER_A_PICTURE.has(await pictureKind(item.secondaryImageId))) item = { ...item, secondaryImageId: null };
+    const shortlist = [item.templateId, ...item.alternatives.map((a) => a.templateId)].filter((id, i, all) => all.indexOf(id) === i && library.has(id));
+    const cls = formatClassOf(item.width, item.height);
+    let candidates = [...library.values()].filter((t) => t.classes.includes(cls));
+    if (!candidates.length) return { ok: false, reason: `No template of the collection draws ${item.format}.` };
+    // the second design of a variation matrix is ANOTHER template (never the first design mirrored)
+    let matrixNote: string | null = null;
+    if (o.matrix?.exclude?.size) {
+      const rest = candidates.filter((t) => !o.matrix!.exclude!.has(t.id));
+      if (rest.length) candidates = rest;
+      else matrixNote = 'The collection has only one template for this format, so the second design of the matrix could not be a different layout.';
+    }
+    const print = kind === 'billboard' || kind === 'flyer';
+    const budget = slot ? visualTextBudget(slot) : null;
+    // PHOTO FIRST on a FAST-SCROLL format (a TikTok cover): when an approved photograph is assigned, a composition that shows it beats a photo-free
+    // one unless it has a critical problem. Other formats compare by the preflight as before (the ranking already penalises a photo-free layout).
+    const photoAvailable = !!item.imageId && (await pictureKind(item.imageId)) === 'photograph';
+    const photoFirst = photoAvailable && !!budget?.fastScroll;
+    const better = (a: DesignAttempt, aPhoto: boolean, b: DesignAttempt, bPhoto: boolean) => {
+      if (photoFirst && aPhoto !== bPhoto) {
+        const ok = (x: DesignAttempt) => designStatus(x.pre) !== 'unresolved';
+        if (aPhoto && ok(a)) return true;
+        if (bPhoto && ok(b)) return false;
       }
-      const res = await renderTemplate({ template: tpl, width: current.width, height: current.height, content: renderContent(current.content, hy.brandName, settings.visual.facts, dropSupport), palette: env.hasBrandPalette ? env.palette : [], styleId: env.board.selection?.styleId ?? env.board.direction?.styleId, anchors: hy.anchors ?? undefined, brandName: hy.brandName, images: { hero, secondary }, logo: env.logo, ...(heroFocus ? { heroFocus } : {}), ...(env.brand?.logo ? { logoAdapt: true } : {}) });
-      const nextTemplate = () => current.alternatives.map((a) => a.templateId).find((id) => !tried.has(id) && library.has(id));
-      if (!res.ok) {
-        const next = nextTemplate();
-        if ((res.reason === 'unsupported_format' || res.reason === 'missing_required' || res.reason === 'render_failed') && next && step < 3) {
-          tried.add(next);
-          current = withTemplate(current, library.get(next)!, 'the planned template could not be rendered');
+      return isBetter(a, b);
+    };
+    const spells = await logoDims().then((d) => !!d && d.w / d.h >= 2.2);
+    // print names the business in full: next to a logo mark that does not spell it, the name is written
+    const initialTune = print && env.logo && !spells ? { brandName: true } : {};
+    const used = new Map<string, Set<string>>([...(o.avoid ?? new Map())].map(([k, v]) => [k, new Set(v)]));
+    // the review asked for ANOTHER layout: everything of the delivered template counts as used
+    if (o.swap) used.set(item.templateId, new Set(['base', 'mirror', 'compact', 'mirror+compact', 'top', 'bottom', 'top+compact', 'bottom+compact', 'contain', 'photo-panel']));
+    const ctxC: CompositionContext = { used, usedFamilies: o.families, preferred: shortlist };
+    type Best = { attempt: DesignAttempt; comp: Composition; current: TemplateSelectionItem; pics: Pictures; dropSupport: boolean };
+    let best: Best | null = null;
+    let renders = 0;
+    let lastRefusal: string | null = null;
+    const tried: string[] = [];
+    let ranked: Composition[] = [];
+    const attemptWith = async (comp: Composition, base: TemplateSelectionItem) => {
+      const lib = library.get(comp.templateId)!;
+      const current = comp.templateId === item.templateId ? base : withTemplate(base, lib, o.swap ? 'the review asked for another layout' : 'it suits this content better');
+      const pics = await picturesFor(comp.template, current);
+      if ('error' in pics) return pics.error;
+      tried.push(`${comp.templateId}${comp.variant === 'base' ? '' : `:${comp.variant}`}`);
+      const templateHasImage = comp.template.layers.some((l) => l.type === 'image');
+      let dropSupport = o.dropSupport === true;
+      for (let pass = 0; pass < 2; pass++) {
+        const content = renderContent(current.content, hy.brandName, settings.visual.facts, dropSupport);
+        const run = await repairLoop(
+          comp.templateId,
+          (tune) => renderTemplate({ template: comp.template, width: current.width, height: current.height, content, palette: env.hasBrandPalette ? env.palette : [], styleId: env.board.selection?.styleId ?? env.board.direction?.styleId, anchors: hy.anchors ?? undefined, brandName: hy.brandName, images: { hero: pics.hero, secondary: pics.secondary }, logo: env.logo, ...(pics.heroFocus ? { heroFocus: pics.heroFocus } : {}), ...(env.brand?.logo ? { logoAdapt: true } : {}), ...(pics.subject ? { subject: pics.subject } : {}), tune, alternatives: { cta: current.content.ctaOptions ?? [], headline: current.content.headlineOptions ?? [] } }),
+          (res) => preflight({ report: res.report, flags: res.flags, layers: res.layers, hasLogo: !!env.logo, hasPicture: pics.sourceIds.length > 0, templateHasImage, media: { kind, logoSpellsName: spells, fastScroll: !!budget?.fastScroll, textBudget: budget ? { maxWords: budget.maxWords, maxBlocks: budget.maxBlocks } : null, pictureIsPhoto: photoAvailable } }),
+          4,
+          initialTune,
+        );
+        renders += run.renders;
+        if (run.refused) {
+          lastRefusal = run.refused.message;
+          return null;
+        }
+        if (!run.best) return null;
+        // the supporting line is optional: better without it than cut off
+        if (!dropSupport && run.best.res.flags.includes('text_trimmed:support')) {
+          dropSupport = true;
           continue;
         }
-        return { ok: false, reason: res.message };
+        const drawsPhoto = pics.sourceIds.length > 0;
+        if (!best || better(run.best, drawsPhoto, best.attempt, best.pics.sourceIds.length > 0)) best = { attempt: run.best, comp, current, pics, dropSupport };
+        return null;
       }
+      return null;
+    };
+    const profile = await profileFor(item, item.imageId, o.dropSupport === true, kind);
+    ranked = rankCompositions(candidates, profile, ctxC);
+    // a matrix partner: the SAME design (template and arrangement) carries the second text; it is kept unless it fails critically with this text
+    let shared = false;
+    const force = o.matrix?.force ?? null;
+    if (force) {
+      const fc = ranked.find((c) => c.templateId === force.templateId && c.variant === force.variant) ?? ranked.find((c) => c.templateId === force.templateId);
+      if (fc && !fc.hard.some((h) => h.startsWith('asset_fit') || h.startsWith('template_fit'))) {
+        const err = await attemptWith(fc, item);
+        if (err) return { ok: false, reason: err };
+        shared = !!best && designStatus((best as Best).attempt.pre) !== 'unresolved';
+      }
+      if (!shared) matrixNote = `The first design (${force.templateId}) could not carry this text cleanly, so another layout was used: this cell of the matrix is not the same design.`;
+    }
+    if (!shared) {
+      for (const comp of shortlistCompositions(ranked, MAX_COMPOSITIONS)) {
+        const err = await attemptWith(comp, item);
+        if (err) return { ok: false, reason: err };
+        if (best && (best as Best).attempt.pre.passed && (!photoFirst || (best as Best).pics.sourceIds.length > 0)) break;
+      }
+    }
+    // a critical problem remains: another approved picture whose shape suits the format may give a clean composition (tried once)
+    const bestNow = best as Best | null;
+    if (bestNow && designStatus(bestNow.attempt.pre) === 'unresolved' && item.imageId) {
+      const aspect = item.width / item.height;
+      const alts: { id: string; d: number }[] = [];
+      for (const b of hy.brandImages) {
+        if (b.id === item.imageId || !exportEligibility(b.library?.rights ?? uploadRights()).eligible) continue;
+        if (NEVER_A_PICTURE.has(await pictureKind(b.id))) continue;
+        const sz = await pictureSize(b.id);
+        // shape first; a picture the campaign already uses often costs a little, and a brand graphic is a last resort for a photograph's place
+        if (sz) alts.push({ id: b.id, d: Math.abs(Math.log(sz.w / sz.h / aspect)) + 0.12 * (pictureUses.get(b.id) ?? 0) + (b.library?.category === 'brand_graphic' ? 0.5 : 0) });
+      }
+      const alt = alts.sort((a, b) => a.d - b.d)[0];
+      if (alt) {
+        const altItem = { ...item, imageId: alt.id, focus: null };
+        const altRanked = rankCompositions(candidates, await profileFor(altItem, alt.id, o.dropSupport === true, kind), ctxC);
+        if (altRanked[0] && altRanked[0].hard.length < (bestNow.comp.hard.length || 1)) await attemptWith(altRanked[0], altItem);
+      }
+    }
+    if (!best) return { ok: false, reason: lastRefusal ?? 'No composition of the collection could be rendered cleanly.' };
+    const chosen = best as Best;
+    const { attempt, pics, comp } = chosen;
+    const current = chosen.current;
+    const dropSupport = chosen.dropSupport;
+    const tpl = library.get(attempt.templateId)!;
+    const res = attempt.res;
+    const sourceIds = pics.sourceIds;
+    const credits = pics.credits;
+    {
       const flags = [...res.flags];
-      const trimmed = (slot: string) => flags.includes(`text_trimmed:${slot}`);
-      if (trimmed('support') && !dropSupport) {
-        dropSupport = true; // the supporting line is optional: better without it than cut off
-        continue;
-      }
-      if (trimmed('headline')) {
-        const next = nextTemplate();
-        if (next && step < 3) {
-          tried.add(next);
-          current = withTemplate(current, library.get(next)!, 'the planned template could not fit the headline');
-          continue;
-        }
-        flags.push('text_overflow');
-      }
+      if (flags.includes('text_trimmed:headline')) flags.push('text_overflow');
+      if (attempt.pre.passed) flags.push('preflight_passed');
+      else flags.push(...attempt.pre.failures.map((f) => `preflight_failed:${f.id}`));
+      if (attempt.actions.length) flags.push('preflight_repaired');
+      flags.push(`layout_variant:${comp.variant}`);
+      const usedHere = o.avoid?.get(attempt.templateId);
+      // a mirrored, compacted or shifted copy of a layout already used in this channel is NOT a new design (a matrix partner shares it on purpose)
+      const duplicate = !!usedHere && !shared;
+      const sameTemplate = false;
+      const relation: 'creative_direction' | 'layout_adaptation' | 'copy_variation' = !usedHere && !shared ? 'creative_direction' : shared || [...(usedHere ?? [])].includes(comp.variant) ? 'copy_variation' : 'layout_adaptation';
+      const channelKey = kind && kind !== 'social_post' ? kind : `social:${current.channel}`;
+      const checks = [
+        ...attempt.pre.checks.map((c) => ({ id: c.id, category: c.category, status: c.status, detail: c.detail })),
+        { id: 'duplicate_layout', category: 'duplicate_layout', status: duplicate || sameTemplate ? ('warn' as const) : ('pass' as const), detail: duplicate ? `Another creative of this ${kind === 'social_post' ? 'channel' : 'deliverable'} already uses this layout (${relation === 'copy_variation' ? 'the same arrangement' : `a ${comp.variant} copy is not a new design`}): no other composition of the collection passed the checks.` : shared ? 'Shares its design with its partner in the variation matrix (on purpose: same design, other text).' : 'No other creative of this channel uses this layout.' },
+      ];
+      const status = designStatus(attempt.pre) === 'passed' && (duplicate || sameTemplate) ? 'warnings' : designStatus(attempt.pre);
+      if (status === 'unresolved') flags.push('design_unresolved');
+      const others = ranked.filter((r) => !(r.templateId === comp.templateId && r.variant === comp.variant)).slice(0, 4);
+      const hero = res.report.hero;
+      const design: DesignDiagnostics = {
+        passed: attempt.pre.passed,
+        status,
+        checks,
+        repairs: [
+          ...(attempt.templateId !== item.templateId ? [{ kind: 'template', target: attempt.templateId, detail: `Composed with ${attempt.templateId} instead of the planned ${item.templateId}${o.swap ? ' (asked for by the review)' : ' (it suits this content better)'}.` }] : []),
+          ...(comp.variant !== 'base' ? [{ kind: 'position', target: comp.variant, detail: VARIANT_NOTE[comp.variant] }] : []),
+          ...(current.imageId !== item.imageId ? [{ kind: 'crop', target: current.imageId ?? '', detail: 'Used another approved picture whose shape suits this format.' }] : []),
+          ...(dropSupport && !o.dropSupport ? [{ kind: 'copy', target: 'support', detail: 'Left out the supporting line: it did not fit without being cut.' }] : []),
+          ...attempt.actions,
+        ].slice(0, 40),
+        renders,
+        templatesTried: tried.slice(0, 8),
+        templateChanged: attempt.templateId !== item.templateId,
+        composition: {
+          templateId: comp.templateId,
+          variant: comp.variant,
+          score: comp.score,
+          considered: ranked.length,
+          reasons: comp.reasons.slice(0, 4),
+          hard: comp.hard.slice(0, 4),
+          rejected: others.map((r) => ({ templateId: r.templateId, variant: r.variant, score: r.score, why: (r.hard[0] ?? r.reasons[0] ?? '').slice(0, 200) })),
+        },
+        crop: hero ? { fit: hero.fit, zoom: hero.zoom, cropLoss: hero.cropLoss, subjectAware: flags.includes('crop_subject_aware:hero') || hero.fit === 'contain', facesWhole: hero.faces.filter((f) => f.inFrame >= 0.85).length, faces: hero.faces.length } : null,
+        text: { over: comp.predicted.textOver, placement: comp.variant },
+        logo: res.report.logo ? { mode: res.report.logo.mode, moved: flags.includes('logo_moved'), enlarged: flags.includes('logo_enlarged'), plate: res.report.logo.plate, contrast: res.report.logo.contrast, name: res.report.logo.name === true } : null,
+        concept: { key: comp.templateId, family: comp.family, relation, channel: channelKey },
+        matrix: slot?.matrix ? { group: slot.matrix.group, design: slot.matrix.design, copy: slot.matrix.copy, shared: !!force && shared, note: matrixNote } : null,
+        shortened: (res.report.shortened ?? []).slice(0, 6).map((x) => ({ slot: x.slot, from: x.from.slice(0, 200), to: x.to.slice(0, 200) })),
+        picture: current.imageId ? { kind: await pictureKind(current.imageId), replaced } : replaced ? { kind: 'none', replaced } : null,
+      };
+      if (replaced) design.repairs.unshift({ kind: 'crop', target: replaced, detail: current.imageId ? 'Its assigned picture is a brand graphic or logo (it carries its own text and mark), so another approved photograph was used.' : 'Its assigned picture is a brand graphic or logo and no other approved photograph exists, so the design is photo-free.' });
       const hasLogoLayer = tpl.layers.some((l) => l.type === 'logo');
       if (env.logo && hasLogoLayer && !flags.includes('logo_missing_name_used') && !flags.includes('logo_unreadable')) flags.push('logo_applied');
       if (dropSupport) flags.push('support_dropped');
@@ -209,10 +471,9 @@ export function buildDesigner(env: F4Env): PhaseAgent {
         rights: rightsNote ? { basis: 'original_template', note: rightsNote } : RIGHTS_BY_ORIGIN.TEMPLATE_RENDERED,
       });
       const layout: LayoutRecord = { id: `layout-${asset.id}`, conceptId: current.conceptId, variantId: current.content.variantId ?? '', variationId: null, assetId: asset.id, baseAssetId: '', format: current.format, channel: current.channel, headline: current.content.headline, ctaText: current.content.cta ?? '', flags, templateId: current.templateId, templateVersion: current.templateVersion, slotId: current.slotId };
-      const tc = record(current, 'rendered', { ...(logoOutcome ? { logo: logoOutcome } : {}), assetId: asset.id, sourceAssetIds: sourceIds, origin: 'TEMPLATE_RENDERED', flags, reason: tried.size > 1 && current.templateId !== item.templateId ? `Rendered with ${current.templateName} instead of ${item.templateName}: ${current.rationale.slice(0, 120)}` : null });
+      const tc = record(current, 'rendered', { ...(logoOutcome ? { logo: logoOutcome } : {}), assetId: asset.id, sourceAssetIds: sourceIds, origin: 'TEMPLATE_RENDERED', flags, design, reason: current.templateId !== item.templateId ? `Rendered with ${current.templateName} instead of ${item.templateName}: ${current.rationale.slice(0, 120)}` : null });
       return { ok: true, asset, layout, tc, item: current };
     }
-    return { ok: false, reason: 'No template in the shortlist could be rendered cleanly.' };
   };
 
   const blocked = (slot: TemplateSlot, reason: string): TemplateCreativeRecord => ({ slotId: slot.slotId, conceptId: slot.conceptId, templateId: '', templateName: '(none)', templateVersion: 0, collectionId: hy.collection?.id ?? null, collectionVersion: hy.collection?.version ?? null, paletteKey: null, variationId: null, channel: slot.channel, format: slot.formatId, width: slot.width, height: slot.height, status: 'skipped', assetId: null, sourceAssetIds: [], origin: null, flags: ['blocked'], reason });
@@ -246,12 +507,44 @@ export function buildDesigner(env: F4Env): PhaseAgent {
           report(s.conceptId, blocked(s, reason), null, null, { conceptId: s.conceptId, format: s.formatId, channel: s.channel, reason });
         }
         let rendered = 0;
-        for (const item of result.plan.items) {
+        // layout diversity: the layouts (template -> variants) and families already delivered per format (two billboards must not look the same)
+        // the key is the CHANNEL for social posts (reuse across networks is allowed, repetition inside one is not) and the deliverable otherwise
+        const usedLayouts = new Map<string, Map<string, Set<string>>>();
+        const usedFamilies = new Map<string, Set<string>>();
+        const layoutKey = (it: TemplateSelectionItem) => {
+          const k = plan.slots.find((s) => s.slotId === it.slotId)?.kind;
+          return k && k !== 'social_post' ? k : `social:${it.channel}`;
+        };
+        // the variation matrix: design 1 is chosen with the first text and shared with the second; design 2 is another template
+        const matrixDesign = new Map<string, { templateId: string; variant: string }>();
+        const matrixOf = (it: TemplateSelectionItem): MatrixOpts | undefined => {
+          const m = plan.slots.find((s) => s.slotId === it.slotId)?.matrix;
+          if (!m) return undefined;
+          const mine = matrixDesign.get(`${m.group}|${m.design}`);
+          const other = matrixDesign.get(`${m.group}|${m.design === 1 ? 2 : 1}`);
+          return { force: mine ?? null, exclude: new Set(other ? [other.templateId] : []) };
+        };
+        // matrix cells of the same design are rendered in order (design 1 text 1 decides design 1)
+        const order = [...result.plan.items].sort((a, b) => {
+          const ma = plan.slots.find((s) => s.slotId === a.slotId)?.matrix;
+          const mb = plan.slots.find((s) => s.slotId === b.slotId)?.matrix;
+          return ma && mb && ma.group === mb.group ? ma.design - mb.design || ma.copy - mb.copy : 0;
+        });
+        for (const item of order) {
           if (self.signal.aborted || ctx.isClosed()) break;
           try {
-            const a = await renderItem(item);
+            const mx = matrixOf(item);
+            const a = await renderItem(item, { avoid: mx?.force ? undefined : usedLayouts.get(layoutKey(item)), families: usedFamilies.get(layoutKey(item)), matrix: mx });
             if (a.ok) {
               rendered++;
+              const m = plan.slots.find((s) => s.slotId === item.slotId)?.matrix;
+              if (m && !matrixDesign.has(`${m.group}|${m.design}`)) matrixDesign.set(`${m.group}|${m.design}`, { templateId: a.item.templateId, variant: a.tc.design?.composition?.variant ?? 'base' });
+              for (const id of [a.item.imageId, a.item.secondaryImageId]) if (id) pictureUses.set(id, (pictureUses.get(id) ?? 0) + 1);
+              const k = layoutKey(item);
+              const byTemplate = usedLayouts.get(k) ?? new Map<string, Set<string>>();
+              byTemplate.set(a.item.templateId, new Set([...(byTemplate.get(a.item.templateId) ?? []), a.tc.design?.composition?.variant ?? 'base']));
+              usedLayouts.set(k, byTemplate);
+              usedFamilies.set(k, new Set([...(usedFamilies.get(k) ?? []), library.get(a.item.templateId)?.family ?? '']));
               report(item.conceptId, a.tc, a.asset, a.layout, null);
             } else report(item.conceptId, record(item, 'failed', { reason: a.reason }), null, null, { conceptId: item.conceptId, format: item.format, channel: item.channel, reason: a.reason });
           } catch (e) {
@@ -287,7 +580,19 @@ export function buildDesigner(env: F4Env): PhaseAgent {
             const content = contentForSlot(slot, env.board.concepts, env.board.variants) ?? planned.content;
             const old = env.board.templateCreatives.find((c) => c.slotId === op.slotId);
             const oldAsset = old?.assetId ? env.board.assets.find((a) => a.id === old.assetId) : undefined;
-            const a = await renderItem({ ...planned, content }, { dropSupport: op.dropSupport, swap: op.swapTemplate, version: (oldAsset?.version ?? 0) + 1 });
+            // the layouts the OTHER creatives of this format use stay at the back of the queue (no repair turns two billboards into twins)
+            const avoid = new Map<string, Set<string>>();
+            const keyOf = (slotId: string, channel: string) => {
+              const k = env.board.hybridPlan?.slots.find((s) => s.slotId === slotId)?.kind;
+              return k && k !== 'social_post' ? k : `social:${channel}`;
+            };
+            const mine = keyOf(op.slotId, planned.channel);
+            for (const c of env.board.templateCreatives.filter((x) => keyOf(x.slotId, x.channel) === mine && x.slotId !== op.slotId && x.status === 'rendered')) {
+              // the partner of a variation matrix shares its design on purpose: it is not a repetition to avoid
+              const partner = slot.matrix && env.board.hybridPlan?.slots.find((s) => s.slotId === c.slotId)?.matrix?.design === slot.matrix.design;
+              if (!partner) avoid.set(c.templateId, new Set([...(avoid.get(c.templateId) ?? []), c.design?.composition?.variant ?? 'base']));
+            }
+            const a = await renderItem({ ...planned, content }, { dropSupport: op.dropSupport, swap: op.swapTemplate, version: (oldAsset?.version ?? 0) + 1, avoid });
             if (!a.ok) {
               results.push({ id: op.id, ok: false, note: a.reason });
               continue;

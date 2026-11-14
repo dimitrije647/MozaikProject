@@ -64,6 +64,12 @@ export function planRepairs(board: CreativeBoard, findings: ReviewFindingRecord[
         continue;
       }
       for (const s of slots) rerender(s, f);
+      // essential text that no approved wording made fit: the Content Writer also writes a shorter call to action / headline for exactly this copy
+      // (part of the round's ONE revision call), and the creative is rendered again with it
+      if (f.kind === 'text_overflow' && l?.variantId && /call to action|headline/.test(f.finding)) {
+        plan.copy.set(l.variantId, [...(plan.copy.get(l.variantId) ?? []), f.id]);
+        plan.byFinding.push({ findingId: f.id, operation: 'revise_copy', owner: 'copywriter', note: 'A shorter wording of the text that did not fit.' });
+      }
       plan.byFinding.push({ findingId: f.id, operation: 'rerender_layout', owner: 'layout', note: '' });
     } else {
       plan.byFinding.push({ findingId: f.id, operation: 'none', owner: 'visual', note: 'A picture problem is never repaired automatically (no picture is generated or swapped in without your approval). Change the picture in the image library and run the campaign again.' });

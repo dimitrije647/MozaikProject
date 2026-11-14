@@ -1,4 +1,4 @@
-import { CANVAS as C, button, circle, defineTemplate, fill, img, logo, patch, pattern, poly, rect, text } from '../dsl';
+import { CANVAS as C, button, circle, defineTemplate, fill, grad, img, logo, patch, pattern, poly, rect, text } from '../dsl';
 import type { TemplateDef } from '../schema';
 
 /**
@@ -166,14 +166,14 @@ const eventsEventPromo = defineTemplate({
 });
 
 /**
- * events_countdown: a CLOCK FACE. On ink, a big ring (with a small accent knob and faint concentric rings behind it) holds the DATE as the
+ * events_countdown: a CLOCK FACE. On ink, a big ring (with faint concentric rings behind it) holds the DATE as the
  * hero, with an eyebrow above it and a tag ("12 days to go") below it. The headline, support and button are centered beneath the ring.
  * In stories the headline and support come first and the ring sits below them; landscape puts the ring on the left and a left-aligned text column on the right. Needs a date: it is the picture.
  */
 const eventsCountdown = defineTemplate({
   id: 'events_countdown',
   name: 'Countdown (date in a ring)',
-  version: 1,
+  version: 2,
   status: 'active',
   category: 'events_entertainment',
   description: 'A save-the-date countdown: the date is the hero inside a big ring on a dark field, with a tag such as days to go, then the headline and a button below.',
@@ -184,7 +184,7 @@ const eventsCountdown = defineTemplate({
   requires: ['date'],
   density: 'balanced',
   family: 'centered',
-  composition: 'Dark field with faint concentric rings; a bold ring (and accent knob) holds eyebrow, huge date and tag; headline, support and button centered below.',
+  composition: 'Dark field with faint concentric rings; a bold ring holds eyebrow, huge date and tag; headline, support and button centered below.',
   sample: {
     headline: 'The night market is back',
     support: 'Food, music and lights from sunset until midnight.',
@@ -221,14 +221,6 @@ const eventsCountdown = defineTemplate({
         portrait: patch(C.portrait, { box: [225, 215, 630, 630] }),
         story: patch(C.story, { box: [155, 735, 770, 770] }),
         landscape: patch(C.landscape, { box: [95, 109, 410, 410] }),
-      },
-    }),
-    circle('knob', C.square.box(711, 188, 44, 44), {
-      fill: 'accent',
-      at: {
-        portrait: patch(C.portrait, { box: [743, 240, 44, 44] }),
-        story: patch(C.story, { box: [792, 767, 48, 48] }),
-        landscape: patch(C.landscape, { box: [431, 114, 40, 40] }),
       },
     }),
     logo('logo', C.square.box(290, 76, 500, 36), {
@@ -828,4 +820,123 @@ const eventsCommunity = defineTemplate({
   ],
 });
 
-export const EVENTS_ENTERTAINMENT: TemplateDef[] = [eventsEventPromo, eventsCountdown, eventsHeadlinePoster, eventsEntertainment, eventsCommunity];
+
+/**
+ * events_photo_cover: THE PICTURE STOPS THE SCROLL. The approved photograph runs full-bleed; a dark gradient rises from the bottom edge and
+ * carries a short, big headline with an accent bar and an eyebrow, an optional one-line support and the button. The logo sits directly on the
+ * picture (top-left, on a light top shade), never in a box. Made for fast-scroll formats (TikTok and Instagram covers) where the photograph has to
+ * carry the attention and the text only completes it. Landscape keeps the gradient at the bottom, the text low-left and the button low-right.
+ */
+const eventsPhotoCover = defineTemplate({
+  id: 'events_photo_cover',
+  name: 'Photo cover (full-bleed)',
+  version: 1,
+  status: 'active',
+  category: 'events_entertainment',
+  description: 'The approved photograph full-bleed with a dark gradient from the bottom: accent bar, short big headline, optional one-line support and a button; the logo directly on the picture.',
+  styles: ['dynamic_events', 'bold_startup'],
+  industries: ['events', 'event', 'nightlife', 'club', 'bar', 'music', 'festival', 'entertainment', 'restaurant', 'cafe', 'hospitality', 'rooftop'],
+  channels: [],
+  classes: ['square', 'portrait', 'story', 'landscape'],
+  requires: ['image'],
+  density: 'airy',
+  family: 'full-bleed',
+  composition: 'Full-bleed photograph, bottom gradient, accent bar, eyebrow, a short big headline, an optional one-line support and the button; the logo directly on the picture.',
+  sample: {
+    headline: 'Friday on the roof',
+    support: 'Live DJ from 10 pm.',
+    cta: 'See the program',
+    eyebrow: 'This weekend',
+    brand: 'Open Air Co.',
+  },
+  tone: 'dark',
+  layers: [
+    fill('bg', 'ink'),
+    img('photo', 'hero', [0, 0, 1, 1], { focus: [0.5, 0.42] }),
+    rect('scrim-bottom', C.square.box(0, 430, 1080, 650), {
+      fill: grad(90, [0, 'ink', 0], [0.35, 'ink', 0.5], [0.7, 'ink', 0.82], [1, 'ink', 0.92]),
+      at: {
+        portrait: patch(C.portrait, { box: [0, 640, 1080, 710] }),
+        story: patch(C.story, { box: [0, 980, 1080, 940] }),
+        landscape: patch(C.landscape, { box: [0, 250, 1200, 378] }),
+      },
+    }),
+    rect('scrim-top', C.square.box(0, 0, 1080, 200), {
+      fill: grad(90, [0, 'ink', 0.5], [1, 'ink', 0]),
+      at: { portrait: patch(C.portrait, { box: [0, 0, 1080, 240] }), story: patch(C.story, { box: [0, 0, 1080, 460] }) },
+      hide: ['landscape'],
+    }),
+    logo('logo', C.square.box(88, 78, 300, 64), {
+      nameColor: 'onInk',
+      nameWeight: 800,
+      upper: true,
+      tracking: 0.06,
+      at: {
+        portrait: patch(C.portrait, { box: [88, 98, 320, 66] }),
+        story: patch(C.story, { box: [86, 286, 360, 76] }),
+        landscape: patch(C.landscape, { box: [76, 66, 260, 50] }),
+      },
+    }),
+    rect('accent-bar', C.square.box(88, 626, 96, 10), {
+      fill: 'accent',
+      at: {
+        portrait: patch(C.portrait, { box: [88, 812, 110, 11] }),
+        story: patch(C.story, { box: [88, 1172, 120, 12] }),
+        landscape: patch(C.landscape, { box: [76, 318, 80, 8] }),
+      },
+    }),
+    text('eyebrow', 'eyebrow', C.square.box(88, 646, 904, 34), {
+      size: C.square.size(26, 20),
+      upper: true,
+      tracking: 0.14,
+      weight: 700,
+      color: 'accent',
+      valign: 'middle',
+      lines: 1,
+      at: {
+        portrait: patch(C.portrait, { box: [88, 834, 904, 36], size: [28, 20] }),
+        story: patch(C.story, { box: [88, 1200, 904, 42], size: [32, 22] }),
+        landscape: patch(C.landscape, { box: [76, 334, 700, 26], size: [18, 14] }),
+      },
+    }),
+    text('headline', 'headline', C.square.box(88, 688, 904, 220), {
+      size: C.square.size(110, 56),
+      family: 'display',
+      weight: 900,
+      upper: true,
+      lh: 0.95,
+      color: 'onInk',
+      valign: 'bottom',
+      lines: 3,
+      at: {
+        portrait: patch(C.portrait, { box: [88, 876, 904, 270], size: [124, 60] }),
+        story: patch(C.story, { box: [88, 1250, 904, 290], size: [132, 70] }),
+        landscape: patch(C.landscape, { box: [76, 364, 760, 120], size: [64, 34] }),
+      },
+    }),
+    text('support', 'support', C.square.box(88, 916, 620, 64), {
+      size: C.square.size(30, 22),
+      weight: 500,
+      lh: 1.25,
+      color: 'onInk',
+      valign: 'middle',
+      lines: 2,
+      at: {
+        portrait: patch(C.portrait, { box: [88, 1156, 620, 70], size: [32, 22] }),
+        landscape: patch(C.landscape, { box: [76, 492, 700, 50], size: [20, 15] }),
+      },
+      hide: ['story'],
+    }),
+    button('cta', C.square.box(742, 914, 250, 66), {
+      arrow: true,
+      size: C.square.size(24, 16),
+      at: {
+        portrait: patch(C.portrait, { box: [742, 1154, 250, 72], size: [24, 16] }),
+        story: patch(C.story, { box: [88, 1560, 470, 84], size: [32, 22] }),
+        landscape: patch(C.landscape, { box: [868, 482, 260, 58], size: [19, 14] }),
+      },
+    }),
+  ],
+});
+
+export const EVENTS_ENTERTAINMENT: TemplateDef[] = [eventsEventPromo, eventsCountdown, eventsHeadlinePoster, eventsEntertainment, eventsCommunity, eventsPhotoCover];

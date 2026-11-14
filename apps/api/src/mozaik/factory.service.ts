@@ -48,6 +48,9 @@ import {
   initialPhases,
   outcomeOf,
   planResearch,
+  planStrategyResume,
+  strategySettingsKey,
+  type StrategyResumeCandidate,
   type CampaignSettings,
   type FactoryPhaseState,
   type FactoryStatus,
@@ -153,6 +156,24 @@ export class FactoryService implements OnModuleInit, OnModuleDestroy {
     return rows.map((r) => ({ id: r.id, runId: r.runId, createdAt: r.createdAt, model: r.model, partial: Boolean((r.reportJson as Obj | null)?.partial), usable: r.schemaVersion >= 2 }));
   }
 
+  /**
+   * The strategy of the NEWEST earlier campaign of the project, when that campaign stopped before its creative stage produced a campaign. Read only;
+   * planStrategyResume decides whether it may be reused.
+   */
+  private async strategyResumeCandidate(projectId: string): Promise<StrategyResumeCandidate | null> {
+    const last = await this.prisma.factoryRun.findFirst({ where: { projectId }, orderBy: { createdAt: 'desc' } });
+    if (!last || !['failed', 'partial', 'interrupted', 'cancelled'].includes(last.status) || !last.f1ReportId) return null;
+    const phases = (last.phasesJson ?? []) as unknown as FactoryPhaseState[];
+    const st = phases.find((p) => p.phase === 'strategy' && (p.status === 'completed' || p.status === 'reused') && p.outputId);
+    const cr = phases.find((p) => p.phase === 'creative');
+    if (!st) return null;
+    const row = await this.prisma.marketingStrategyReport.findFirst({ where: { id: st.outputId!, projectId, run: { status: RunStatus.COMPLETED } }, select: { id: true, runId: true, createdAt: true, model: true, f1ReportId: true } });
+    if (!row) return null;
+    const cfg = (last.configJson ?? {}) as Obj;
+    const settingsKey = cfg.settings ? strategySettingsKey(cfg.settings as CampaignSettings) : '';
+    return { strategy: { id: row.id, runId: row.runId, createdAt: row.createdAt, model: row.model, partial: false, usable: true }, f1ReportId: row.f1ReportId, settingsKey, creativeUnfinished: !cr || cr.status !== 'completed' };
+  }
+
   /** When the project's own information last changed (intake, uploads, social profiles, notes, Get Content, the image library). */
   private async inputsChangedAt(projectId: string): Promise<Date | null> {
     const newest = { orderBy: { updatedAt: 'desc' as const }, select: { updatedAt: true } };
@@ -240,10 +261,13 @@ export class FactoryService implements OnModuleInit, OnModuleDestroy {
     warnings.push(...designIn.warnings);
     if (!design.design) blockers.push({ code: 'design_missing', message: 'Choose a template collection and a palette in Campaign Design and confirm it: every visual of the campaign is drawn with them.' });
 
-    // Business Research is reused when it is current; strategy and creative always run for THIS campaign
+    // Business Research is reused when it is current; the strategy only when a campaign whose creative stage failed is continued (planStrategyResume)
     const research = planResearch(await this.researchCandidates(projectId), await this.inputsChangedAt(projectId), settings.refreshResearch);
     if (research.note) warnings.push(research.note);
-    const plan = buildPhasePlan(research.reuse);
+    // continuing after a failed creative stage: the strategy of that attempt is reused when nothing it depends on changed
+    const strategyResume = planStrategyResume({ research: research.reuse, candidate: research.reuse ? await this.strategyResumeCandidate(projectId) : null, settingsKey: strategySettingsKey(settings), inputsChangedAt: await this.inputsChangedAt(projectId), refresh: settings.refreshResearch });
+    if (strategyResume.note) warnings.push(strategyResume.note);
+    const plan = buildPhasePlan(research.reuse, strategyResume.reuse);
     if (research.reuse) {
       // FREE and deterministic: the reused report must exist, be readable by this version and belong to this project
       const row = await this.prisma.productDiscoveryReport.findFirst({ where: { id: research.reuse.id, projectId, project: { userId } } });
@@ -395,6 +419,7 @@ export class FactoryService implements OnModuleInit, OnModuleDestroy {
           phasesJson: phases as unknown as Prisma.InputJsonValue,
           warningsJson: r.warnings as unknown as Prisma.InputJsonValue,
           f1ReportId: r.research.reuse?.id ?? null,
+          f3StrategyId: r.plan.find((p) => p.phase === 'strategy' && p.action === 'reuse')?.reuse?.id ?? null,
         },
       });
     } catch (err) {
@@ -465,8 +490,11 @@ export class FactoryService implements OnModuleInit, OnModuleDestroy {
         if (p.status !== 'pending') continue;
 
         if (p.action === 'reuse') {
-          // re-verify right before relying on it: the research must still exist, be completed and belong to this project and user
-          const still = await this.prisma.productDiscoveryReport.findFirst({ where: { id: p.outputId!, projectId, project: { userId }, run: { status: RunStatus.COMPLETED } }, select: { id: true } });
+          // re-verify right before relying on it: the research (or the strategy) must still exist, be completed and belong to this project and user
+          const still =
+            k === 'strategy'
+              ? await this.prisma.marketingStrategyReport.findFirst({ where: { id: p.outputId!, projectId, project: { userId }, run: { status: RunStatus.COMPLETED } }, select: { id: true } })
+              : await this.prisma.productDiscoveryReport.findFirst({ where: { id: p.outputId!, projectId, project: { userId }, run: { status: RunStatus.COMPLETED } }, select: { id: true } });
           if (!still) {
             Object.assign(p, { status: 'failed', completedAt: at(), error: 'The saved research is no longer available.' });
             return await finish('failed', `${p.title}: the saved research that was going to be reused is no longer available.`);
@@ -676,7 +704,10 @@ export class FactoryService implements OnModuleInit, OnModuleDestroy {
       : saved && typeof saved === 'object' && 'knownUsd' in saved
         ? budgetViewOf(saved, { source: 'saved', currentPhase: f.currentPhase, imagesGenerated: generated })
         : derivedBudgetView({ approvedUsd: typeof config.approvedBudgetUsd === 'number' ? config.approvedBudgetUsd : null, textUsd: (usage.cost?.textUsd ?? null) as number | null, imageUsd: null, imagesGenerated: generated, textPoolUsd: null, imagePoolUsd: null, currentPhase: f.currentPhase, textCalls: usage.textCalls });
-    return { ...usage, budget };
+    // every provider request counts, also an answer cut off by its cap and asked again, and a request that timed out (events show one per agent answer)
+    const ledgerRequests = (live ?? (saved && typeof saved === 'object' ? saved : null))?.requests?.text;
+    const providerRequests = typeof ledgerRequests === 'number' ? Math.max(ledgerRequests, usage.textCalls) : null;
+    return { ...usage, budget, providerRequests };
   }
 
   /** For a run that stopped because a saved report could not be used: what THIS version can read of the reports the run used. */

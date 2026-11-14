@@ -3,6 +3,7 @@ import { toSafeError, type SafeProviderError } from '../../../ai/errors';
 import type { SourceRecord } from '../../../discovery/f1/board';
 import { normalizeText } from '../../../discovery/input';
 import { wordTokens } from '../../../creative/checks';
+import { refusedRevision } from '../../../copywriting/checks';
 import type { AgentOutcome } from '../../../factory/events';
 import { CREATIVE_COORDINATOR_NAME, CREATIVE_INFO, creativeKeyByName, type CreativePlan } from '../../../creative/board';
 import { planRepairs, slotsShowing } from '../../../creative/repair';
@@ -96,7 +97,7 @@ export class CreativeCoordinator {
     board.settings = { channels: env.input.channels, concepts: env.input.concepts, maxRepairRounds: settings.maxRepairRounds, maxModelCalls: settings.maxModelCalls, visionReviews: settings.visionReviews, approvedBudgetUsd: settings.approvedBudgetUsd };
     for (const s of this.preSources) ctx.emit('source.retrieved', { agent: CREATIVE_COORDINATOR_NAME, source: s }, this.participant);
     for (const a of plan.activated) board.setStatus(a.agent, { state: 'waiting', reason: a.reason });
-    this.stage(settings.agentTimeoutMs + 10_000, () => this.failPhase('The Content Writer did not answer in time: nothing can be designed without copy.', toSafeError('timeout')));
+    this.stage(settings.writerTimeoutMs + 10_000, () => this.failPhase('The Content Writer did not answer in time: nothing can be designed without copy.', toSafeError('timeout'), CREATIVE_INFO.writer.name));
     this.assign('writer', 'Writing the concepts, posts, ad and print copy', 'copy');
   }
 
@@ -125,19 +126,19 @@ export class CreativeCoordinator {
       const conceptId = keyToId.get(post.conceptKey);
       if (!conceptId || !input.channels.includes(post.platform) || seen.has(`${conceptId}|${post.platform}`)) continue;
       seen.add(`${conceptId}|${post.platform}`);
-      add({ conceptId, channel: post.platform, placement: 'social_post', length: post.text.length > 220 ? 'long' : 'short', headline: post.hook, body: post.text, description: null, ctaText: post.cta, ctaType: post.ctaType, hashtags: post.hashtags, claims: post.claims, postingFormat: post.postingFormat || null, videoScript: post.platform === 'tiktok' ? post.videoScript : null, visualLine: post.visualLine.trim() || null, principles: [...new Set(post.principles)] });
+      add({ conceptId, channel: post.platform, placement: 'social_post', length: post.text.length > 220 ? 'long' : 'short', headline: post.hook, body: post.text, description: null, ctaText: post.cta, ctaType: post.ctaType, hashtags: post.hashtags, claims: post.claims, postingFormat: post.postingFormat || null, videoScript: post.platform === 'tiktok' ? post.videoScript : null, visualLine: post.visualLine.trim() || null, principles: [...new Set(post.principles)], ctaShort: post.ctaShort?.trim() || null, headlineShort: null });
     }
     for (const ad of out.ads) {
       const conceptId = keyToId.get(ad.conceptKey);
       if (!conceptId || seen.has(`${conceptId}|${ad.kind}`)) continue;
       seen.add(`${conceptId}|${ad.kind}`);
-      add({ conceptId, channel: 'google_search', placement: ad.kind, length: 'short', headline: ad.headline, body: ad.description, description: ad.description, ctaText: ad.cta, ctaType: ad.ctaType, hashtags: [], claims: ad.claims, postingFormat: null, videoScript: null, visualLine: null, principles: [...new Set(ad.principles)] });
+      add({ conceptId, channel: 'google_search', placement: ad.kind, length: 'short', headline: ad.headline, body: ad.description, description: ad.description, ctaText: ad.cta, ctaType: ad.ctaType, hashtags: [], claims: ad.claims, postingFormat: null, videoScript: null, visualLine: null, principles: [...new Set(ad.principles)], ctaShort: ad.ctaShort?.trim() || null, headlineShort: ad.headlineShort?.trim() || null });
     }
     for (const pr of out.print) {
       const conceptId = keyToId.get(pr.conceptKey);
       if (!conceptId || seen.has(`${conceptId}|${pr.kind}`)) continue;
       seen.add(`${conceptId}|${pr.kind}`);
-      add({ conceptId, channel: 'organic_content', placement: pr.kind, length: pr.kind === 'billboard' ? 'short' : 'long', headline: pr.headline, body: pr.body, description: null, ctaText: pr.cta, ctaType: pr.ctaType, hashtags: [], claims: pr.claims, postingFormat: null, videoScript: null, visualLine: pr.kind === 'flyer' ? pr.visualLine.trim() || null : null, principles: [...new Set(pr.principles)] });
+      add({ conceptId, channel: 'organic_content', placement: pr.kind, length: pr.kind === 'billboard' ? 'short' : 'long', headline: pr.headline, body: pr.body, description: null, ctaText: pr.cta, ctaType: pr.ctaType, hashtags: [], claims: pr.claims, postingFormat: null, videoScript: null, visualLine: pr.kind === 'flyer' ? pr.visualLine.trim() || null : null, principles: [...new Set(pr.principles)], ctaShort: pr.ctaShort?.trim() || null, headlineShort: pr.headlineShort?.trim() || null });
     }
     // near-identical texts across platforms are reported by the Quality Reviewer; exact duplicates of one text inside a concept are dropped here
     const kept: { conceptId: string; tok: Set<string> }[] = [];
@@ -246,7 +247,7 @@ export class CreativeCoordinator {
     board.setStatus(p.agent, p.outcome === 'succeeded' ? { state: 'done', error: null } : p.outcome === 'skipped' ? { state: 'skipped', reason: p.reason ?? 'Nothing to do' } : { state: p.error?.code === 'timeout' ? 'timed_out' : 'failed', error: p.error ?? null });
     if (p.outcome === 'succeeded') return key === 'designer' ? this.afterDesign() : undefined;
     board.note(`${p.agent} ${p.error?.code === 'timeout' ? 'timed out' : 'failed'}${p.error ? `: ${p.error.message}` : ''}.`);
-    if (key === 'writer' && !this.copied) return this.failPhase(`The Content Writer ${p.error?.code === 'timeout' ? 'timed out' : 'failed'}: nothing can be designed without copy.`, p.error);
+    if (key === 'writer' && !this.copied) return this.failPhase(`The Content Writer ${p.error?.code === 'timeout' ? 'timed out' : 'failed'}: nothing can be designed without copy.`, p.error, CREATIVE_INFO.writer.name);
     if (key === 'researcher') return this.onImages({ agent: p.agent, summary: 'Picture sourcing failed.', sourcing: null, direction: null });
     if (key === 'designer') return this.afterDesign();
   }
@@ -355,12 +356,19 @@ export class CreativeCoordinator {
     if (this.finished || !r || p.round !== r.round) return;
     const findingIds = p.operationIds.flatMap((id) => r.ops.get(id) ?? []);
     const owner = p.owner;
+    const refused: string[] = [];
     if (p.status === 'applied' && p.patch?.kind === 'copy') {
-      for (const rev of p.patch.revisions as { variantId: string; headline: string; body: string; visualLine?: string; ctaText: string; hashtags: string[]; claims: never[]; reason: string }[]) {
+      for (const rev of p.patch.revisions as { variantId: string; headline: string; body: string; visualLine?: string; ctaText: string; ctaShort?: string; hashtags: string[]; claims: never[]; reason: string }[]) {
         const v = board.variants.find((x) => x.id === rev.variantId);
         if (!v) continue;
+        // a revision that replaces the copy with a note ("Izostavljeno iz kampanje", "omitted") or drops the call to action is refused: the
+        // earlier, publishable version stays (it would otherwise be printed on the visual)
+        if (refusedRevision(v, rev)) {
+          refused.push(v.id);
+          continue;
+        }
         v.history.push({ version: v.version, headline: v.headline, body: v.body, ctaText: v.ctaText, reason: rev.reason });
-        Object.assign(v, { headline: rev.headline, body: rev.body || v.body, ctaText: rev.ctaText, hashtags: rev.hashtags, claims: rev.claims, version: v.version + 1, ...(v.description !== null ? { description: rev.body || v.description } : {}), ...(v.visualLine != null && rev.visualLine?.trim() ? { visualLine: rev.visualLine.trim() } : {}) });
+        Object.assign(v, { headline: rev.headline, body: rev.body || v.body, ctaText: rev.ctaText, hashtags: rev.hashtags, claims: rev.claims, version: v.version + 1, ...(v.description !== null ? { description: rev.body || v.description } : {}), ...(v.visualLine != null && rev.visualLine?.trim() ? { visualLine: rev.visualLine.trim() } : {}), ...(rev.ctaShort?.trim() ? { ctaShort: rev.ctaShort.trim() } : {}) });
         r.changedVariants.add(v.id);
       }
     } else if (p.status === 'applied' && p.patch?.kind === 'layout') {
@@ -383,8 +391,9 @@ export class CreativeCoordinator {
     const results = (p.patch?.results ?? []) as { id: string; ok: boolean; note: string; before?: string | null; after?: string | null }[];
     for (const fid of new Set(findingIds)) {
       const res = results.find((x) => (r.ops.get(x.id) ?? []).includes(fid));
-      const ok = isCopy ? p.status === 'applied' : (res?.ok ?? p.status === 'applied');
-      board.revisions.push({ id: board.next('R'), round: r.round, findingId: fid, operation: isCopy ? 'revise_copy' : 'rerender_layout', owner, status: ok ? 'applied' : 'failed', before: res?.before ?? null, after: res?.after ?? null, note: res?.note ?? p.note });
+      const kept = isCopy && refused.includes(board.findings.find((x) => x.id === fid)?.assetRef ?? '');
+      const ok = isCopy ? p.status === 'applied' && !kept : (res?.ok ?? p.status === 'applied');
+      board.revisions.push({ id: board.next('R'), round: r.round, findingId: fid, operation: isCopy ? 'revise_copy' : 'rerender_layout', owner, status: ok ? 'applied' : 'failed', before: res?.before ?? null, after: res?.after ?? null, note: kept ? 'The revision replaced the copy with a note or dropped the call to action, so the earlier version was kept.' : (res?.note ?? p.note) });
     }
     board.setStatus(owner, { state: 'done' });
     if (r.wave === 1 && isCopy) return this.startRerenders();
@@ -401,13 +410,14 @@ export class CreativeCoordinator {
 
   // ---- end ------------------------------------------------------------------------------------------------------------------------
 
-  private failPhase(message: string, error?: SafeProviderError) {
+  /** `agent` = the participant that really failed (the Content Writer, ...), so the failure is attributed to it; default the coordinator. */
+  private failPhase(message: string, error?: SafeProviderError, agent: string = CREATIVE_COORDINATOR_NAME) {
     if (this.finished) return;
     this.finished = true;
     const { ctx } = this.env;
     if (this.stageTimer) ctx.clearTimer(this.stageTimer);
     const err = error ?? { code: 'invalid_response' as const, message };
-    const errors: AgentOutcome[] = [{ agent: CREATIVE_COORDINATOR_NAME, error: { ...err, message } }];
+    const errors: AgentOutcome[] = [{ agent, error: { ...err, message } }];
     ctx.emit('phase.failed', { phase: PHASE, reason: 'all_analysts_failed', errors }, this.participant);
   }
 

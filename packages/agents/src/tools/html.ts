@@ -18,6 +18,8 @@ export interface ExtractedPage {
   /** True when the served HTML has almost no visible text but looks like a JavaScript application shell. */
   likelyJsRendered: boolean;
   scriptCount: number;
+  /** Contact details the page itself links (mailto: / tel:), verbatim; absent on pages read before this was collected. */
+  contacts?: { emails: string[]; phones: string[] };
   /** True when the text contains phrases that look like instructions aimed at an AI. */
   injectionSuspected: boolean;
   injectionSamples: string[];
@@ -165,6 +167,18 @@ export function extractPage(html: string, baseUrl: string): ExtractedPage {
 
   const links: { text: string; href: string }[] = [];
   const allHrefs: string[] = [];
+  const contacts = { emails: [] as string[], phones: [] as string[] };
+  $('a[href^="mailto:"], a[href^="tel:"]').each((_, el) => {
+    const href = ($(el).attr('href') ?? '').trim();
+    let v = href.replace(/^(mailto|tel):/i, '').split('?')[0].trim();
+    try {
+      v = decodeURIComponent(v);
+    } catch {
+      /* keep as written */
+    }
+    if (/^mailto:/i.test(href) && /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(v) && !contacts.emails.includes(v) && contacts.emails.length < 4) contacts.emails.push(v);
+    if (/^tel:/i.test(href) && /^[+\d][\d\s()./-]{5,22}$/.test(v) && !contacts.phones.includes(v) && contacts.phones.length < 4) contacts.phones.push(v);
+  });
   $('a[href]').each((_, el) => {
     const href = $(el).attr('href') ?? '';
     if (!href || /^(javascript:|mailto:|tel:|data:|#)/i.test(href)) return;
@@ -193,6 +207,7 @@ export function extractPage(html: string, baseUrl: string): ExtractedPage {
     socialLinks,
     jsonLdTypes,
     organization,
+    contacts,
     likelyJsRendered: detectJsRendered(html, text.length, scriptCount),
     scriptCount,
     injectionSuspected: inj.suspected,

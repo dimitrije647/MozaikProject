@@ -11,7 +11,7 @@ import { PROFESSIONAL_SERVICES } from './professional-services';
 import { TECH_SAAS } from './tech-saas';
 
 /** Bumped whenever a template is added, removed or changed in a way that changes its output; stored with every Hybrid campaign. */
-export const LIBRARY_VERSION = 'launchpilot-builtin-2';
+export const LIBRARY_VERSION = 'launchpilot-builtin-4';
 
 /** The built-in template library (declarative data only). Validation runs in the tests and when the registry is built. */
 export const TEMPLATE_LIBRARY: readonly TemplateDef[] = [...TECH_SAAS, ...HOSPITALITY, ...ECOMMERCE, ...PROFESSIONAL_SERVICES, ...EDITORIAL_BRAND, ...EVENTS_ENTERTAINMENT, ...COLLECTION_TEMPLATES_A, ...COLLECTION_TEMPLATES_B, ...COLLECTION_TEMPLATES_C, ...COLLECTION_TEMPLATES_D];

@@ -256,6 +256,16 @@ export class WebFetchTool {
     return { ok: false, url: raw, code: 'too_many_redirects', message: `More than ${this.maxRedirects} redirects.` };
   }
 
+  /**
+   * Whether robots.txt lets this reader fetch an address (a picture file, before it is offered for import). The rules are read once per origin and
+   * cached like the page rules; an unreachable robots.txt counts as "no". Always true when the reader does not respect robots (tests only).
+   */
+  async robotsAllow(raw: string, signal?: AbortSignal): Promise<boolean> {
+    if (!this.respectRobots) return true;
+    if (!this.checkUrl(raw).ok) return false;
+    return this.robotsAllows(new URL(raw), signal);
+  }
+
   private async robotsAllows(url: URL, signal?: AbortSignal): Promise<boolean> {
     let rules = this.robots.get(url.origin);
     if (!rules) {

@@ -926,6 +926,8 @@ export interface FactoryUsageBudget {
 
 export interface FactoryUsage {
   textCalls: number;
+  /** Every request sent to the provider (from the budget ledger): also an answer cut off by its cap and asked again, and a request that timed out. Absent on older responses. */
+  providerRequests?: number | null;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;

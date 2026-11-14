@@ -227,8 +227,11 @@ export class GetContentService implements OnModuleInit {
           const ing = await this.library.ingestWebsite(projectId, d);
           notes.push(...d.notes.slice(0, 2));
           const logos = d.logos?.length ?? 0;
-          const photos = d.candidates.length;
-          return { status: logos || photos ? 'ok' : 'empty', message: logos || photos ? `${d.pages.filter((p) => p.status === 'read').length} page(s) read; nothing was downloaded.` : 'The pages were read, but no logo or usable photograph was found on them.', found: { logos, photos: Math.max(photos, ing.created), colors: 0 } };
+          // brand graphics (share cards, banners, screenshots) are listed but never counted as photographs; logos are counted apart
+          const photos = d.summary ? d.summary.photos : d.candidates.length;
+          const pagesRead = d.pages.filter((p) => p.status === 'read').length;
+          const detail = d.summary ? `: ${d.summary.photos} photograph(s), ${d.summary.recommended} recommended for the campaign library${d.summary.brandGraphics ? `, ${d.summary.brandGraphics} brand graphic(s) kept apart` : ''}` : '';
+          return { status: logos || photos ? 'ok' : 'empty', message: logos || photos ? `${pagesRead} page(s) read${detail}; nothing was downloaded.` : 'The pages were read, but no logo or usable photograph was found on them.', found: { logos, photos: d.summary ? photos : Math.max(photos, ing.created), colors: 0 } };
         }),
         step('github', async () => {
           if (!intake?.githubUrl) return { status: 'skipped', message: 'No repository address was given for this project.' };

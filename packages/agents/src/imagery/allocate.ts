@@ -68,6 +68,50 @@ const conceptFit = (img: AllocImage, words: readonly string[]): number => {
   return clamp(hits / Math.min(3, set.length));
 };
 
+/**
+ * MOTIFS (MVP heuristic): a few themes a venue, bar, restaurant or event campaign is built on, recognised in the concept's words and in what is
+ * known about a picture (its file name, page, alt text) in Serbian/Croatian/Bosnian, English and German - so a concept about the roof gets the
+ * rooftop picture even when the concept is written in Serbian and the file is called "rooftop-terrace.jpg". Two motifs are also read from the
+ * pixels: a dark picture is a night picture, a bright picture with sky blue at the top is an outdoor/rooftop/city picture.
+ */
+export const MOTIFS: Record<'rooftop' | 'night' | 'food' | 'drinks' | 'people' | 'city', RegExp> = {
+  rooftop: /\b(krov\w*|rooftop\w*|roof|terasa\w*|terrac\w*|pogled\w*|view|panoram\w*|dach\w*|aussicht)\b/,
+  night: /\b(izlaz\w*|noc\w*|vece\w*|vecer\w*|klub\w*|club\w*|dj|party|zurk\w*|zabav\w*|night\w*|evening|vikend|weekend|nacht\w*|svirk\w*|muzik\w*|music|live)\b/,
+  food: /\b(hran\w*|jel\w*|ruc\w*|obrok\w*|dorucak|vecer[ae]|salat\w*|past\w*|pic[ae]|pizz\w*|mes\w*|kuhinj\w*|food|dish\w*|lunch|breakfast|dinner|meal\w*|menu|plate|kitchen|essen|speise\w*|stol\w*|table)\b/,
+  drinks: /\b(koktel\w*|pic[ae]|pice|vin\w*|piv\w*|kaf\w*|bar|cocktail\w*|drink\w*|wine|beer|coffee|getrank\w*)\b/,
+  people: /\b(drustv\w*|druz\w*|prijatelj\w*|ljud\w*|gost\w*|ekip\w*|koleg\w*|friends?|people|guests?|group|team|together|crowd|freunde|leute)\b/,
+  city: /\b(grad\w*|centar|centr\w*|ulic\w*|novi sad|beograd|zagreb|city|urban|downtown|street|skyline|stadt|innenstadt)\b/,
+};
+const foldText = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'dj').toLowerCase();
+export function motifsOf(text: string): Set<keyof typeof MOTIFS> {
+  const t = foldText(text.replace(/[-_.]+/g, ' '));
+  return new Set((Object.keys(MOTIFS) as (keyof typeof MOTIFS)[]).filter((k) => MOTIFS[k].test(t)));
+}
+/** Motifs a picture shows by its pixels alone: dark = night; bright with blue on top = outdoor (rooftop, city). */
+export function pixelMotifs(a: ImageAnalysis | null | undefined): Set<keyof typeof MOTIFS> {
+  const out = new Set<keyof typeof MOTIFS>();
+  if (!a) return out;
+  if (a.brightness < 0.28) out.add('night');
+  const sky = a.colors.some((c) => {
+    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c);
+    if (!m) return false;
+    const [r, g, b] = [m[1], m[2], m[3]].map((x) => parseInt(x, 16));
+    return b > 140 && b > r + 25 && b >= g;
+  });
+  if (a.brightness > 0.45 && sky) {
+    out.add('rooftop');
+    out.add('city');
+  }
+  return out;
+}
+/** 0..1: how many of the concept's motifs the picture shows. */
+export function motifFit(img: Pick<AllocImage, 'text' | 'analysis'>, words: readonly string[]): number {
+  const want = motifsOf(words.join(' '));
+  if (!want.size) return 0;
+  const have = new Set([...motifsOf(img.text), ...pixelMotifs(img.analysis)]);
+  return clamp([...want].filter((m) => have.has(m)).length / Math.min(2, want.size));
+}
+
 const aspectPenalty = (img: AllocImage, cls: FormatClass): number => {
   if (!img.width || !img.height) return 0;
   return clamp(Math.abs(Math.log(img.width / img.height / IDEAL[cls])) / Math.log(3)) * 0.3;
@@ -97,7 +141,7 @@ export function allocateImages(input: { concepts: readonly AllocConceptInput[]; 
     }
     const want = Math.max(1, Math.min(maxPer, images.length, Math.ceil(mySlots.length / 2)));
     const ranked = images
-      .map((img) => ({ img, fit: 0.55 * img.score + 0.45 * conceptFit(img, c.words) - 0.22 * (usedByConcepts.get(img.id) ?? 0) }))
+      .map((img) => ({ img, fit: 0.55 * img.score + 0.45 * conceptFit(img, c.words) + 0.3 * motifFit(img, c.words) - 0.22 * (usedByConcepts.get(img.id) ?? 0) }))
       .sort((a, b) => b.fit - a.fit || (a.img.id < b.img.id ? -1 : 1));
     const chosen = ranked.slice(0, want).map((x) => x.img.id);
     for (const id of chosen) usedByConcepts.set(id, (usedByConcepts.get(id) ?? 0) + 1);

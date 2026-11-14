@@ -47,6 +47,11 @@ export interface TemplateSlot {
   folder?: string;
   /** true = the format may not be adapted (a billboard never becomes a square post). */
   fixedFormat?: boolean;
+  /**
+   * The ADVERTISING VARIATION MATRIX: two genuinely different designs (1, 2) x two copy alternatives (1, 2) of one deliverable. The same design
+   * carries both texts; the two designs are different templates (a mirrored copy of one template is not a second design).
+   */
+  matrix?: { group: string; design: 1 | 2; copy: 1 | 2 } | null;
 }
 
 export interface HybridPlan {

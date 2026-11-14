@@ -7,6 +7,8 @@ import type { DiscoveryResult, ImageCandidate } from '../../../imagery/types';
 import type { ImageryBlock, LibraryImageRecord } from '../../../hybrid/records';
 import { designBrandColors } from '../../../collections/design';
 import { formatClassOf } from '../../../templates/schema';
+import { NEVER_A_PICTURE, assetKindOf, type AssetKind } from '../../../templates/adapt';
+import { analyzeSubject } from '../../../imagery/subject';
 import type { BrandImage, F4Env, LibraryImageInfo } from './env';
 
 /**
@@ -23,6 +25,8 @@ import type { BrandImage, F4Env, LibraryImageInfo } from './env';
  */
 
 export const AUTO_STOCK_MAX = 8;
+/** The image library of ONE campaign: at most this many pictures (photographs first, brand graphics last); the others stay in the gallery. */
+export const CAMPAIGN_MAX_IMAGES = 10;
 const SEARCH_TIMEOUT_MS = 20_000;
 const ACQUIRE_TIMEOUT_MS = 25_000;
 /**
@@ -214,12 +218,23 @@ export async function sourceImages(env: F4Env, direction: { imageSubjects: strin
     return { id: img.id, text: i.text, width: i.analysis?.width ?? i.width, height: i.analysis?.height ?? i.height, source: i.rights.source, rights: i.rights, analysis: i.analysis, prominence: 0.5 };
   });
   const rank = rankImages(subjects, { ...scoreCtx, chosenHashes: [] }, { stage: 'selection' });
-  const rankedIds = rank.ranked.map((r) => r.id);
+  // the campaign's image library: photographs first (best ranked), brand graphics (share cards, banners, screenshots) after them, at most 10
+  // what each picture IS (category recorded by the Visual Researcher, its words, its pixels): a brand graphic, a text-heavy banner or a logo carries
+  // its own text and mark, so it is never a creative's picture (copy over it collides with it and the logo would appear twice)
+  const kindOf = new Map<string, AssetKind>();
+  for (const u of unique) kindOf.set(u.id, assetKindOf({ category: u.library?.category ?? null, text: `${u.name} ${u.library?.text ?? ''}`, subject: await analyzeSubject(u.data) }));
+  const graphic = new Set(unique.filter((u) => NEVER_A_PICTURE.has(kindOf.get(u.id)!)).map((u) => u.id));
+  const ordered = [...rank.ranked.filter((r) => !graphic.has(r.id)), ...rank.ranked.filter((r) => graphic.has(r.id))];
+  const kept = ordered.slice(0, CAMPAIGN_MAX_IMAGES);
+  if (ordered.length > kept.length) notes.push(`${ordered.length} approved pictures exist; the ${kept.length} best suited to this campaign form its image library (the others stay in the gallery).`);
+  const graphicsKept = kept.filter((r) => graphic.has(r.id)).length;
+  if (graphicsKept) notes.push(`${graphicsKept} approved picture(s) ${graphicsKept === 1 ? 'is a brand graphic or logo' : 'are brand graphics or logos'} (they carry their own text and mark): kept in the library, never used as a creative's picture.`);
+  const rankedIds = kept.map((r) => r.id);
   const finalLibrary = rankedIds.map((id) => unique.find((u) => u.id === id)!).filter(Boolean);
   const allocation = allocateImages({
     concepts: concepts.map((c) => ({ id: c.id, words: wordsOf(`${c.visualIdea} ${c.keyMessage} ${c.name}`) })),
     slots: plan.slots.map((s) => ({ slotId: s.slotId, conceptId: s.conceptId, index: s.index, formatClass: s.formatClass ?? formatClassOf(s.width, s.height) })),
-    images: rank.ranked.map((r) => ({ id: r.id, score: r.score, text: r.subject.text, width: r.subject.width, height: r.subject.height, analysis: r.subject.analysis })),
+    images: kept.filter((r) => !graphic.has(r.id)).map((r) => ({ id: r.id, score: r.score, text: r.subject.text, width: r.subject.width, height: r.subject.height, analysis: r.subject.analysis })),
     maxPerConcept: hs.imagery.maxSourcesPerConcept,
   });
   notes.push(...allocation.warnings);
@@ -246,6 +261,8 @@ export async function sourceImages(env: F4Env, direction: { imageSubjects: strin
       reasons: (sc?.reasons ?? []).slice(0, 4),
       via: i.via,
       usedBySlots: usedBy.get(img.id) ?? [],
+      originalUrl: i.originalUrl ?? null,
+      assetKind: kindOf.get(img.id) ?? 'photograph',
     };
   });
   const noPictureSlots = allocation.slots.filter((s) => !s.imageId).length;

@@ -514,6 +514,8 @@ function PhotoPreview({ item, className }: { item: LibraryItem; className?: stri
   );
 }
 
+const CATEGORY_LABEL: Record<NonNullable<LibraryItem['category']>, string> = { team: 'Team photo', portrait: 'Portrait', people: 'People at work', workplace: 'Business environment', service: 'Service', product: 'Product', other: 'Photo', brand_graphic: 'Brand graphic (not a photo)' };
+
 function PhotoCard({ item, selected, onToggle, busy, review }: {
   item: LibraryItem;
   selected: boolean;
@@ -540,8 +542,15 @@ function PhotoCard({ item, selected, onToggle, busy, review }: {
           <p className="flex flex-wrap items-center gap-1.5 text-muted">
             <Badge className="bg-cream-200 px-2 py-0.5 text-[11px] text-ink-600">{SOURCE_LABEL[item.source]}</Badge>
             <Badge className={cn('px-2 py-0.5 text-[11px]', STATUS_LABEL[item.status].cls)}>{STATUS_LABEL[item.status].text}</Badge>
+            {item.recommended && (
+              <Badge data-testid={`gc-photo-recommended-${item.id}`} className="bg-accent/10 px-2 py-0.5 text-[11px] text-accent" title={item.recommendation ?? undefined}>
+                Recommended
+              </Badge>
+            )}
+            {item.category && <span data-testid={`gc-photo-category-${item.id}`}>{CATEGORY_LABEL[item.category]}</span>}
             <span>{sizeText(item.width, item.height)}</span>
           </p>
+          {item.recommendation && !item.recommended && item.status === 'candidate' && <p className="text-[11px] text-muted">{item.recommendation}</p>}
         </div>
         <p data-testid={`gc-photo-relevance-${item.id}`}>
           {relevance === null ? <span className="text-muted">No relevance score.</span> : (

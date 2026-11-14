@@ -110,62 +110,19 @@ const techProductLaunch = defineTemplate({
   ],
 });
 
-type Spot = [number, number, number];
-
-/** A small floating "UI chip" (a check badge and two skeleton bars) written in pixels of one class: the cue that this is a FEATURE callout. */
-function featureChip(spot: { square: Spot; portrait: Spot; story: Spot; landscape: Spot }) {
-  const geo = (c: CanvasHelper, [x, y, h]: Spot) => {
-    const w = Math.round(h * 3.1);
-    const pad = h * 0.2;
-    const d = h - pad * 2;
-    const x0 = x + pad + d + pad * 0.9;
-    const barW = x + w - pad - x0;
-    const tick = ([[0.22, 0.52], [0.31, 0.43], [0.44, 0.56], [0.69, 0.3], [0.78, 0.39], [0.44, 0.74]] as Array<[number, number]>).map(([u, v]) => c.pt(x + pad + u * d, y + pad + v * d));
-    return {
-      card: c.box(x, y, w, h),
-      disc: c.box(x + pad, y + pad, d, d),
-      tick,
-      bar1: c.box(x0, y + h * 0.3, barW, h * 0.13),
-      bar2: c.box(x0, y + h * 0.56, barW * 0.62, h * 0.13),
-    };
-  };
-  const g = { square: geo(C.square, spot.square), portrait: geo(C.portrait, spot.portrait), story: geo(C.story, spot.story), landscape: geo(C.landscape, spot.landscape) };
-  const at = (k: 'card' | 'disc' | 'bar1' | 'bar2') => ({ portrait: { box: g.portrait[k] }, story: { box: g.story[k] }, landscape: { box: g.landscape[k] } });
-  return [
-    rect('chip', g.square.card, { fill: 'paper', radius: 0.3, shadow: true, at: at('card') }),
-    circle('chip-disc', g.square.disc, { fill: 'accent', at: at('disc') }),
-    poly('chip-tick', g.square.tick, { fill: 'onAccent', at: { portrait: { points: g.portrait.tick }, story: { points: g.story.tick }, landscape: { points: g.landscape.tick } } }),
-    rect('chip-bar1', g.square.bar1, { fill: 'ink', radius: 0.5, opacity: 0.72, at: at('bar1') }),
-    rect('chip-bar2', g.square.bar2, { fill: 'ink', radius: 0.5, opacity: 0.22, at: at('bar2') }),
-  ];
-}
-
-/** The three dots of an application window's title bar: (x, y, bar) = the window's top-left corner and the title bar height, in pixels of one class. */
-function windowDots(spot: { square: Spot; portrait: Spot; story: Spot; landscape: Spot }) {
-  const geo = (c: CanvasHelper, [x, y, bar]: Spot) => [0, 1, 2].map((i) => c.box(x + bar * 0.62 + i * bar * 0.5, y + bar * 0.5 - bar * 0.15, bar * 0.3, bar * 0.3));
-  const g = { square: geo(C.square, spot.square), portrait: geo(C.portrait, spot.portrait), story: geo(C.story, spot.story), landscape: geo(C.landscape, spot.landscape) };
-  return [0, 1, 2].map((i) =>
-    circle(`dot-${i + 1}`, g.square[i], {
-      fill: i === 0 ? 'accent' : 'ink',
-      opacity: i === 0 ? 1 : 0.2,
-      at: { portrait: { box: g.portrait[i] }, story: { box: g.story[i] }, landscape: { box: g.landscape[i] } },
-    }),
-  );
-}
-
 /**
  * tech_feature_highlight: a PRODUCT WINDOW peeking up from the bottom edge. The canvas is the brand color with a soft shade towards the
- * bottom; the message sits on it (brand name, label, headline, then explanation and button in one row) and an application window (title
- * bar with three dots, the picture or screenshot below it) rises from the bottom edge with a floating check chip over its corner.
- * Landscape puts the text on the left and lets the window bleed off the right and bottom edges.
+ * bottom; the message sits on it (brand name, label, headline, then explanation and button in one row) and a framed picture card (the picture or
+ * screenshot in a clean rounded frame) rises from the bottom edge. No window chrome or fake interface elements: the export is a finished
+ * advertisement, not a mockup. Landscape puts the text on the left and lets the card bleed off the right and bottom edges.
  */
 const techFeatureHighlight = defineTemplate({
   id: 'tech_feature_highlight',
   name: 'Feature highlight (product window)',
-  version: 1,
+  version: 2,
   status: 'active',
   category: 'tech_saas',
-  description: 'The message on the brand color with an app window that rises from the bottom edge: a screenshot or photo under a title bar and a floating check chip.',
+  description: 'The message on the brand color with a framed picture card that rises from the bottom edge: a screenshot or photo in a clean rounded frame.',
   styles: ['minimalist_tech', 'bold_startup', 'contemporary_geometric'],
   industries: ['saas', 'software', 'technology', 'app', 'platform', 'startup', 'b2b', 'ai'],
   channels: [],
@@ -173,7 +130,7 @@ const techFeatureHighlight = defineTemplate({
   requires: [],
   density: 'balanced',
   family: 'inset-card',
-  composition: 'Brand-colored canvas with the headline on top and an app window (title bar, screenshot, floating chip) rising from the bottom edge; window bleeds off the right in landscape.',
+  composition: 'Brand-colored canvas with the headline on top and a framed picture card rising from the bottom edge; the card bleeds off the right in landscape.',
   sample: {
     headline: 'Plan every release in one view',
     support: 'See owners, dates and blockers on a single shared timeline.',
@@ -203,8 +160,6 @@ const techFeatureHighlight = defineTemplate({
         landscape: patch(C.landscape, { box: [604, 144, 700, 560] }),
       },
     }),
-    ...windowDots({ square: [96, 586, 54], portrait: [96, 664, 58], story: [96, 1060, 64], landscape: [604, 96, 48] }),
-    ...featureChip({ square: [52, 880, 88], portrait: [52, 1060, 96], story: [52, 1500, 108], landscape: [556, 470, 72] }),
     logo('logo', C.square.box(86, 80, 280, 44), {
       nameColor: 'onPrimary',
       nameWeight: 700,
@@ -332,9 +287,8 @@ function workflowFlow(spec: { square: FlowGeo; story: FlowGeo; landscape: FlowGe
     const n = i + 1;
     out.push(
       rect(`step-${n}`, g.square.cards[i].card, { fill: last ? 'accent' : 'onInk', opacity: last ? 1 : 0.09, radius: 0.14, at: at('card') }),
+      // no grey "skeleton" bars in the cards: placeholder lines that imitate text make a finished ad look like a loading screen
       circle(`step-${n}-dot`, g.square.cards[i].disc, { fill: last ? 'onAccent' : 'accent', at: at('disc') }),
-      rect(`step-${n}-bar1`, g.square.cards[i].bar1, { fill: last ? 'onAccent' : 'onInk', radius: 0.5, opacity: last ? 0.8 : 0.5, at: at('bar1') }),
-      rect(`step-${n}-bar2`, g.square.cards[i].bar2, { fill: last ? 'onAccent' : 'onInk', radius: 0.5, opacity: last ? 0.4 : 0.22, at: at('bar2') }),
     );
   }
   for (let j = 0; j < 2; j++) {
@@ -356,7 +310,7 @@ function workflowFlow(spec: { square: FlowGeo; story: FlowGeo; landscape: FlowGe
 const techWorkflowSteps = defineTemplate({
   id: 'tech_workflow_steps',
   name: 'Workflow steps (process diagram)',
-  version: 1,
+  version: 2,
   status: 'active',
   category: 'tech_saas',
   description: 'A dark panel with a clean three-step flow diagram that ends in an accent card, plus a bold headline, short explanation and button. Explains how it works without a picture.',
@@ -602,15 +556,10 @@ const atOf = <T>(per: Per<T>, make: (c: CanvasHelper, v: T) => Record<string, un
   return out as Partial<Record<(typeof CLASSES)[number], Record<string, unknown>>>;
 };
 
-/** A thin selection frame with four square handles (the design-tool "selected" look), written in pixels of each class. */
+/** A thin hairline frame, written in pixels of each class (no corner handles: those would make it an editor selection box). */
 function selectionFrame(per: Per<Px4>) {
-  const corner = (k: 0 | 1 | 2 | 3) => (c: CanvasHelper, [x, y, w, h]: Px4) => {
-    const handle = c.height < 400 ? 11 : c.width > 1100 && c.height < 700 ? 14 : 18;
-    return { box: c.box(x + (k % 2 ? w : 0) - handle / 2, y + (k > 1 ? h : 0) - handle / 2, handle, handle) };
-  };
   return [
     rect('frame', C.square.box(...per.square), { stroke: { color: 'ink', width: 0.0016 }, opacity: 0.5, at: atOf(per, (c, v) => ({ box: c.box(...v) })) }),
-    ...([0, 1, 2, 3] as const).map((k) => rect(`handle-${k + 1}`, corner(k)(C.square, per.square).box, { fill: 'primary', at: atOf(per, corner(k)) })),
   ];
 }
 
@@ -632,17 +581,17 @@ function orbit(per: Per<[number, number, number]>) {
 }
 
 /**
- * tech_minimalist: a FRAME composition, mostly empty on purpose. A hairline selection frame with square handles encloses a mono tag top-left,
+ * tech_minimalist: a FRAME composition, mostly empty on purpose. A hairline frame encloses a mono tag top-left,
  * the brand top-right, one orbit graphic (rings and a dot) and a bottom-anchored headline that sits over a hairline rule with the support
  * line and an outlined button underneath. Banner keeps the frame, the headline, the button and a small orbit.
  */
 const techMinimalist = defineTemplate({
   id: 'tech_minimalist',
   name: 'Minimalist tech (selection frame)',
-  version: 1,
+  version: 2,
   status: 'active',
   category: 'tech_saas',
-  description: 'A quiet light layout: a hairline selection frame with corner handles, one orbit graphic, a bottom-anchored headline and an outlined button. No picture needed.',
+  description: 'A quiet light layout: a hairline frame, one orbit graphic, a bottom-anchored headline and an outlined button. No picture needed.',
   styles: ['minimalist_tech', 'modern_corporate'],
   industries: ['saas', 'software', 'technology', 'ai', 'devtools', 'cybersecurity', 'fintech', 'startup', 'b2b'],
   channels: [],
@@ -650,7 +599,7 @@ const techMinimalist = defineTemplate({
   requires: [],
   density: 'airy',
   family: 'frame',
-  composition: 'Paper background, hairline frame with corner handles, an orbit graphic top-right, headline anchored to the bottom above a hairline, outlined button.',
+  composition: 'Paper background, hairline frame, an orbit graphic top-right, headline anchored to the bottom above a hairline, outlined button.',
   sample: {
     headline: 'Software that stays out of your way',
     support: 'Fast, focused tools for teams who value their time.',

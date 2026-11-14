@@ -3,6 +3,7 @@ import type { CopyPlan } from '../../copywriting/plan';
 import type { InferenceRunnerConfig, Participant, SituationHandler } from '@mozaik-ai/core';
 import { SpendBudget, scopeFor } from '../../ai/budget';
 import { DEFAULT_BUDGET, InferenceGateway, type InferenceBudget, type UsageSnapshot } from '../../ai/gateway';
+import { resolveGeneration, synthesisTaskTimeoutMs, writerOutputCap, type GenerationTimeout } from '../../ai/timeouts';
 import { CLAUDE_PRICE_BOOK_VERIFIED_AT, PRICE_BOOK_VERIFIED_AT, capOutputTokens, textCostUsd, textPrice } from '../../ai/pricing';
 import type { F1Context } from '../../audit/context';
 import { SourceStore, type ParticipantStatus, type SourceRecord } from '../../discovery/f1/board';
@@ -10,7 +11,7 @@ import type { AgentOutcome } from '../../factory/events';
 import type { AssetStore } from '../../creative/assets';
 import { CREATIVE_INFO, CREATIVE_KEYS, type CreativeBoard, type CreativeBoardStore, type CreativePlan, type CreativeSettingsSnapshot } from '../../creative/board';
 import type { CreativeInput, F3Context } from '../../creative/context';
-import { CAMPAIGN_SCHEMA_VERSION, CampaignPackage, RUBRIC_CRITERIA, CAMPAIGN_PLATFORMS, type CostReport, type DeliverablesBlock, type QualityDiagnostic, type ReviewFindingRecord } from '../../creative/schemas';
+import { CAMPAIGN_SCHEMA_VERSION, CampaignPackage, RUBRIC_CRITERIA, CAMPAIGN_PLATFORMS, isCampaignPlatform, type CostReport, type DeliverablesBlock, type QualityDiagnostic, type ReviewFindingRecord } from '../../creative/schemas';
 import { NO_IMAGE_USAGE } from '../../creative/legacy-schemas';
 import { buildVisualBrief } from '../../creative/visual-brief';
 import { industryTextOf } from '../../hybrid/direction';
@@ -21,6 +22,7 @@ import { designAnchors, designBrandColors } from '../../collections/design';
 import { getCollection, themedTemplates } from '../../collections/registry';
 import type { VisualDiscoveryPort } from '../../imagery/discovery';
 import { LIBRARY_VERSION, TEMPLATE_LIBRARY } from '../../templates/library';
+import { CRITICAL_CHECKS } from '../../templates/preflight';
 import type { ChannelId } from '../../strategy/channels';
 import { ParticipantRegistry } from '../participant-registry';
 import { createTextTransport, type InferenceCredentials } from '../providers';
@@ -81,6 +83,8 @@ export interface CreativeRunConfig {
   reviewTimeoutMs?: number;
   repairTimeoutMs?: number;
   callTimeoutMs?: number;
+  /** Scales the clock of the Content Writer's long answer with its output cap (default: on, unless callTimeoutMs is fixed). Tests may tune it. */
+  generation?: Partial<GenerationTimeout>;
   timeoutMs?: number;
   maxRetries?: number;
   retryBaseDelayMs?: number;
@@ -131,7 +135,8 @@ export function estimateCreativeRun(o: { concepts: number; platforms?: number; m
   const typical = 1 + review + Math.min(o.maxRepairRounds, 1) * (1 + review);
   const max = 1 + review + o.maxRepairRounds * (1 + review);
   const platforms = o.platforms ?? CAMPAIGN_PLATFORMS.length;
-  const deliverables = Math.min(MAX_DELIVERABLES, o.concepts * platforms + Math.min(2, o.concepts) * 2 + 2);
+  // social posts + three 2 x 2 matrices (web banner, display ad, billboard) + two flyers
+  const deliverables = Math.min(MAX_DELIVERABLES, o.concepts * platforms + 3 * 2 * Math.min(2, o.concepts) + 2);
   return {
     textCalls: { typical: Math.min(typical, o.maxModelCalls), max: Math.min(max, o.maxModelCalls), enforcedCap: o.maxModelCalls },
     imageRequests: { planned: 0, max: 0 },
@@ -159,8 +164,12 @@ export class F4Program implements RunProgram {
     private readonly config: CreativeRunConfig,
     private readonly sink: CreativeSink,
   ) {
-    // the Content Writer answers for every platform at once: it gets room, never above what the chosen model supports
-    const writerTokens = capOutputTokens(config.model, clamp(config.maxOutputTokens, 2000, 16000, 9000)).tokens;
+    // the Content Writer answers for every platform at once: its FIRST request gets room for the answer this campaign really needs (a cut-off
+    // answer is billed and useless, and asking again doubles the cost), never above what the chosen model supports
+    const platforms = config.input.channels.filter(isCampaignPlatform);
+    const needed = writerOutputCap({ concepts: config.input.concepts, platforms: platforms.length, tiktok: platforms.includes('tiktok'), leadConcepts: Math.min(2, config.input.concepts) }, clamp(config.maxOutputTokens, 2000, 16000, 9000), 16000);
+    const writerTokens = capOutputTokens(config.model, needed).tokens;
+    const generation = resolveGeneration(config.generation, config.callTimeoutMs !== undefined);
     const spend = scopeFor(config.ledger, config.spendCapUsd, 'F4');
     const budget: InferenceBudget = {
       maxModelCalls: clamp(config.maxModelCalls, 2, 20, 8),
@@ -169,6 +178,8 @@ export class F4Program implements RunProgram {
       // a cut-off answer is asked again with a larger cap (up to what the model supports) instead of failing the agent
       escalateTo: capOutputTokens(config.model, 16000).tokens,
       callTimeoutMs: clamp(config.callTimeoutMs, 50, 300_000, DEFAULT_BUDGET.callTimeoutMs),
+      // the Content Writer's answer is a long structured answer: its clock grows with its output cap (as F1's and F3's final documents)
+      generation,
       maxRetries: clamp(config.maxRetries, 0, 3, DEFAULT_BUDGET.maxRetries),
       retryBaseDelayMs: clamp(config.retryBaseDelayMs, 1, 30_000, DEFAULT_BUDGET.retryBaseDelayMs),
     };
@@ -184,6 +195,8 @@ export class F4Program implements RunProgram {
       visual: config.design ?? structuredClone(DEFAULT_HYBRID_SETTINGS),
       approvedBudgetUsd: spend.approvedUsd,
       agentTimeoutMs: clamp(config.agentTimeoutMs, 50, 600_000, 240_000),
+      writerTimeoutMs: clamp(config.agentTimeoutMs, 50, 600_000, 240_000),
+      revisionTokens: Math.min(6000, writerTokens),
       sourcingTimeoutMs: clamp(config.sourcingTimeoutMs, 50, 300_000, 100_000),
       designTimeoutMs: clamp(config.designTimeoutMs, 50, 900_000, 300_000),
       reviewTimeoutMs: clamp(config.reviewTimeoutMs, 50, 600_000, 120_000),
@@ -191,6 +204,11 @@ export class F4Program implements RunProgram {
       fixtureSources: config.fixtureSources === true,
       now: config.now ?? new Date(),
     };
+    // the writer's task covers its first request and, when that answer is cut off by its cap, ONE larger request (synthesisTaskTimeoutMs)
+    if (generation) {
+      this.settings.writerTimeoutMs = Math.max(this.settings.writerTimeoutMs, synthesisTaskTimeoutMs(writerTokens, budget.escalateTo, generation));
+      this.settings.repairTimeoutMs = Math.max(this.settings.repairTimeoutMs, synthesisTaskTimeoutMs(this.settings.revisionTokens, undefined, generation));
+    }
     this.tools = { assets: config.assets };
     this.defaultTimeoutMs = clamp(config.timeoutMs, 200, 3_600_000, 1_800_000);
     this.plan = planF4();
@@ -348,6 +366,17 @@ export class F4Program implements RunProgram {
   /** What became of every planned deliverable (delivered, or missing with the reason). */
   private deliverablesBlock(snap: CreativeBoard): DeliverablesBlock {
     const slots = snap.hybridPlan?.slots ?? [];
+    // a file existing is not "ready to publish": a critical design problem or an open blocker/major finding on the creative or its copy blocks it
+    const readiness = (delivered: boolean, tc: CreativeBoard['templateCreatives'][number] | undefined, variantId: string | null) => {
+      if (!delivered || !tc) return { quality: null, publishReady: false, blockers: [] as string[] };
+      const open = snap.findings.filter((f) => (f.status === 'open' || f.status === 'unresolved') && (f.assetRef === tc.assetId || (!!variantId && f.assetRef === variantId)));
+      const blocking = open.filter((f) => f.severity === 'blocker' || f.severity === 'major');
+      const critical = (tc.design?.checks ?? []).filter((c) => c.status === 'fail' && CRITICAL_CHECKS.has(c.id));
+      const blockers = [...critical.map((c) => c.detail), ...blocking.map((f) => f.finding)].map((x) => x.slice(0, 200)).slice(0, 8);
+      const status = tc.design?.status ?? null;
+      const quality = blockers.length || status === 'unresolved' ? ('unresolved' as const) : status === 'warnings' || open.length ? ('passed_with_warnings' as const) : status === 'passed' ? ('passed' as const) : ('produced' as const);
+      return { quality, publishReady: quality === 'passed' || quality === 'passed_with_warnings', blockers };
+    };
     const items = slots.map((s) => {
       const tc = snap.templateCreatives.find((t) => t.slotId === s.slotId);
       const delivered = !!tc?.assetId && (tc.status === 'rendered' || tc.status === 'fallback_rendered');
@@ -363,10 +392,13 @@ export class F4Program implements RunProgram {
         height: tc?.height ?? s.height,
         folder: s.folder ?? folderOf(s.kind ?? 'social_post', s.channel),
         status: delivered ? ('delivered' as const) : ('missing' as const),
+        design: delivered ? (tc!.design?.status ?? null) : null,
         assetId: delivered ? tc!.assetId : null,
         variantId,
         withPicture: delivered && (tc!.sourceAssetIds.length > 0),
         reason: delivered ? null : (tc?.reason ?? 'Not produced.'),
+        ...readiness(delivered, tc, variantId),
+        matrix: s.matrix ? { group: s.matrix.group, design: s.matrix.design, copy: s.matrix.copy, shared: tc?.design?.matrix?.shared ?? false } : null,
       };
     });
     const delivered = items.filter((i) => i.status === 'delivered');
@@ -376,7 +408,7 @@ export class F4Program implements RunProgram {
       items,
       notPlanned: snap.notPlanned,
       rules: snap.hybridPlan?.rules ?? [],
-      counts: { planned: items.length, delivered: delivered.length, missing: items.length - delivered.length, withPicture: delivered.filter((i) => i.withPicture).length, typographyFirst: delivered.filter((i) => !i.withPicture).length },
+      counts: { planned: items.length, delivered: delivered.length, missing: items.length - delivered.length, withPicture: delivered.filter((i) => i.withPicture).length, typographyFirst: delivered.filter((i) => !i.withPicture).length, publishReady: delivered.filter((i) => i.publishReady).length, needsReview: delivered.filter((i) => !i.publishReady).length },
     };
   }
 
@@ -403,8 +435,10 @@ export class F4Program implements RunProgram {
     const limitations = [...snap.limitations];
     limitations.push('No AI image was generated or requested. Every creative is a template rendered locally from approved pictures or typography.');
     if (snap.imagery && snap.imagery.approved === 0) limitations.push('No approved picture was available, so every creative is typography-first. Add pictures in the image gallery (or approve website pictures with Get Content) to give the campaign photography.');
+    if (deliverables.counts.needsReview) limitations.push(`NOT READY TO PUBLISH: ${deliverables.counts.needsReview} of the ${deliverables.counts.delivered} delivered creatives still have a critical problem after the automatic repairs (listed under "Needs review" in the README); they are in the ZIP for inspection only.`);
     if (deliverables.counts.missing) limitations.push(`PARTIAL: ${deliverables.counts.delivered} of the ${deliverables.counts.planned} planned deliverables were produced. The rest are listed with their reasons; nothing was faked to reach the number.`);
     limitations.push('TikTok: a 9:16 cover image and a video concept/script are delivered; no video was produced.');
+    if (deliverables.items.some((i) => i.status === 'delivered' && (i.kind === 'billboard' || i.kind === 'flyer'))) limitations.push('Print: billboards and flyers are PNG files at the planned pixel size, not print-ready PDFs (no bleed, crop marks or CMYK conversion). Ask the printer for their specification and check the contact details before printing.');
     if (this.copyPlan?.voice.evidenceConfidence === 'low') limitations.push('The brand voice was inferred from little evidence (a cautious default). Set the writing style in the campaign setup to make the copy sound like the brand.');
     if (modelReviewFailed) limitations.push('The model review failed in at least one round; only the automatic checks were applied in that round.');
     if (!settings.visionReviews) limitations.push('The rendered creatives were checked by measurement only (size, text fit, contrast, logo); no model looked at them.');

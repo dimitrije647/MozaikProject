@@ -62,6 +62,11 @@ export interface LibraryItem {
   actions: LibraryAction[];
   /** Get Content: what the picture is for. Absent on older API responses (= a photograph). */
   role?: 'photo' | 'logo';
+  /** what the picture shows (website discovery / the pixel check at import). Absent on older API responses. */
+  category?: 'team' | 'portrait' | 'people' | 'workplace' | 'service' | 'product' | 'other' | 'brand_graphic' | null;
+  /** one of the (at most 10) website pictures recommended for the campaign library */
+  recommended?: boolean;
+  recommendation?: string | null;
 }
 
 export interface LibraryProvider {

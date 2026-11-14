@@ -524,17 +524,17 @@ const ecommerceNewCollection = defineTemplate({
 
 /**
  * ecommerce_comparison: a SPLIT COMPARISON. Two pictures (the hero and the secondary one) meet on a centre seam, side by side in square
- * and landscape and stacked in story, with a round paper badge holding two outward chevrons on the seam. The words sit on paper
+ * and landscape and stacked in story (no slider handle on the seam: a finished ad, not a before/after control). The words sit on paper
  * beneath (square, story) or in a column on the right (landscape). With only one picture the second half shows a brand-colored
  * pattern, so the layout never has a hole. No labels are invented: the headline carries the comparison.
  */
 const ecommerceComparison = defineTemplate({
   id: 'ecommerce_comparison',
   name: 'Comparison (split pictures)',
-  version: 1,
+  version: 2,
   status: 'active',
   category: 'ecommerce',
-  description: 'Two pictures side by side (stacked in stories) joined by a round compare badge, with a clean headline, support line and button on paper: for before/after and this-or-that posts.',
+  description: 'Two pictures side by side (stacked in stories) meeting at a clean seam, with a clean headline, support line and button on paper: for before/after and this-or-that posts.',
   styles: ['clean_ecommerce', 'modern_corporate', 'minimalist_tech'],
   industries: ['e-commerce', 'retail', 'shop', 'cosmetics', 'skincare', 'fashion', 'electronics', 'furniture', 'home', 'fitness'],
   channels: [],
@@ -542,7 +542,7 @@ const ecommerceComparison = defineTemplate({
   requires: ['image'],
   density: 'balanced',
   family: 'split',
-  composition: 'Two pictures meeting at a centre seam with a round compare badge; text on paper below (right column in landscape); thin brand-colored footer rule.',
+  composition: 'Two pictures meeting at a centre seam; text on paper below (right column in landscape); thin brand-colored footer rule.',
   sample: {
     headline: 'Two weeks, one clear difference',
     support: 'See what a simple daily routine can do for your skin.',
@@ -571,28 +571,6 @@ const ecommerceComparison = defineTemplate({
       at: {
         story: patch(C.story, { box: [0, 1896, 1080, 24] }),
         landscape: patch(C.landscape, { box: [788, 0, 12, 628] }),
-      },
-    }),
-    circle('badge', C.square.box(490, 320, 100, 100), {
-      fill: 'paper',
-      stroke: { color: 'ink', width: 0.0016 },
-      at: {
-        story: patch(C.story, { box: [490, 576, 100, 100] }),
-        landscape: patch(C.landscape, { box: [348, 270, 88, 88] }),
-      },
-    }),
-    poly('chevron-1', [C.square.pt(512, 370), C.square.pt(528, 355), C.square.pt(528, 385)], {
-      fill: 'ink',
-      at: {
-        story: { points: [C.story.pt(540, 598), C.story.pt(525, 614), C.story.pt(555, 614)] },
-        landscape: { points: [C.landscape.pt(370, 314), C.landscape.pt(383, 301), C.landscape.pt(383, 327)] },
-      },
-    }),
-    poly('chevron-2', [C.square.pt(568, 370), C.square.pt(552, 355), C.square.pt(552, 385)], {
-      fill: 'ink',
-      at: {
-        story: { points: [C.story.pt(540, 654), C.story.pt(525, 638), C.story.pt(555, 638)] },
-        landscape: { points: [C.landscape.pt(414, 314), C.landscape.pt(401, 301), C.landscape.pt(401, 327)] },
       },
     }),
     logo('logo', C.square.box(86, 80, 260, 66), {

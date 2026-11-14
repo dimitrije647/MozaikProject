@@ -9,7 +9,10 @@ import { buildCampaignZip } from './export';
 import type { CampaignPackage } from './schemas';
 import type { RecordedEvent } from '../factory/state';
 import { analyzeImage } from '../imagery/analysis';
-import { uploadRights } from '../imagery/rights';
+import { attestRights, candidateRights, uploadRights } from '../imagery/rights';
+import { capOutputTokens } from '../ai/pricing';
+import { defaultCopy, defaultCopyRevision } from '../testing/fake-creative';
+import type { CopyOutput } from './schemas';
 import { mergeHybrid } from '../hybrid/settings';
 import { MozaikCampaignRuntime, type CampaignRunResult } from '../runtime/campaign-runtime';
 import type { BrandImage } from '../runtime/programs/f4/env';
@@ -90,11 +93,13 @@ describe('F4 Creative Production (V4: one workflow, four agents, no AI images)',
     return { result, events, packages, store, fake };
   }
 
-  it('one campaign: posts for all five platforms, ads, billboard and flyer, drawn from the approved pictures, with zero image requests', async () => {
+  it('one campaign: posts for all five platforms, ads, TWO billboards and TWO flyers, drawn from the approved pictures, with zero image requests', async () => {
     const o = await run({ images: await Promise.all([1, 2, 3, 4, 5, 6].map(photo)) });
     assert.equal(o.result.status, 'completed', o.result.errorMessage ?? '');
     const { pkg, meta } = o.packages[0];
     assert.equal(o.fake.imageCalls().length, 0, 'no image request reached the provider');
+    // adaptive composition is local: every model request comes from the Content Writer or the Quality Reviewer, none from the designer
+    assert.ok(o.fake.calls().length > 0 && o.fake.calls().every((r) => r.agent === 'copywriter' || r.agent === 'creviewer'), [...new Set(o.fake.calls().map((r) => r.agent))].join(','));
     assert.equal(pkg.schemaVersion, 2);
     assert.equal(pkg.f2ReportId, null, 'no marketing audit is part of a V4 campaign');
     assert.equal(pkg.landingContent, null, 'no landing page');
@@ -105,13 +110,57 @@ describe('F4 Creative Production (V4: one workflow, four agents, no AI images)',
     assert.ok(posts.filter((v) => v.channel === 'tiktok').every((v) => v.videoScript), 'TikTok posts carry a video script');
     const d = pkg.deliverables!;
     assert.ok(d.counts.delivered > 0);
-    assert.ok(d.items.some((i) => i.kind === 'billboard') || d.notPlanned.some((n) => n.kind === 'billboard'));
-    assert.ok(d.items.some((i) => i.kind === 'flyer') || d.notPlanned.some((n) => n.kind === 'flyer'));
+    // print: FOUR billboards (2 designs x 2 texts) and two flyers, delivered; the two flyers are different layouts
+    const flyers = d.items.filter((i) => i.kind === 'flyer');
+    assert.equal(flyers.length, 2, 'flyer: two planned');
+    assert.ok(flyers.every((i) => i.status === 'delivered'), `flyer: both delivered (${flyers.map((i) => i.reason).join(' | ')})`);
+    const ftpl = flyers.map((i) => pkg.hybrid!.creatives.find((c) => c.assetId === i.assetId)!.templateId);
+    assert.notEqual(ftpl[0], ftpl[1], `flyer: the two use different layouts (${ftpl.join(', ')})`);
+    // the advertising variation matrix: billboard, web banner and display ad as D1/D2 x T1/T2
+    for (const k of ['billboard', 'web_ad', 'display_ad'] as const) {
+      const items = d.items.filter((i) => i.kind === k);
+      if (!items.length) {
+        // the collection cannot draw this format: reported as not planned, never faked
+        assert.ok(d.notPlanned.some((n) => n.kind === k), `${k}: neither planned nor reported`);
+        continue;
+      }
+      assert.equal(items.length, 4, `${k}: 2 designs x 2 texts planned`);
+      assert.deepEqual(items.map((i) => `D${i.matrix!.design}T${i.matrix!.copy}`).sort(), ['D1T1', 'D1T2', 'D2T1', 'D2T2']);
+      assert.ok(items.every((i) => i.status === 'delivered'), `${k}: all four delivered (${items.map((i) => i.reason).join(' | ')})`);
+      const tplOf = (dn: number, cn: number) => pkg.hybrid!.creatives.find((c) => c.assetId === items.find((i) => i.matrix!.design === dn && i.matrix!.copy === cn)!.assetId)!;
+      const [d1t1, d1t2, d2t1, d2t2] = [tplOf(1, 1), tplOf(1, 2), tplOf(2, 1), tplOf(2, 2)];
+      // two DIFFERENT designs (another template, never the first one mirrored), each carrying both texts when the collection allows it
+      assert.notEqual(d1t1.templateId, d2t1.templateId, `${k}: D1 and D2 are different templates`);
+      if (d1t2.design?.matrix?.shared) assert.equal(d1t2.templateId, d1t1.templateId, `${k}: D1 carries T2 with the same design`);
+      if (d2t2.design?.matrix?.shared) assert.equal(d2t2.templateId, d2t1.templateId);
+    }
+    assert.equal(d.counts.planned + d.notPlanned.length, 15 + 4 * 3 + 2, 'social 15 + three matrices of 4 + two flyers (planned or reported)');
+    // every rendered creative went through the design preflight and records its checks, repairs and the templates tried
+    const rendered = pkg.hybrid!.creatives.filter((c) => c.status === 'rendered');
+    assert.ok(rendered.length > 0);
+    for (const c of rendered) {
+      assert.ok(c.design, `${c.slotId}: design diagnostics recorded`);
+      const ids = c.design!.checks.map((x) => x.id);
+      for (const id of ['face_occlusion', 'subject_visibility', 'logo_visibility', 'text_safe_area', 'text_fit', 'headline_readability', 'final_asset_purity', 'duplicate_layout']) assert.ok(ids.includes(id), `${c.slotId}: ${id} checked`);
+      assert.ok(c.design!.renders >= 1 && c.design!.templatesTried.some((t) => t.split(':')[0] === c.templateId));
+      // the adaptive composition is recorded: template, variant, why, and an honest quality-gate status
+      assert.equal(c.design!.composition?.templateId, c.templateId);
+      assert.ok(c.design!.composition!.considered >= 1 && c.design!.composition!.reasons.length > 0);
+      assert.ok(['passed', 'warnings', 'unresolved'].includes(c.design!.status!));
+      assert.ok(!c.design!.checks.some((x) => x.id === 'final_asset_purity' && x.status === 'fail'), `${c.slotId}: no editor elements`);
+    }
     for (const i of d.items) {
       if (i.status === 'delivered') assert.ok(pkg.imageAssets.some((a) => a.id === i.assetId && a.source === 'template_render'));
       else assert.ok(i.reason, 'a missing deliverable says why');
     }
     assert.ok(d.counts.withPicture > 0, 'approved pictures reach the templates');
+    // PHOTO FIRST + TEXT DENSITY (Giardino 2026-11-14): a TikTok cover shows the approved photograph and carries only its headline and button
+    const tiktok = d.items.filter((i) => i.channel === 'tiktok' && i.status === 'delivered');
+    assert.ok(tiktok.length > 0 && tiktok.every((i) => i.withPicture), `TikTok covers are photo-first: ${tiktok.map((i) => `${i.id}=${i.withPicture}`).join(', ')}`);
+    for (const it of pkg.hybrid!.selection!.items.filter((x) => x.channel === 'tiktok')) {
+      assert.equal(it.content.support, null, `${it.slotId}: no supporting line on a TikTok cover`);
+      assert.equal(it.content.eyebrow, null, `${it.slotId}: no eyebrow on a TikTok cover`);
+    }
     assert.ok(!pkg.imageAssets.some((a) => a.source === 'ai_image'));
     // the ONE download
     const { zip, manifest } = await buildCampaignZip(pkg, o.store, { strategy: chain.f3.report });
@@ -133,6 +182,23 @@ describe('F4 Creative Production (V4: one workflow, four agents, no AI images)',
     if (delivered('display_ad')) assert.ok(names.some((n) => n.startsWith('campaign/ads/display/') && n.endsWith('.png')));
     assert.ok(names.every((n) => n.startsWith('campaign/')), 'the V4 layout has one root folder');
     assert.ok(!names.some((n) => /landing|seo|geo/i.test(n)), 'no landing page, SEO or GEO output in a V4 ZIP');
+    assert.equal(names.filter((n) => n.startsWith('campaign/print/billboards/') && n.endsWith('.png')).length, 4, 'four billboards: 2 designs x 2 texts, each its own file');
+    assert.equal(names.filter((n) => n.startsWith('campaign/print/flyers/') && n.endsWith('.png')).length, 2, 'two flyer designs');
+    // the design diagnostics travel with the campaign
+    const checks = JSON.parse(await z.file('campaign/review/design-checks.json')!.async('string'));
+    assert.equal(checks.creatives.length, rendered.length);
+    assert.ok(checks.creatives.every((c: { file: string; checks: unknown[] }) => names.includes(`campaign/${c.file}`) && c.checks.length > 0));
+    assert.ok(checks.creatives.every((c: { status: string; composition: { templateId: string; variant: string } }) => ['passed', 'warnings', 'unresolved'].includes(c.status) && c.composition.templateId && c.composition.variant));
+    assert.equal(checks.summary.passed + checks.summary.warnings + checks.summary.unresolved, checks.creatives.length);
+    // ZIP integrity: every file the manifest lists is in the archive with exactly the recorded bytes and hash
+    const { createHash } = await import('node:crypto');
+    for (const f of manifest.files) {
+      const entry = z.file(f.path);
+      assert.ok(entry, `${f.path} is in the archive`);
+      const bytes = await entry!.async('nodebuffer');
+      assert.equal(bytes.length, f.bytes, f.path);
+      assert.equal(createHash('sha256').update(bytes).digest('hex'), f.sha256, f.path);
+    }
     assert.equal(manifest.assetsMissing.length, 0);
     for (const f of manifest.files) assert.ok(f.bytes > 0, `${f.path} is not an empty placeholder`);
   });
@@ -158,6 +224,170 @@ describe('F4 Creative Production (V4: one workflow, four agents, no AI images)',
     assert.match(finding, /Approved brand content: the official logo and 3 approved photograph/);
     const z = await JSZip.loadAsync((await buildCampaignZip(pkg, o.store, { logo: { fileName: 'site-logo.png', data: logo, rights: 'Rights confirmed by the project owner' } })).zip);
     assert.ok(Object.keys(z.files).some((n) => n.startsWith('campaign/brand/logo-')));
+  });
+
+  it('IMAGE LIBRARY: at most 10 pictures per campaign, photographs before brand graphics, and the creatives spread over the library', async () => {
+    // twelve clearly different approved pictures (no two are near-duplicates); two of them are brand graphics (share cards), not photographs
+    const varied = async (seed: number): Promise<BrandImage> => {
+      let x = seed * 7919;
+      const rnd = () => ((x = (x * 48271) % 2147483647) / 2147483647);
+      const rects = Array.from({ length: 6 }, () => `<rect x="${Math.round(rnd() * 1400)}" y="${Math.round(rnd() * 1000)}" width="${200 + Math.round(rnd() * 600)}" height="${150 + Math.round(rnd() * 500)}" fill="hsl(${Math.round(rnd() * 360)},60%,${30 + Math.round(rnd() * 40)}%)"/>`).join('');
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200"><rect width="100%" height="100%" fill="hsl(${(seed * 47) % 360},40%,${25 + (seed % 5) * 10}%)"/>${rects}</svg>`;
+      const data = await sharp(Buffer.from(svg)).jpeg({ quality: 85 }).toBuffer();
+      return { id: `asset-v${seed}`, name: `picture-${seed}.jpg`, data, library: { rights: uploadRights(), analysis: await analyzeImage(data), text: 'diving school reef ocean', width: 1600, height: 1200, pageUrl: null, via: 'library', category: seed <= 2 ? 'brand_graphic' : 'people' } };
+    };
+    const images = await Promise.all(Array.from({ length: 12 }, (_, i) => varied(i + 1)));
+    const o = await run({ images });
+    assert.equal(o.result.status, 'completed', o.result.errorMessage ?? '');
+    const h = o.packages[0].pkg.hybrid!;
+    const lib = h.imagery!.library;
+    assert.ok(lib.length <= 10, `the campaign library holds ${lib.length}`);
+    assert.equal(lib.length, 10, 'twelve distinct approved pictures: the best ten form the library');
+    const graphics = new Set(['asset-v1', 'asset-v2']);
+    const firstGraphic = lib.findIndex((l) => graphics.has(l.id));
+    assert.ok(firstGraphic === -1 || lib.slice(firstGraphic).every((l) => graphics.has(l.id)), 'brand graphics come after every photograph');
+    assert.ok(h.imagery!.notes.some((n) => /12 approved pictures exist; the 10 best/.test(n)), h.imagery!.notes.join(' | '));
+    const used = new Set(h.creatives.filter((c) => c.status === 'rendered').flatMap((c) => c.sourceAssetIds ?? []).map((x) => x.replace('brand:', '')));
+    assert.ok(used.size >= 4, `the creatives use ${used.size} different pictures, not one picture everywhere`);
+    assert.ok([...used].every((id) => lib.some((l) => l.id === id)), 'only pictures of the campaign library are drawn');
+    assert.ok(!used.has('asset-v1') && !used.has('asset-v2'), 'a brand graphic is never drawn as a creative picture (no text over text, no second logo)');
+    assert.ok(lib.filter((l) => graphics.has(l.id)).every((l) => l.usedBySlots.length === 0 && /graphic/.test(l.assetKind ?? '')));
+  });
+
+  // ---- MVP creative quality: the defects of the 23 reviewed creatives, end to end (fake text API, no image model, nothing billed) ----
+  const longCta = (cta: string, ctaShort: string) => (req: { agent: string; userText: string }) => {
+    if (req.agent !== 'copywriter' || req.userText.includes('Revise ONLY the listed copy')) return undefined;
+    const out: CopyOutput = defaultCopy(req.userText);
+    for (const x of [...out.posts, ...out.ads, ...out.print]) Object.assign(x, { cta, ctaShort });
+    return { text: JSON.stringify(out) };
+  };
+  const site = { ...input(), websiteUrl: 'https://acme-consult.example' };
+  const shield = () => sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><path d="M256 20 L470 110 L440 380 L256 492 L72 380 L42 110 Z" fill="#0b6e4f"/></svg>')).png().toBuffer();
+
+  it('MVP QUALITY: a long call to action is never cut; print has no buttons and names the business; concepts do not repeat inside a channel', async () => {
+    const cta = 'Start the free Management and Risk Check';
+    const o = await run({ images: await Promise.all([1, 2, 3, 4, 5, 6].map(photo)), config: { input: site, logo: await shield() }, openai: { reply: longCta(cta, 'Start the free check') } });
+    assert.equal(o.result.status, 'completed', o.result.errorMessage ?? '');
+    assert.equal(o.fake.imageCalls().length, 0);
+    const { pkg } = o.packages[0];
+    const h = pkg.hybrid!;
+    const rendered = h.creatives.filter((c) => c.status === 'rendered');
+    const current = pkg.imageAssets.filter((a) => a.status !== 'superseded');
+    // 1) no essential text was cut in any final asset; every shortening is one of the approved wordings
+    assert.ok(current.every((a) => !a.flags.some((f) => f.startsWith('text_trimmed'))), current.filter((a) => a.flags.some((f) => f.startsWith('text_trimmed'))).map((a) => `${a.id}: ${a.flags.join(',')}`).join(' | '));
+    const allowed = new Set(['Start the free check', 'Start the free Risk Check', 'Start the Management and Risk Check', 'Start the Risk Check', 'Start the Check']);
+    for (const c of rendered) for (const s of c.design?.shortened ?? []) {
+      assert.ok(!/\u2026|\.\.\.$/.test(s.to), `${c.slotId}: ${s.to}`);
+      if (s.slot === 'cta' && s.from === cta) assert.ok(allowed.has(s.to), `${c.slotId}: "${s.to}" is not an approved shorter wording`);
+    }
+    // 2) print: no button on billboards or flyers, the business named in full next to the shield, a written next step with the verified address
+    for (const c of rendered.filter((x) => /billboard|flyer/.test(x.slotId))) {
+      const st = (id: string) => c.design!.checks.find((x) => x.id === id)?.status;
+      assert.equal(st('media_button'), 'pass', `${c.slotId}: no button in print`);
+      if (/billboard/.test(c.slotId)) assert.equal(st('brand_identity'), 'pass', `${c.slotId}: the business is named`);
+      if (/flyer/.test(c.slotId)) assert.equal(st('flyer_next_step'), 'pass', `${c.slotId}: a next step`);
+    }
+    // 3) creative concepts: recorded per creative; inside ONE channel no template twice unless the review reports it; across channels reuse is allowed
+    assert.ok(rendered.every((c) => c.design?.concept?.key && c.design.concept.channel));
+    const byChannel = new Map<string, string[]>();
+    for (const c of rendered) byChannel.set(c.design!.concept!.channel, [...(byChannel.get(c.design!.concept!.channel) ?? []), c.templateId]);
+    const repeats = (h.quality?.issues ?? []).filter((i) => i.kind === 'repeated_concept');
+    for (const [ch, ids] of byChannel) {
+      if (ch.startsWith('social:') && new Set(ids).size < ids.length) assert.ok(repeats.length > 0, `${ch} repeats a design and the review must say so`);
+    }
+    const social = rendered.filter((c) => c.design!.concept!.channel.startsWith('social:'));
+    const crossReuse = social.some((a) => social.some((b) => b.templateId === a.templateId && b.design!.concept!.channel !== a.design!.concept!.channel));
+    if (crossReuse) assert.ok(!repeats.some((r) => social.some((s) => s.slotId === r.slotId && !social.some((t) => t !== s && t.templateId === s.templateId && t.design!.concept!.channel === s.design!.concept!.channel))), 'reuse across channels is never reported as a repeat');
+    // 4) quality states: produced is not "ready"; the README and design-checks.json say how many are ready to publish
+    const d = pkg.deliverables!;
+    assert.ok(d.items.filter((i) => i.status === 'delivered').every((i) => i.quality && typeof i.publishReady === 'boolean'));
+    assert.ok(d.items.filter((i) => i.quality === 'unresolved').every((i) => i.publishReady === false && (i.blockers ?? []).length > 0));
+    assert.equal(d.counts.publishReady! + d.counts.needsReview!, d.counts.delivered);
+    const z = await JSZip.loadAsync((await buildCampaignZip(pkg, o.store)).zip);
+    const readme = await z.file('campaign/README.md')!.async('string');
+    assert.match(readme, /Ready to publish: \d+ of \d+/);
+    if (d.items.some((i) => i.matrix)) assert.match(readme, /Advertising variation matrix/);
+    const checks = JSON.parse(await z.file('campaign/review/design-checks.json')!.async('string'));
+    assert.equal(checks.summary.publishReady, d.counts.publishReady);
+  });
+
+  it('REPAIR LOOP: findings are routed to the part that can fix them, only the affected creatives are rendered again, retries are bounded and nothing cut is approved', async () => {
+    // one word of 70 letters: no drop-word shortening exists; the adaptive layout must avoid cutting it (or the review routes it to the writer)
+    const word = 'Unternehmenssteuerungsrisikocheckanfrageformularbestaetigungsverfahren';
+    const o = await run({ images: await Promise.all([1, 2, 3].map(photo)), openai: { reply: longCta(word, '') } });
+    assert.equal(o.result.status, 'completed', o.result.errorMessage ?? '');
+    const { pkg } = o.packages[0];
+    const current = pkg.imageAssets.filter((a) => a.status !== 'superseded');
+    // nothing cut is ever presented as ready: a creative that still has cut text is not publish-ready
+    for (const a of current.filter((x) => x.flags.some((f) => f.startsWith('text_trimmed')))) {
+      const item = pkg.deliverables!.items.find((i) => i.assetId === a.id);
+      if (item) assert.equal(item.publishReady, false, `${item.id}: cut text is never ready to publish`);
+    }
+    // a cut call to action / headline goes to the Content Writer as well (ONE revision call for the round)
+    for (const f of pkg.reviewFindings.filter((x) => x.kind === 'text_overflow' && /call to action|headline/.test(x.finding) && x.source === 'deterministic')) assert.ok(pkg.revisions.some((r) => r.findingId === f.id && r.operation === 'revise_copy'), `${f.id} was routed to the writer`);
+    assert.ok(o.fake.calls('copywriter').filter((r) => r.userText.includes('Revise ONLY the listed copy')).length <= 1);
+    // targeted: only the creatives named by findings were rendered again (earlier versions kept), never the whole campaign
+    const superseded = pkg.imageAssets.filter((a) => a.status === 'superseded');
+    const layoutFindings = new Set(pkg.revisions.filter((r) => r.operation === 'rerender_layout').map((r) => r.findingId));
+    assert.ok(superseded.length <= current.length, 'not every creative was redone');
+    if (layoutFindings.size) assert.ok(superseded.length > 0, 'a layout finding led to a new version');
+    // bounded: at most maxRepairRounds (1) repair round, then the result is reported honestly
+    assert.ok(Math.max(0, ...pkg.reviewFindings.map((f) => f.round)) <= 2);
+    assert.ok(['approved', 'approved_with_notes', 'unresolved'].includes(pkg.approval.status));
+    if (pkg.reviewFindings.some((f) => f.status === 'unresolved' && (f.severity === 'major' || f.severity === 'blocker'))) assert.equal(pkg.approval.status, 'unresolved');
+  });
+
+  it('PROVENANCE: website pictures keep their page, address and rights basis from the library to the exported creative', async () => {
+    const at = new Date('2026-11-01T00:00:00Z');
+    const images = await Promise.all([1, 2, 3, 4].map(async (n) => {
+      const b = await photo(n);
+      return { ...b, library: { ...b.library!, rights: attestRights(candidateRights('website', { firstParty: true }), { at }), pageUrl: 'https://acme-consult.example/en/team', originalUrl: `https://acme-consult.example/_next/image?url=%2Fmedia%2Fteam-${n}.webp&w=3840`, category: 'team' } };
+    }));
+    const o = await run({ images });
+    assert.equal(o.result.status, 'completed', o.result.errorMessage ?? '');
+    const { pkg } = o.packages[0];
+    const lib = pkg.hybrid!.imagery!.library;
+    assert.ok(lib.length > 0 && lib.every((l) => l.source === 'website' && l.pageUrl && l.originalUrl?.startsWith('https://acme-consult.example/') && l.verification));
+    assert.ok(!(pkg.hybrid!.quality?.issues ?? []).some((i) => i.kind === 'missing_provenance'));
+    const z = await JSZip.loadAsync((await buildCampaignZip(pkg, o.store)).zip);
+    const rights = JSON.parse(await z.file('campaign/sources/rights.json')!.async('string'));
+    const withPics = rights.creatives.filter((c: { pictures: unknown[] }) => c.pictures.length);
+    assert.ok(withPics.length > 0);
+    assert.ok(withPics.every((c: { pictures: { source: string; verification: string }[] }) => c.pictures.every((p) => p.source === 'website' && p.verification)));
+  });
+
+  // ---- the Content Writer's clock (incident 2026-11-14, Giardino): test-sized clocks, nothing waits 90 s ----
+  const slowWriter = (delayMs: number, text?: string) => (req: { agent: string; userText: string }) => (req.agent === 'copywriter' && !req.userText.includes('Revise ONLY the listed copy') ? { delayMs, ...(text !== undefined ? { text } : {}) } : undefined);
+  // per-request limit 300 ms (stands for the old fixed 90 s); the writer's clock follows its cap (here the unverified test model's 4,096 tokens / 24,000 tokens/s, rounded up to 1 s, + 1 s = 2 s)
+  const clocks = { callTimeoutMs: 300, generation: { tokensPerSecond: 24_000, overheadMs: 1000, maxMs: 600_000 } };
+
+  it('WRITER CLOCK: an answer slower than the old fixed limit is accepted because the clock follows the answer size; ONE copy request, sized for the campaign (the 2x2 matrix adds none)', async () => {
+    const o = await run({ images: await Promise.all([1, 2, 3].map(photo)), config: clocks, openai: { reply: slowWriter(1100) } });
+    assert.equal(o.result.status, 'completed', o.result.errorMessage ?? '');
+    const copy = o.fake.calls('copywriter').filter((r) => !r.userText.includes('Revise ONLY the listed copy'));
+    assert.equal(copy.length, 1, 'all copy (posts, ads, print) in one request: the matrix reuses the ads and print copy of the two lead concepts');
+    // 3 concepts x 5 platforms ask for 12,000 tokens; the test model is unverified, so the existing guard caps it at what it can safely ask for
+    assert.equal(copy[0].body?.max_output_tokens, capOutputTokens('gpt-test-mini', 12000).tokens);
+    assert.match(copy[0].userText, /a web_ad and a display_ad for each of the first 2 concept/);
+    const d = o.packages[0].pkg.deliverables!;
+    assert.ok(d.items.filter((i) => i.matrix).length >= 4, 'the matrix creatives exist without any extra copy request');
+  });
+
+  it('WRITER CLOCK: an answer later than its clock ends F4 honestly (no automatic paid retry) and the message explains it', async () => {
+    const o = await run({ images: await Promise.all([1, 2].map(photo)), config: clocks, openai: { reply: slowWriter(3500) } });
+    assert.equal(o.result.status, 'failed');
+    assert.match(o.result.errorMessage ?? '', /Content Writer timed out: nothing can be designed without copy/);
+    assert.equal(o.fake.calls('copywriter').length, 1, 'the timed-out request was not sent again');
+    const failed = o.events.find((e) => e.type === 'task.completed' && e.participant === 'Content Writer');
+    assert.match(JSON.stringify(failed?.payload ?? {}), /No answer arrived within 2\.0 s \(the answer could be up to \d+ tokens long\)\. The request had been sent, so it may still have been billed; it was not repeated automatically\./);
+  });
+
+  it('WRITER: an answer that is not valid structured copy is never treated as copy: F4 stops with a clear reason, without an open-ended retry', async () => {
+    const o = await run({ images: await Promise.all([1, 2].map(photo)), openai: { reply: slowWriter(0, '{"summary": "cut') } });
+    assert.equal(o.result.status, 'failed');
+    assert.match(o.result.errorMessage ?? '', /Content Writer (failed|timed out)/);
+    assert.ok(o.fake.calls('copywriter').length <= 2, `bounded: ${o.fake.calls('copywriter').length} request(s)`);
+    assert.equal(o.packages.length, 0, 'no campaign package is built from invalid copy');
   });
 
   it('WITHOUT Get Content nothing about approved brand content is claimed', async () => {

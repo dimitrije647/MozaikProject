@@ -38,6 +38,25 @@ export function synthesisTaskTimeoutMs(cap: number, escalateTo: number | undefin
 }
 
 /**
+ * HOW LONG THE CONTENT WRITER'S ANSWER CAN BE (F4). It writes every post (3 concepts x 5 platforms by default), the ads and the print copy in ONE
+ * structured answer. Measured on `gpt-6.1-sol` (saved events, 2026-11-13/14, 3 concepts x 5 platforms): 6,043 / 6,798 / 7,367 / 7,408 output tokens
+ * in 71 to 75 s - right against the old fixed cap of 8,000 tokens. The Giardino run of 2026-11-14 went past it: its answer was cut off at 8,000
+ * tokens (billed, unusable JSON) and asked again with 16,000, which then ran into the fixed 90 s clock. This estimate (about 17% above the largest
+ * answer measured for that size) times a margin is the cap of the FIRST request, so the answer normally fits the first time; the request clock grows
+ * with the cap (generationTimeoutMs). Caps only bound the answer: a request is billed for the tokens really written, not for its cap.
+ */
+export function writerOutputEstimate(o: { concepts: number; platforms: number; tiktok: boolean; leadConcepts: number }): number {
+  const posts = o.concepts * o.platforms;
+  return 500 + o.concepts * 350 + posts * 340 + (o.tiktok ? o.concepts * 250 : 0) + o.leadConcepts * 2 * 120 + o.leadConcepts * 2 * 200;
+}
+
+/** The output cap of the Content Writer's first request: the estimate with a 35% margin, rounded up to 500, never below `floor` nor above `ceiling`. */
+export function writerOutputCap(o: { concepts: number; platforms: number; tiktok: boolean; leadConcepts: number }, floor: number, ceiling: number): number {
+  const want = Math.ceil((writerOutputEstimate(o) * 1.35) / 500) * 500;
+  return Math.max(floor, Math.min(ceiling, want));
+}
+
+/**
  * Whether the clocks scale. They do unless the caller fixed the per-request limit itself (`callTimeoutMs`), unless it asked for scaling explicitly
  * (`configured`): the fixed value of a test or of an operator is respected.
  */

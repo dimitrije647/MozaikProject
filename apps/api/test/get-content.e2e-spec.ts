@@ -1,7 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import JSZip from 'jszip';
-import { OpenverseAdapter, PixabayAdapter, brandWordsOf, logosOfHtml, logosOfTree, type BrandReading, type RepoImageDiscovery, type WebsiteImageDiscovery } from '@launchpilot/agents';
+import { OpenverseAdapter, PixabayAdapter, brandWordsOf, candidateRights, discoverWebsiteImages, imageStem, logosOfHtml, logosOfTree, type BrandReading, type RepoImageDiscovery, type WebsiteImageDiscovery } from '@launchpilot/agents';
 import { FakeOpenAI, type FakeOpenAIOptions } from '@launchpilot/agents/dist/testing/fake-openai';
 import { IMAGE_ADAPTERS, IMAGE_DOWNLOADER, BRAND_READERS } from '../src/visual/visual.service';
 import { IMAGE_SOURCES } from '../src/visual/image-library.service';
@@ -59,8 +59,26 @@ const TREE = [
 ];
 const REPO: RepoImageDiscovery = { ok: true, repo: { owner: 'acme', repo: 'reef', ref: 'main', license: 'MIT' }, candidates: [], rejected: [], logos: logosOfTree(TREE, { owner: 'acme', repo: 'reef', ref: 'main', brand: BRAND }), notes: ['The repository license (MIT) covers its source code.'] };
 
+// a multi-page site behind an image CDN (the FIRMENFELS GRUPPE structure, invented content): read by the REAL discovery through a stub reader, no network
+const cdn = (file: string) => `/_next/image?url=%2F_next%2Fstatic%2Fmedia%2F${file}&w=3840&q=75`;
+const PEOPLE = ['Ana Kovač', 'Marko Ilić', 'Jana Petrović', 'Luka Simić'];
+const LIB_PAGES: Record<string, string> = {
+  'https://reef.example': `<html><head><title>Blue Reef</title><meta property="og:image" content="https://reef.example/og-default.png"></head><body><header><a href="/"><img src="${cdn('logo-white.57e2.webp')}" alt="Blue Reef" width="159" height="40"></a><nav><a href="/team">Team</a><a href="/impressum">Impressum</a></nav></header>
+    <main><img src="${cdn('home-team.5af9.webp')}" width="2400" height="1600" alt="The Blue Reef team"><img src="${cdn('instructor-pool.6dc5.webp')}" width="1491" height="816" alt="Instructor teaching students in the pool"></main></body></html>`,
+  'https://reef.example/team': `<html><body><nav><a href="/">Home</a></nav><main><img src="${cdn('team-hero.b90f.webp')}" width="1354" height="663" alt="Our team on the boat">${PEOPLE.map((n, i) => `<div><h3>${n}</h3><img loading="lazy" src="${cdn(`spec-${i}.a${i}.webp`)}" width="800" height="720" alt="${n}"></div>`).join('')}</main></body></html>`,
+};
+const libraryWeb = {
+  checkUrl: () => ({ ok: true as const }),
+  fetchPage: async (u: string) => {
+    const k = u.replace(/\/$/, '');
+    const body = LIB_PAGES[k];
+    return body ? { ok: true as const, url: u, finalUrl: k, status: 200, contentType: 'text/html', bytes: body.length, truncated: false, body, fromCache: false } : { ok: false as const, url: u, code: 'http_error' as const, message: 'Not found (404).', status: 404 };
+  },
+  robotsAllow: async () => true,
+};
+
 const calls = { website: 0, repo: 0, fetchWebsite: [] as string[], fetchRepo: [] as string[] };
-const mode = { website: 'ok' as 'ok' | 'throw' | 'gate' | 'blocked' | 'empty', repo: 'ok' as 'ok' | 'unavailable' };
+const mode = { website: 'ok' as 'ok' | 'throw' | 'gate' | 'blocked' | 'empty' | 'library', repo: 'ok' as 'ok' | 'unavailable' };
 let gate: { promise: Promise<void>; open: () => void } = { promise: Promise.resolve(), open: () => undefined };
 const newGate = () => {
   let open!: () => void;
@@ -75,6 +93,7 @@ const sources = {
     if (mode.website === 'gate') await gate.promise;
     if (mode.website === 'blocked') return { ...WEBSITE, pages: [{ url: SITE, status: 'blocked' as const, message: 'The page is protected against automated reading; it was not worked around.', images: 0 }], candidates: [], logos: [] };
     if (mode.website === 'empty') return { ...WEBSITE, candidates: [], logos: [] };
+    if (mode.website === 'library') return discoverWebsiteImages(SITE, { web: libraryWeb, logoBrand: BRAND });
     return WEBSITE;
   },
   repository: async () => {
@@ -419,6 +438,63 @@ describe('GET CONTENT', () => {
     const rej = (await user.agent.post(`/projects/${projectId}/images/reject-batch`).send({ ids: [failed.id] }).expect(200)).body.results;
     expect(rej[0].ok).toBe(true);
     expect(fake.requests.filter((r) => r.path.endsWith('/responses'))).toHaveLength(0);
+  });
+
+  it('WEBSITE LIBRARY: every picture of a CDN site is found once, classified and at most 10 recommended; an older row of the same picture keeps its decision; the pixel check and the provenance survive import', async () => {
+    const { user, projectId } = await rich('gc-weblib');
+    const homeTeam = `https://reef.example${cdn('home-team.5af9.webp')}`;
+    // a row of an EARLIER discovery: the old stem merged every CDN picture into one key; the owner had rejected it
+    const legacy = await db.projectImage.create({ data: { projectId, source: 'website', status: 'rejected', dedupeKey: 'reef.example/_next/image', title: 'The Blue Reef team', pageUrl: SITE, remoteUrl: homeTeam, rightsJson: candidateRights('website', { firstParty: true }) as never, metaJson: { where: 'img', firstParty: true, prominence: 0.9 } as never, decidedAt: new Date() } });
+    mode.website = 'library';
+    try {
+      const { done } = await run(user, projectId);
+      const web = done.run.sources.find((x: any) => x.id === 'website');
+      expect(web.status).toBe('ok');
+      expect(web.message).toMatch(/2 page\(s\) read: 7 photograph\(s\), \d+ recommended for the campaign library, 1 brand graphic\(s\) kept apart/);
+      const items = (await user.agent.get(`/projects/${projectId}/images`).expect(200)).body.items.filter((i: any) => i.source === 'website' && (i.role ?? 'photo') === 'photo');
+      // 2 team photos + 1 instructor + 4 portraits + the share card = 8 distinct pictures; the logo is not among them
+      expect(items).toHaveLength(8);
+      expect(items.some((i: any) => /logo/i.test(i.title))).toBe(false);
+      // the older row was recognised by its address: still ONE row, still rejected, now described
+      const rows = await db.projectImage.findMany({ where: { projectId, source: 'website', remoteUrl: homeTeam } });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe(legacy.id);
+      expect(rows[0].status).toBe('rejected');
+      expect((rows[0].metaJson as any).category).toBe('team');
+      const card = items.find((i: any) => i.title === PEOPLE[0]);
+      expect(card).toMatchObject({ category: 'portrait', pageUrl: 'https://reef.example/team' });
+      const share = items.find((i: any) => i.category === 'brand_graphic');
+      expect(share.recommended).toBe(false);
+      expect(share.recommendation).toMatch(/brand graphic/);
+      const rec = items.filter((i: any) => i.recommended);
+      expect(rec.length).toBeGreaterThanOrEqual(5);
+      expect(rec.length).toBeLessThanOrEqual(10);
+      expect(rec.filter((i: any) => i.category === 'portrait').length).toBeLessThanOrEqual(3);
+      expect(rec.every((i: any) => i.status === 'candidate' && i.rights.eligible === false)).toBe(true); // recommended is not approved
+      expect(calls.fetchWebsite).toHaveLength(0); // nothing was downloaded by the discovery
+      // approval imports through the same rights rules; the pixels decide that the share card is a graphic; provenance keeps page and address
+      const poolUrl = `https://reef.example${cdn('instructor-pool.6dc5.webp')}`;
+      const pool = items.find((i: any) => /pool/.test(i.title));
+      files[poolUrl] = await picture(21);
+      files['https://reef.example/og-default.png'] = await logoPng('#0b3d91', 1200, 630);
+      const res = (await user.agent.post(`/projects/${projectId}/images/approve-batch`).send({ ids: [pool.id, share.id], attest: true }).expect(200)).body.results;
+      expect(res.every((r: any) => r.ok)).toBe(true);
+      const shareRow = await db.projectImage.findUnique({ where: { id: share.id } });
+      expect((shareRow!.metaJson as any).pixelCategory).toBe('brand_graphic');
+      const poolRow = await db.projectImage.findUnique({ where: { id: pool.id } });
+      expect(typeof (poolRow!.metaJson as any).pixelCategory).toBe('string');
+      const prov = await db.imageProvenance.findFirst({ where: { projectId, assetId: poolRow!.assetId! } });
+      expect(prov).toMatchObject({ provider: 'website', pageUrl: SITE.replace(/\/$/, ''), originalUrl: poolUrl, licenseBasis: 'user_attested', sourceKind: 'BRAND_ASSET' });
+      expect(prov!.providerImageId).toBe(imageStem(poolUrl));
+      expect(calls.fetchWebsite).toEqual(expect.arrayContaining([poolUrl]));
+      // a second discovery finds the same pictures again and creates no duplicates; decisions stay
+      await user.agent.post(`/projects/${projectId}/images/discover`).send({ sources: ['website'] });
+      expect(await db.projectImage.count({ where: { projectId, source: 'website', role: 'photo' } })).toBe(8);
+      expect((await db.projectImage.findUnique({ where: { id: pool.id } }))!.status).toBe('approved');
+      expect(fake.requests.filter((r) => r.path.endsWith('/responses'))).toHaveLength(0);
+    } finally {
+      mode.website = 'ok';
+    }
   });
 
   it('PALETTE: suggested from real sources and shown with evidence; the colors the user edited are never overwritten', async () => {
