@@ -27,6 +27,8 @@ import {
   type DesignPalette,
   type PaletteRole,
   type PaletteSuggestionData,
+  type PaletteVariantData,
+  type PaletteVariantId,
 } from '@/lib/visual';
 import { cn } from '@/lib/utils';
 
@@ -58,16 +60,63 @@ function Step({ id, letter, title, children, hint }: { id: string; letter: strin
 }
 
 /** Applies a palette suggestion to a design; colors the user edited are never overwritten (unless `all`). */
-function applySuggestion(d: CampaignDesignData, s: PaletteSuggestionData['suggestion'], all = false): CampaignDesignData {
+/** The palette option to use: the one asked for, else the one the design already uses, else the recommended one (null: an older server sent none). */
+function variantOf(s: PaletteSuggestionData['suggestion'], id?: PaletteVariantId | null): PaletteVariantData | null {
+  const list = s.variants ?? [];
+  return list.find((v) => v.id === id) ?? list.find((v) => v.id === s.recommendedVariant) ?? list.find((v) => v.recommended) ?? null;
+}
+
+/**
+ * Applies the analysis to the design. The colors come from a PALETTE OPTION (the recommended one unless the user chose another): roles the user
+ * edited by hand are kept (unless `all`), and a role an option adjusted says so in its evidence.
+ */
+function applySuggestion(d: CampaignDesignData, s: PaletteSuggestionData['suggestion'], all = false, variantId?: PaletteVariantId | null): CampaignDesignData {
+  const v = variantOf(s, variantId ?? d.paletteVariant);
+  const src = v?.palette ?? s.palette;
   const palette = { ...d.palette };
   const evidence = { ...d.paletteEvidence };
   const overridden = all ? [] : d.overridden;
   for (const r of PALETTE_ROLES) {
     if (overridden.includes(r)) continue;
-    palette[r] = s.palette[r];
-    evidence[r] = s.evidence[r];
+    palette[r] = src[r];
+    evidence[r] = v && src[r] !== s.palette[r] ? { ...s.evidence[r], evidence: `${s.evidence[r].evidence} · adjusted in "${v.label}"`.slice(0, 240) } : s.evidence[r];
   }
-  return { ...d, palette, paletteEvidence: evidence, overridden, confirmed: false, confirmedAt: null };
+  return { ...d, palette, paletteVariant: v ? v.id : null, paletteEvidence: evidence, overridden, confirmed: false, confirmedAt: null };
+}
+
+const ROLE_SHORT: Record<PaletteRole, string> = { background: 'Background', primary: 'Primary', secondary: 'Secondary', accent: 'Accent', text: 'Text' };
+
+/** The three close palette options of the analysis: name, swatches with their roles, a small preview, the recommended one marked. */
+function PaletteOptions({ projectId, collectionId, previewTemplate, variants, selected, onPick }: { projectId: string; collectionId: string; previewTemplate: string | null; variants: PaletteVariantData[]; selected: PaletteVariantId | null | undefined; onPick: (id: PaletteVariantId) => void }) {
+  return (
+    <div data-testid="palette-options" className="grid gap-3 sm:grid-cols-3" role="radiogroup" aria-label="Palette options">
+      {variants.map((v) => {
+        const on = selected === v.id;
+        return (
+          <button key={v.id} type="button" role="radio" aria-checked={on} data-testid={`palette-option-${v.id}`} onClick={() => onPick(v.id)} className={cn('flex flex-col gap-2 rounded-xl border bg-white p-3 text-left transition', on ? 'border-accent ring-2 ring-accent/40' : 'border-cream-300 hover:border-accent/60')}>
+            <span className="flex items-center justify-between gap-2">
+              <span className="text-sm font-semibold text-ink">{v.label}</span>
+              {v.recommended && <Badge className="bg-emerald-100 text-emerald-800">Recommended</Badge>}
+            </span>
+            <span className="flex gap-1.5">
+              {(['background', 'primary', 'secondary', 'accent', 'text'] as PaletteRole[]).map((r) => (
+                <span key={r} className="flex flex-col items-center gap-0.5">
+                  <span className="h-7 w-7 rounded-md border border-cream-300" style={{ background: v.palette[r] }} title={`${ROLE_SHORT[r]} ${v.palette[r]}`} />
+                  <span className="text-[10px] text-muted">{ROLE_SHORT[r]}</span>
+                </span>
+              ))}
+            </span>
+            {previewTemplate && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={designPreviewUrl(projectId, collectionId, { template: previewTemplate, class: 'story', palette: v.palette })} alt={`Preview with ${v.label}`} className="h-32 w-auto self-center rounded-md bg-cream-100 object-contain shadow" />
+            )}
+            <span className="text-xs text-muted">{v.description}</span>
+            {!v.check.ok && <span className="text-xs text-red-700">{v.check.errors[0]}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 export interface CampaignDesignProps {
@@ -169,7 +218,7 @@ export function CampaignDesign({ projectId, design, onChange, initialCollection 
   const patch = (p: Partial<CampaignDesignData>) => design && onChange({ ...design, ...p, confirmed: false, confirmedAt: null });
   const editColor = (role: PaletteRole, hex: string) => {
     if (!design) return;
-    patch({ palette: { ...design.palette, [role]: hex.toLowerCase() }, paletteEvidence: { ...design.paletteEvidence, [role]: { source: 'user', confidence: 'high', evidence: 'Chosen by you' } }, overridden: [...new Set([...design.overridden, role])] });
+    patch({ palette: { ...design.palette, [role]: hex.toLowerCase() }, paletteVariant: null, paletteEvidence: { ...design.paletteEvidence, [role]: { source: 'user', confidence: 'high', evidence: 'Chosen by you' } }, overridden: [...new Set([...design.overridden, role])] });
   };
   const restoreDefaults = () => {
     if (!design || !current) return;
@@ -177,6 +226,10 @@ export function CampaignDesign({ projectId, design, onChange, initialCollection 
   };
   const resetDetected = () => {
     if (design && suggestion) onChange(applySuggestion(design, suggestion.suggestion, true));
+  };
+  // the user picks one of the three palette options: it replaces the palette (colors edited by hand included) and is stored with the design
+  const pickVariant = (id: PaletteVariantId) => {
+    if (design && suggestion) onChange(applySuggestion(design, suggestion.suggestion, true, id));
   };
   const reanalyze = async () => {
     if (!design) return;
@@ -241,6 +294,12 @@ export function CampaignDesign({ projectId, design, onChange, initialCollection 
         <>
           <Step id="palette" letter="B" title="Review the brand palette" hint="Suggested from your logo, website, repository and files. Change any color: the collection keeps its look and the previews update immediately.">
             {suggest.isPending && <p className="text-xs text-muted">Reading your brand sources…</p>}
+            {suggestion?.suggestion.variants?.length ? (
+              <div className="space-y-2">
+                <p className="text-xs text-ink-600">Three close options of your brand colors. The recommended one is used unless you pick another; you can still fine-tune any color below.</p>
+                <PaletteOptions projectId={projectId} collectionId={current.id} previewTemplate={current.templates.find((t) => t.classes.includes('story') && !t.requires.includes('image'))?.id ?? current.templates.find((t) => t.classes.includes('story'))?.id ?? null} variants={suggestion.suggestion.variants} selected={design.paletteVariant} onPick={pickVariant} />
+              </div>
+            ) : null}
             <PaletteEditor
               palette={design.palette}
               evidence={design.paletteEvidence}

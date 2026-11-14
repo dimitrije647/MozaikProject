@@ -207,6 +207,7 @@ export async function buildCampaignZip(pkg: CampaignPackage, assets: AssetStore,
   await put('brand/brand.json', JSON.stringify({
     campaign: pkg.campaignName,
     palette: design ? design.palette : (opts.palette ?? []),
+    paletteOption: design?.paletteVariant ?? null,
     collection: design ? { id: design.collectionId, version: design.collectionVersion } : null,
     logo: logoFile ? { file: logoFile.replace(`${ROOT}/`, ''), rights: opts.logo?.rights ?? null } : null,
     creativesWithLogo: brand?.withLogo ?? null,

@@ -35,6 +35,8 @@ export interface CampaignDesignData {
   collectionId: CollectionId;
   collectionVersion: number;
   palette: DesignPalette;
+  /** which of the three palette options the palette came from (null: edited by hand / not chosen) */
+  paletteVariant?: PaletteVariantId | null;
   paletteEvidence: Partial<Record<PaletteRole, PaletteEvidence>>;
   overridden: PaletteRole[];
   formats: FormatOptionKey[];
@@ -128,6 +130,18 @@ export interface PaletteConflictData {
   message: string;
 }
 
+export type PaletteVariantId = 'closest' | 'contrast' | 'emphasis';
+/** One of the three close palette options of the analysis (closest to the brand / stronger contrast / different emphasis). */
+export interface PaletteVariantData {
+  id: PaletteVariantId;
+  label: string;
+  description: string;
+  palette: DesignPalette;
+  recommended: boolean;
+  changes: { role: PaletteRole; from: string; to: string; why: string }[];
+  check: PaletteCheckData;
+}
+
 export interface PaletteSuggestionData {
   suggestion: {
     collectionId: CollectionId;
@@ -138,6 +152,9 @@ export interface PaletteSuggestionData {
     fallbackRoles: PaletteRole[];
     check: PaletteCheckData;
     notes: string[];
+    /** three close options of the palette; absent in answers of older servers */
+    variants?: PaletteVariantData[];
+    recommendedVariant?: PaletteVariantId;
   };
   analyzedAt: string;
   cached: boolean;

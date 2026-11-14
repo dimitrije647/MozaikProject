@@ -379,6 +379,52 @@ export function emptyPanels(t: TemplateDef, copy: ContentProfile['copy']): { id:
   return out;
 }
 
+/**
+ * STRUCTURED ZONES: three or more cards of the same size set in a row or a column (steps, feature tiles, rows of a list). A card is FILLED when
+ * a shown text, the button, a picture or the logo sits in it, or when it carries an icon (two or more small shapes); otherwise it is empty.
+ * A group with two or more empty cards looks like an unfinished placeholder on a mobile visual.
+ */
+export function structuredZones(t: TemplateDef, copy: ContentProfile['copy']): { ids: string[]; empty: string[] }[] {
+  const a = anatomy(t, copy);
+  const cards = t.layers
+    .map((l, i) => ({ l, i, b: l.type === 'rect' ? clipUnit(boundsOf(l)!) : null }))
+    .filter((x): x is { l: Layer; i: number; b: R } => !!x.b && area(x.b) >= 0.004 && area(x.b) <= 0.15);
+  const groups: (typeof cards)[] = [];
+  for (const c of cards) {
+    const g = groups.find((gr) => {
+      const f = gr[0].b;
+      const same = Math.abs(f.w - c.b.w) / f.w < 0.15 && Math.abs(f.h - c.b.h) / f.h < 0.15;
+      const aligned = Math.abs(f.x - c.b.x) < 0.02 || Math.abs(f.y - c.b.y) < 0.02;
+      return same && aligned;
+    });
+    if (g) g.push(c);
+    else groups.push([c]);
+  }
+  const content = [...a.textRects, ...t.layers.filter((l) => l.type === 'image' || l.type === 'logo').map((l) => boundsOf(l)!)];
+  const smalls = t.layers.filter((l) => DECOR.has(l.type) && l.type !== 'fill' && l.type !== 'line' && l.type !== 'pattern').map((l) => ({ id: l.id, b: boundsOf(l)! }));
+  return groups
+    .filter((g) => g.length >= 3)
+    .map((g) => ({
+      ids: g.map((c) => c.l.id),
+      empty: g
+        .filter((c) => {
+          if (content.some((r) => area(r) > 0 && inter(c.b, r) >= area(r) * 0.6)) return false;
+          const icon = smalls.filter((x) => x.id !== c.l.id && area(x.b) > 0 && area(x.b) < area(c.b) * 0.5 && inter(c.b, x.b) >= area(x.b) * 0.8).length;
+          return icon < 2;
+        })
+        .map((c) => c.l.id),
+    }));
+}
+
+/** A picture area that will show its fallback (a pattern or gradient) because there is no picture: a framed placeholder. Its share of the canvas. */
+export function placeholderPictureShare(t: TemplateDef, profile: Pick<ContentProfile, 'picture'>): number {
+  if (profile.picture) return 0;
+  const hero = t.layers.find((l): l is Extract<Layer, { type: 'image' }> => l.type === 'image' && l.slot === 'hero');
+  if (!hero || hero.fallback === 'none') return 0;
+  const b = area(clipUnit(boundsOf(hero)!));
+  return b < 0.9 ? b : 0;
+}
+
 /** The largest empty rectangular edge panel becomes a picture area (the logo and everything drawn after it stay on top). */
 function photoPanelLayers(t: TemplateDef, profile: ContentProfile): Layer[] | null {
   const kind = profile.picture?.kind ?? 'photograph';
@@ -402,9 +448,10 @@ export function reflowText(t: TemplateDef, copy: ContentProfile['copy'], W = 108
   if (head.rotate) return t;
   const hb = boundsOf(head)!;
   const shown = (l: Layer) => (l.type === 'text' ? !!copy[l.slot]?.trim() : l.type === 'button' ? !!copy.cta?.trim() : true);
+  // the labels of a structured layout (point1..3) belong to their cards: they never move with the text column
   const column = t.layers
     .map((l, i) => ({ l, i, b: boundsOf(l) }))
-    .filter((x) => TEXTUAL(x.l) && x.b && overlap1(x.b.x, x.b.x + x.b.w, hb.x, hb.x + hb.w) >= 0.5 * Math.min(x.b.w, hb.w));
+    .filter((x) => TEXTUAL(x.l) && !(x.l.type === 'text' && /^point\d$/.test(x.l.slot)) && x.b && overlap1(x.b.x, x.b.x + x.b.w, hb.x, hb.x + hb.w) >= 0.5 * Math.min(x.b.w, hb.w));
   if (column.some((x) => x.l.rotate)) return t;
   // rows: elements that share their vertical band (a date next to a button) move together
   const sorted = [...column].sort((p, q) => p.b!.y - q.b!.y);
@@ -750,6 +797,27 @@ export function scoreComposition(t: TemplateDef, variant: VariantId, profile: Co
   const textDominance = profile.fastScroll && headShare > 0.3 ? -Math.min(0.4, (headShare - 0.3) * 1.5) : 0;
   if (textDominance) reasons.push(`the headline area covers ${Math.round(headShare * 100)}% of a fast-scroll format`);
   const presenceWeight = profile.fastScroll ? 0.3 : 0.12;
+  // CONTENT DENSITY by medium: a TikTok/story/portrait social visual must look finished (empty cards, rows or steps and a picture area showing
+  // only its placeholder pattern read as unfinished); a feed post is the middle ground; print and web ads may stay sparse
+  const cls = formatClassOf(W, H);
+  const social = (profile.kind ?? 'social_post') === 'social_post';
+  const mobile = social && (cls === 'story' || cls === 'portrait');
+  const densityWeight = profile.fastScroll || mobile ? 1 : social ? 0.45 : profile.kind === 'billboard' ? 0 : 0.15;
+  const zones = structuredZones(t, profile.copy);
+  const emptyCards = zones.reduce((n, z) => n + (z.empty.length >= 2 ? z.empty.length : 0), 0);
+  const filledCards = zones.reduce((n, z) => n + (z.ids.length - z.empty.length), 0);
+  let densityScore = 0;
+  if (emptyCards) {
+    reasons.push(`${emptyCards} card(s)/row(s) of the layout would stay empty`);
+    densityScore -= Math.min(0.5, 0.15 * emptyCards) * densityWeight;
+    if (profile.fastScroll || mobile) hard.push('structure_empty: the cards, rows or steps of this layout would stay empty on a mobile visual');
+  } else if (filledCards >= 3 && (profile.fastScroll || mobile)) densityScore += 0.08;
+  const placeholder = placeholderPictureShare(t, profile);
+  if (placeholder >= 0.12) {
+    reasons.push(`a picture area of ${Math.round(placeholder * 100)}% would show only its placeholder pattern`);
+    densityScore -= Math.min(0.4, placeholder) * densityWeight;
+    if (profile.fastScroll || mobile) hard.push('placeholder_picture: a picture area without a picture would look unfinished on a mobile visual');
+  }
   // FAST SCROLL: how much of the frame the photograph fills (a full-bleed cover beats a small tilted card)
   const pictureShare = heroR ? inter(heroR, { x: 0, y: 0, w: W, h: H }) / (W * H) : 0;
   const pictureFill = profile.fastScroll && isPhoto ? 0.3 * pictureShare : 0;
@@ -771,7 +839,8 @@ export function scoreComposition(t: TemplateDef, variant: VariantId, profile: Co
     photoFree +
     emptyPenalty +
     textDominance +
-    pictureFill;
+    pictureFill +
+    densityScore;
   reasons.unshift(
     `subject ${Math.round(subjVis * 100)}% visible, faces ${Math.round(faceClear * 100)}% clear, text on ${textOver === 'picture' ? `calm picture ${Math.round(space * 100)}%` : textOver}, headline fit ${fit === 1 ? 'comfortable' : fit ? 'tight' : 'no'}, overlays cover ${Math.round(intrusion * 100)}% of the picture`,
   );

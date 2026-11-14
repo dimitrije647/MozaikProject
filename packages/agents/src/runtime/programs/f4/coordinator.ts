@@ -117,7 +117,7 @@ export class CreativeCoordinator {
     for (const c of out.concepts.slice(0, input.concepts)) {
       const id = board.next('K');
       keyToId.set(c.key, id);
-      board.concepts.push({ id, name: c.name, basis: c.basis || null, angle: c.angle, keyMessage: c.keyMessage, audience: c.audience, ctaType: c.ctaType, ctaText: c.ctaText, visualIdea: c.visualIdea, purpose: c.purpose, principleNote: c.principleNote || null });
+      board.concepts.push({ id, name: c.name, basis: c.basis || null, angle: c.angle, keyMessage: c.keyMessage, audience: c.audience, ctaType: c.ctaType, ctaText: c.ctaText, visualIdea: c.visualIdea, purpose: c.purpose, principleNote: c.principleNote || null, points: (c.points ?? []).map((x) => x.trim()).filter(Boolean).slice(0, 3) });
     }
     const add = (v: Omit<CopyVariantRecord, 'id' | 'version' | 'history'>) => board.variants.push({ ...v, id: board.next('V'), version: 1, history: [] });
     const seen = new Set<string>();

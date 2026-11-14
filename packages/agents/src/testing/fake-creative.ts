@@ -54,7 +54,7 @@ export function defaultCopy(userText: string): CopyOutput {
   const claims = [{ text: vp.slice(0, 150), support: 'f3' as const, ref: null }];
   const concepts = Array.from({ length: n }, (_, i) => {
     const h = HOOKS[i % HOOKS.length];
-    return { key: `c${i + 1}`, name: h.name, basis: `Main message ${i + 1} of the strategy`, angle: h.angle, keyMessage: `${h.headline}.`, audience: 'People considering this offer', ctaType: 'learn_more' as const, ctaText: 'Learn more', visualIdea: h.visual, purpose: 'awareness' as const, principleNote: 'P1 hook, P3 audience and P6 a concrete situation; no urgency (none is evidenced).' };
+    return { key: `c${i + 1}`, name: h.name, basis: `Main message ${i + 1} of the strategy`, angle: h.angle, keyMessage: `${h.headline}.`, audience: 'People considering this offer', ctaType: 'learn_more' as const, ctaText: 'Learn more', visualIdea: h.visual, purpose: 'awareness' as const, principleNote: 'P1 hook, P3 audience and P6 a concrete situation; no urgency (none is evidenced).', points: [h.name, h.headline.split(' ').slice(0, 3).join(' '), 'Learn more'] };
   });
   const posts: CopyOutput['posts'] = [];
   concepts.forEach((c, i) => {

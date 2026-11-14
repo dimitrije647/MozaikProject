@@ -61,6 +61,8 @@ export const TemplateContent = z.object({
   /** shorter approved wordings of the call to action / the headline, longest first (used only when the full text does not fit; absent in older campaigns) */
   ctaOptions: z.array(z.string()).optional(),
   headlineOptions: z.array(z.string()).optional(),
+  /** short labels for the cards/rows/steps of a structured layout (only words of the approved copy; absent = none) */
+  points: z.array(z.string()).max(3).optional(),
 });
 export type TemplateContent = z.infer<typeof TemplateContent>;
 

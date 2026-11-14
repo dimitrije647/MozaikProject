@@ -15,7 +15,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 const round = (v: number) => Number(v.toFixed(5));
 
 const HEADLINE_SLOTS: readonly TextSlot[] = ['headline', 'stat', 'offer', 'quote'];
-const BODY_SLOTS: readonly TextSlot[] = ['support', 'offerDetail', 'statLabel', 'attribution'];
+const BODY_SLOTS: readonly TextSlot[] = ['support', 'offerDetail', 'statLabel', 'attribution', 'point1', 'point2', 'point3'];
 
 type Obj = Record<string, unknown>;
 

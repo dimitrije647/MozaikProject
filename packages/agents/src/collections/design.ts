@@ -68,6 +68,8 @@ export const CampaignDesign = z.object({
   /** The version of the collection the campaign was designed with (a later change to the collection never alters a stored campaign silently). */
   collectionVersion: z.number().int().min(1),
   palette: DesignPaletteSchema,
+  /** which of the three palette options of the analysis the palette came from (null: edited by hand or not chosen; absent in older designs) */
+  paletteVariant: z.enum(['closest', 'contrast', 'emphasis']).nullable().optional(),
   paletteEvidence: z.partialRecord(z.enum(PALETTE_ROLES), PaletteEvidence),
   /** The roles the user changed by hand: a new analysis or another collection never overwrites them. */
   overridden: z.array(z.enum(PALETTE_ROLES)).max(5),
@@ -298,6 +300,31 @@ export function applyDetectedPalette(design: CampaignDesign, detected: { palette
     evidence[r] = detected.evidence[r];
   }
   return { ...design, palette, paletteEvidence: evidence, confirmed: false, confirmedAt: null };
+}
+
+/**
+ * A PALETTE OPTION of the analysis applied to a design: the option the user picked, else the one the design already uses, else the RECOMMENDED one
+ * (so a user who never chooses still gets a usable palette). Roles edited by hand stay unless `all` (an explicit pick replaces them). A role the
+ * option adjusted says so in its evidence. The option's id is stored with the design.
+ */
+export function applyPaletteOption(
+  design: CampaignDesign,
+  suggestion: { palette: DesignPalette; evidence: CampaignDesign['paletteEvidence']; variants?: { id: 'closest' | 'contrast' | 'emphasis'; label: string; palette: DesignPalette; recommended: boolean }[]; recommendedVariant?: string },
+  o: { id?: 'closest' | 'contrast' | 'emphasis' | null; all?: boolean } = {},
+): CampaignDesign {
+  const list = suggestion.variants ?? [];
+  const v = list.find((x) => x.id === (o.id ?? design.paletteVariant)) ?? list.find((x) => x.id === suggestion.recommendedVariant) ?? list.find((x) => x.recommended) ?? null;
+  const src = v?.palette ?? suggestion.palette;
+  const overridden = o.all ? [] : design.overridden;
+  const palette = { ...design.palette };
+  const evidence = { ...design.paletteEvidence };
+  for (const r of PALETTE_ROLES) {
+    if (overridden.includes(r)) continue;
+    palette[r] = src[r];
+    const e = suggestion.evidence[r];
+    evidence[r] = e && v && src[r] !== suggestion.palette[r] ? { ...e, evidence: `${e.evidence} · adjusted in "${v.label}"`.slice(0, 240) } : e;
+  }
+  return { ...design, palette, paletteVariant: v ? v.id : null, paletteEvidence: evidence, overridden, confirmed: false, confirmedAt: null };
 }
 
 export type { CollectionId, DesignPalette, PaletteRole };

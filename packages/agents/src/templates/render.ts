@@ -688,6 +688,8 @@ async function drawImage(S: Scene, layer: L<'image'>) {
     if (!layer.fallback || layer.fallback === 'none') return;
     photo = false;
     rgba = await fallbackArt(layer.fallback, bw, bh, S);
+    // the area shows a pattern or gradient INSTEAD of a picture: reported so the preflight can tell a placeholder from a design element
+    S.report.decor.push({ layerId: `${layer.id}:placeholder`, type: 'placeholder', rect: { x: r.x, y: r.y, w: bw, h: bh }, opacity: 1, area: Math.round(((bw * bh) / (S.W * S.H)) * 1000) / 1000, afterHero: !!S.heroTrack, lum: null });
   }
 
   const rect: Rect = { x: 0, y: 0, w: bw, h: bh };

@@ -1,4 +1,4 @@
-import type { PxRect, RenderReport, RenderTune, TextSlot, UnitBox } from './schema';
+import { formatClassOf, type PxRect, type RenderReport, type RenderTune, type TextSlot, type UnitBox } from './schema';
 
 /**
  * THE DESIGN PREFLIGHT (deterministic, no model). Every rendered creative is checked BEFORE it is accepted; a creative that fails is repaired
@@ -23,6 +23,10 @@ import type { PxRect, RenderReport, RenderTune, TextSlot, UnitBox } from './sche
  *   text_density         the visual carries no more text than its platform allows (words and text blocks; type filling a fast-scroll frame)
  *   text_space           text set on a large panel uses it (a few small lines alone on a big card leave meaningless empty space)
  *   logo_treatment       the logo sits directly on the creative or recoloured; a box behind it (only when nothing else made it read) is reported
+ *   empty_structure      the cards, rows or steps of a structured layout carry their content (TikTok/story/portrait posts must look finished;
+ *                        a billboard may stay sparse)
+ *   placeholder_picture  no picture area shows only its placeholder pattern because there is no picture (mobile: a failure)
+ *   unused_space         a mobile visual uses its canvas (text, picture and filled cards cover a reasonable share of it)
  *
  * Categories (what the Quality Reviewer reports): text, image, crop, occlusion, logo, safe_area, template_mismatch, ui_contamination, duplicate_layout.
  */
@@ -123,6 +127,10 @@ export const COMPOSITION = {
   /** text on a panel of at least `textPanel` of the canvas should fill at least `textFill` of it */
   textPanel: 0.2,
   textFill: 0.1,
+  /** a placeholder picture area of at least this share of the canvas is reported */
+  placeholder: 0.12,
+  /** a mobile visual whose text, picture and filled cards cover less than this share of the canvas has much unused space */
+  mobileCoverage: 0.12,
 } as const;
 
 /** The faces that matter: whole-or-nearly in the frame candidates of a reasonable size (at least 30% of the largest face). */
@@ -233,7 +241,8 @@ export function preflight(input: PreflightInput): PreflightResult {
 
   // ---- alignment: elements of one group follow its axis (a centred layout keeps its button centred); intentional asymmetry is not judged -----
   const misaligned: { id: string; mode: 'center' | 'left' | 'right'; x: number; off: number }[] = [];
-  const group = r.texts.filter((t) => t.align && t.slot !== 'brand' && t.layerId.indexOf(':') < 0);
+  // (the labels inside cards/rows/steps, point1..3, are aligned within their cards, not with the text column)
+  const group = r.texts.filter((t) => t.align && t.slot !== 'brand' && !/^point\d$/.test(t.slot) && t.layerId.indexOf(':') < 0);
   for (const mode of ['center', 'left', 'right'] as const) {
     const g = group.filter((t) => t.align === mode);
     if (!g.length || (mode === 'center' && g.length < 1)) continue;
@@ -323,7 +332,8 @@ function compositionChecks(input: PreflightInput, add: (c: DesignCheck) => void)
   }
   // ---- text density for the platform
   const budget = media?.textBudget ?? null;
-  const SKIP = new Set(['cta', 'brand']);
+  // the short labels of cards/rows/steps (point1..3) fill a structure; they are not text blocks of the message
+  const SKIP = new Set(['cta', 'brand', 'point1', 'point2', 'point3']);
   const blocks = r.texts.filter((t) => !SKIP.has(t.slot) && (t.text ?? '').trim());
   const words = blocks.reduce((s, t) => s + (t.text ?? '').trim().split(/\s+/).filter(Boolean).length, 0) + r.buttons.reduce((s, b) => s + (b.text ?? '').trim().split(/\s+/).filter(Boolean).length, 0);
   const head = r.texts.find((t) => t.slot === 'headline');
@@ -342,6 +352,45 @@ function compositionChecks(input: PreflightInput, add: (c: DesignCheck) => void)
     return { d, inside, fill: inside.reduce((s, t) => s + area(t), 0) / area(d.rect) };
   }).filter((x) => x.inside.length && x.fill < COMPOSITION.textFill);
   add({ id: 'text_space', category: 'composition', status: loose.length ? 'warn' : 'pass', detail: loose.length ? `The text uses only ${pct(loose[0].fill)} of its panel (${loose[0].d.layerId}): much empty space around little text.` : 'The text uses its panel.' });
+  // ---- CONTENT DENSITY by medium: mobile social visuals must look finished, feed posts are the middle ground, a billboard may stay sparse
+  const cls = formatClassOf(r.width, r.height);
+  const kind = media?.kind ?? null;
+  const social = kind === 'social_post';
+  const mobile = !!media?.fastScroll || (social && (cls === 'story' || cls === 'portrait'));
+  const sparseOk = kind === 'billboard';
+  const level = (bad: boolean): DesignCheck['status'] => (!bad ? 'pass' : sparseOk ? 'pass' : mobile ? 'fail' : 'warn');
+  // structured zones: 3+ same-size cards in a row or a column; a card is filled by a text, the button, the picture, the logo or an icon
+  const cards = r.decor.filter((d) => d.type === 'rect' && d.area >= 0.004 && d.area <= 0.15).map((d) => ({ id: d.layerId, rect: clip(d.rect) }));
+  const groups: (typeof cards)[] = [];
+  for (const c of cards) {
+    const g = groups.find((gr) => {
+      const f = gr[0].rect;
+      return Math.abs(f.w - c.rect.w) / f.w < 0.15 && Math.abs(f.h - c.rect.h) / f.h < 0.15 && (Math.abs(f.x - c.rect.x) < r.width * 0.02 || Math.abs(f.y - c.rect.y) < r.height * 0.02);
+    });
+    if (g) g.push(c);
+    else groups.push([c]);
+  }
+  const fillers = [...textRects, ...(r.logo ? [r.logo.rect] : []), ...(r.hero ? [clip(r.hero.rect)] : [])];
+  const emptyCards: string[] = [];
+  let filledArea = 0;
+  for (const g of groups.filter((x) => x.length >= 3)) {
+    const empty = g.filter((c) => {
+      if (fillers.some((f) => area(f) > 0 && inter(c.rect, f) >= area(f) * 0.6)) return false;
+      const icon = r.decor.filter((x) => x.layerId !== c.id && area(x.rect) > 0 && area(x.rect) < area(c.rect) * 0.5 && inter(c.rect, x.rect) >= area(x.rect) * 0.8).length;
+      return icon < 2;
+    });
+    if (empty.length >= 2) emptyCards.push(...empty.map((c) => c.id));
+    filledArea += g.filter((c) => !empty.includes(c)).reduce((sum, c) => sum + area(c.rect), 0);
+  }
+  add({ id: 'empty_structure', category: 'composition', status: level(emptyCards.length > 0), detail: emptyCards.length ? (sparseOk ? `${emptyCards.length} card(s) carry no text: acceptable on a billboard, which is read in seconds.` : `${emptyCards.length} card(s)/row(s) of the layout carry nothing (${emptyCards.join(', ')}): they look like unfinished placeholders${mobile ? ' on a mobile visual' : ''}. Fill them with short labels from the copy, or use another layout.`) : 'Every card, row or step of the layout carries its content.', layers: emptyCards });
+  // a picture area that shows only its placeholder pattern
+  const holder = r.decor.filter((d) => d.type === 'placeholder' && d.area >= COMPOSITION.placeholder && d.area < 0.9);
+  add({ id: 'placeholder_picture', category: 'composition', status: level(holder.length > 0), detail: holder.length ? `A picture area of ${pct(holder[0].area)} shows only a placeholder pattern: there is no picture for it.` : 'No picture area shows a placeholder.' });
+  // much unused space on a mobile visual
+  if (mobile) {
+    const covered = (textRects.reduce((sum, t) => sum + area(clip(t)), 0) + (r.logo ? area(clip(r.logo.rect)) : 0) + (r.hero ? area(clip(r.hero.rect)) : 0) + filledArea) / canvas;
+    add({ id: 'unused_space', category: 'composition', status: covered < COMPOSITION.mobileCoverage ? 'warn' : 'pass', detail: covered < COMPOSITION.mobileCoverage ? `Text, picture and cards cover only ${pct(covered)} of this mobile visual: much of the canvas is unused.` : `Text, picture and cards cover ${pct(covered)} of the visual.` });
+  }
   // ---- the logo treatment
   const lg = r.logo;
   if (lg && lg.mode === 'logo' && lg.treatment) {

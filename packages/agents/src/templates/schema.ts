@@ -49,7 +49,8 @@ export type Box = z.infer<typeof Box>;
 // ---- text -----------------------------------------------------------------------------------------------------------------------------
 
 /** What a text layer shows. headline/support/cta come from the copy; the rest only from content the user or the strategy really gave. */
-export const TEXT_SLOTS = ['headline', 'support', 'cta', 'eyebrow', 'brand', 'quote', 'attribution', 'stat', 'statLabel', 'date', 'location', 'offer', 'offerDetail', 'tag'] as const;
+/** point1..point3: SHORT labels (a feature, a step, a menu category, a service) that fill the cards, rows or steps of a structured layout */
+export const TEXT_SLOTS = ['headline', 'support', 'cta', 'eyebrow', 'brand', 'quote', 'attribution', 'stat', 'statLabel', 'date', 'location', 'offer', 'offerDetail', 'tag', 'point1', 'point2', 'point3'] as const;
 export type TextSlot = (typeof TEXT_SLOTS)[number];
 
 export const FONT_FAMILIES = ['sans', 'serif', 'display', 'condensed', 'mono'] as const;

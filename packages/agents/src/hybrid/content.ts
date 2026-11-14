@@ -1,4 +1,4 @@
-import { isPlaceholderCopy } from '../copywriting/checks';
+import { isPlaceholderCopy, unnaturalPhrases } from '../copywriting/checks';
 import type { ConceptRecord, CopyVariantRecord } from '../creative/schemas';
 import type { CreativeContent } from '../templates/schema';
 import type { TemplateSlot } from './plan';
@@ -129,8 +129,30 @@ export function firstClause(h: string): string | null {
   return first && first.length < h.trim().length && first.split(/\s+/).length >= 2 ? first : null;
 }
 
+const stemOf = (w: string) => w.slice(0, 5);
+/**
+ * The concept's SHORT LABELS that may be shown in the cards, rows or steps of a structured layout: at most three, at most five words each, and
+ * every content word must already be in the concept's approved copy (its posts, ads, print and concept fields; an inflected form counts). A label
+ * with a number, a price, a promise word or an unnatural phrase the copy does not have is left out: nothing new is ever printed.
+ */
+export function groundedPoints(concept: Pick<ConceptRecord, 'name'> & Partial<Pick<ConceptRecord, 'points' | 'keyMessage' | 'angle' | 'visualIdea'>>, copy: readonly Pick<CopyVariantRecord, 'headline' | 'body' | 'ctaText' | 'description'>[]): string[] {
+  const corpus = [concept.name, concept.keyMessage, concept.angle, concept.visualIdea, ...copy.flatMap((v) => [v.headline, v.body, v.ctaText, v.description ?? ''])].join(' ');
+  const known = new Set(wordsOf(corpus));
+  const stems = new Set([...known].filter((w) => w.length >= 5).map(stemOf));
+  const out: string[] = [];
+  for (const raw of concept.points ?? []) {
+    const p = raw.replace(/\s+/g, ' ').trim().replace(/[.;:,]+$/, '');
+    const ws = wordsOf(p);
+    if (!p || ws.length === 0 || ws.length > 5 || p.length > 40 || isPlaceholderCopy(p) || unnaturalPhrases(p).length) continue;
+    const fresh = ws.filter((w) => !known.has(w) && !FILLER.has(w) && !(w.length >= 5 && stems.has(stemOf(w))));
+    if (fresh.length || (NUMBERISH.test(p) && !ws.filter((w) => NUMBERISH.test(w)).every((w) => known.has(w)))) continue;
+    if (!out.some((x) => x.toLowerCase() === p.toLowerCase())) out.push(p);
+  }
+  return out.slice(0, 3);
+}
+
 /** The content for a slot, from the concept's real copy. null when there is no copy for it (nothing to place, nothing invented). */
-export function contentForSlot(slot: Pick<TemplateSlot, 'conceptId' | 'channel' | 'kind'>, concepts: Pick<ConceptRecord, 'id' | 'name'>[], variants: CopyVariantRecord[]): TemplateContent | null {
+export function contentForSlot(slot: Pick<TemplateSlot, 'conceptId' | 'channel' | 'kind'>, concepts: (Pick<ConceptRecord, 'id' | 'name'> & Partial<ConceptRecord>)[], variants: CopyVariantRecord[]): TemplateContent | null {
   const v = pickVariant(variants, slot);
   // a note instead of copy ("Izostavljeno iz kampanje", "omitted") is never printed on a visual: the deliverable has no copy
   if (!v || isPlaceholderCopy(v.headline)) return null;
@@ -141,7 +163,9 @@ export function contentForSlot(slot: Pick<TemplateSlot, 'conceptId' | 'channel' 
   // a billboard is read in a few seconds: its short headline (the Content Writer's own, when faithful) is THE headline when the long one runs past seven words
   const shortHead = headlineOptionsOf(v);
   const headline = slot.kind === 'billboard' && shortHead.length && v.headline.trim().split(/\s+/).length > 7 ? shortHead[0] : v.headline.trim();
-  const out: TemplateContent = { headline, support, cta: v.ctaText.trim() || null, eyebrow: slot.kind === 'billboard' ? null : eyebrow, variantId: v.id, ctaOptions: ctaOptionsOf(v), headlineOptions: headline === v.headline.trim() ? shortHead : [] };
+  // a billboard stays sparse (read in seconds); every other visual may fill the cards/rows/steps of a structured layout with the concept's labels
+  const points = slot.kind === 'billboard' || !concept ? [] : groundedPoints(concept, variants.filter((x) => x.conceptId === slot.conceptId));
+  const out: TemplateContent = { headline, support, cta: v.ctaText.trim() || null, eyebrow: slot.kind === 'billboard' ? null : eyebrow, variantId: v.id, ctaOptions: ctaOptionsOf(v), headlineOptions: headline === v.headline.trim() ? shortHead : [], ...(points.length ? { points } : {}) };
   return withTextBudget(out, visualTextBudget(slot), v.ctaShort ?? null);
 }
 
@@ -181,6 +205,9 @@ export function renderContent(content: TemplateContent, brandName: string, facts
   if (content.support && !dropSupport) out.support = content.support;
   if (content.cta) out.cta = content.cta;
   if (content.eyebrow) out.eyebrow = content.eyebrow;
+  (content.points ?? []).slice(0, 3).forEach((p, i) => {
+    if (p.trim()) out[`point${i + 1}` as 'point1'] = p.trim();
+  });
   if (brandName) out.brand = brandName;
   for (const [k, v] of Object.entries(facts)) if (typeof v === 'string' && v.trim()) (out as Record<string, string>)[k] = v.trim();
   return out;

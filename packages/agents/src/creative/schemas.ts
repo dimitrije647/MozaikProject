@@ -57,6 +57,11 @@ export const LlmConcept = z.object({
   /** The communication purpose of this concept and, in one sentence, which principles it uses and why (internal, for review and debugging). */
   purpose: z.enum(COPY_PURPOSES),
   principleNote: text(240),
+  /**
+   * 2 or 3 very short labels (at most 4 words each) taken from the material: features, steps, menu categories, services or proof. They fill the
+   * cards, rows and steps of structured layouts on mobile visuals. Empty when the material gives nothing concrete.
+   */
+  points: list(40, 3).default([]),
 });
 
 /** A short TikTok video concept. LaunchPilot does NOT make videos: this is a script for the owner to film. */
@@ -204,6 +209,8 @@ export const ConceptRecord = z.object({
   /** copywriting framework (absent in older campaigns) */
   purpose: z.enum(COPY_PURPOSES).nullable().optional(),
   principleNote: z.string().nullable().optional(),
+  /** short labels for the cards/rows/steps of structured layouts (the Content Writer's; absent in older campaigns) */
+  points: z.array(z.string()).max(3).optional(),
 });
 export type ConceptRecord = z.infer<typeof ConceptRecord>;
 

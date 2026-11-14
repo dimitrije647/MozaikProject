@@ -245,6 +245,9 @@ function workflowFlow(spec: { square: FlowGeo; story: FlowGeo; landscape: FlowGe
           disc: c.box(x + pad, y + pad, d, d),
           bar1: c.box(x + pad, y + h - pad - bh * 2.9, iw, bh),
           bar2: c.box(x + pad, y + h - pad - bh, iw * 0.6, bh),
+          // the step's short label (point1..3) under the disc
+          label: c.box(x + pad, y + pad + d + pad * 0.4, iw, Math.max(10, h - pad * 2.4 - d)),
+          labelSize: c.size(Math.round(Math.min(w, h) * 0.13), Math.round(Math.min(w, h) * 0.075)),
         };
       }
       const pad = Math.round(h * 0.22);
@@ -257,6 +260,9 @@ function workflowFlow(spec: { square: FlowGeo; story: FlowGeo; landscape: FlowGe
         disc: c.box(x + pad, y + pad, d, d),
         bar1: c.box(x0, y + h / 2 - bh * 1.35, bw, bh),
         bar2: c.box(x0, y + h / 2 + bh * 0.35, bw * 0.6, bh),
+        // the step's short label (point1..3) right of the disc
+        label: c.box(x0, y + pad * 0.5, bw, h - pad),
+        labelSize: c.size(Math.round(h * 0.28), Math.round(h * 0.16)),
       };
     });
     const links = [0, 1].map((j) => {
@@ -285,10 +291,13 @@ function workflowFlow(spec: { square: FlowGeo; story: FlowGeo; landscape: FlowGe
     const k = (cls: keyof typeof g, part: 'card' | 'disc' | 'bar1' | 'bar2') => ({ box: g[cls].cards[i][part] });
     const at = (part: 'card' | 'disc' | 'bar1' | 'bar2') => ({ story: k('story', part), landscape: k('landscape', part), banner: k('banner', part) });
     const n = i + 1;
+    const lab = (cls: keyof typeof g) => ({ box: g[cls].cards[i].label, size: { max: g[cls].cards[i].labelSize[0], min: g[cls].cards[i].labelSize[1] } });
     out.push(
       rect(`step-${n}`, g.square.cards[i].card, { fill: last ? 'accent' : 'onInk', opacity: last ? 1 : 0.09, radius: 0.14, at: at('card') }),
       // no grey "skeleton" bars in the cards: placeholder lines that imitate text make a finished ad look like a loading screen
       circle(`step-${n}-dot`, g.square.cards[i].disc, { fill: last ? 'onAccent' : 'accent', at: at('disc') }),
+      // the step's own words (a feature, a step, a service from the approved copy); left out when there are none
+      text(`step-${n}-label`, `point${n}` as 'point1', g.square.cards[i].label, { size: g.square.cards[i].labelSize, weight: 600, lh: 1.12, color: last ? 'onAccent' : 'onInk', valign: 'middle', lines: 2, at: { story: lab('story'), landscape: lab('landscape'), banner: lab('banner') } }),
     );
   }
   for (let j = 0; j < 2; j++) {
@@ -303,14 +312,14 @@ function workflowFlow(spec: { square: FlowGeo; story: FlowGeo; landscape: FlowGe
 }
 
 /**
- * tech_workflow_steps: a PANEL on ink with a drawn 3-step PROCESS DIAGRAM. Three skeleton step cards (a dot and two bars each) are joined
+ * tech_workflow_steps: a PANEL on ink with a drawn 3-step PROCESS DIAGRAM. Three step cards (a dot and the step's short label) are joined
  * by arrows and the last one is filled with the accent: "step, step, result". The headline, support and button sit above (or beside) the
  * diagram. Square runs the cards across, story and landscape stack them with a timeline of arrows, banner shrinks them into a strip.
  */
 const techWorkflowSteps = defineTemplate({
   id: 'tech_workflow_steps',
   name: 'Workflow steps (process diagram)',
-  version: 2,
+  version: 3,
   status: 'active',
   category: 'tech_saas',
   description: 'A dark panel with a clean three-step flow diagram that ends in an accent card, plus a bold headline, short explanation and button. Explains how it works without a picture.',

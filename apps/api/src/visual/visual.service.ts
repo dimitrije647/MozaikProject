@@ -11,6 +11,7 @@ import {
   acquireLicensedImage,
   analyzeImage,
   applyDetectedPalette,
+  applyPaletteOption,
   checkDesignFit,
   checkPalette,
   collectionTemplates,
@@ -400,8 +401,8 @@ export class VisualService {
   }
 
   /** The design with the newest analysis applied: roles the user edited stay. Used by "re-analyze". */
-  applyAnalysis(design: CampaignDesign, suggestion: { palette: DesignPalette; evidence: CampaignDesign['paletteEvidence'] }) {
-    return applyDetectedPalette(design, suggestion);
+  applyAnalysis(design: CampaignDesign, suggestion: Parameters<typeof applyPaletteOption>[1]) {
+    return applyPaletteOption(design, suggestion);
   }
 
   // ---- web visual discovery and licensed pictures ----------------------------------------------------------------------------------------------------

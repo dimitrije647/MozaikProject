@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { afterEach, before, describe, it } from 'node:test';
 import JSZip from 'jszip';
 import sharp from 'sharp';
-import { editPaletteRole, newDesign } from '../collections/design';
+import { applyPaletteOption, editPaletteRole, newDesign } from '../collections/design';
+import { suggestPalette } from '../brand/suggest';
 import { InMemoryAssetStore } from './assets';
 import type { CreativeInput } from './context';
 import { buildCampaignZip } from './export';
@@ -51,13 +52,13 @@ describe('F4 Creative Production (V4: one workflow, four agents, no AI images)',
 
   const input = (): CreativeInput => ({ projectName: 'Blue Reef Diving School', language: 'en', websiteUrl: null, channels: ['x', 'tiktok', 'facebook', 'instagram', 'linkedin'], concepts: 3 });
 
-  async function run(o: { images?: BrandImage[]; config?: Partial<CreativeRunConfig>; openai?: FakeOpenAIOptions } = {}): Promise<Outcome> {
+  async function run(o: { images?: BrandImage[]; config?: Partial<CreativeRunConfig>; openai?: FakeOpenAIOptions; design?: ReturnType<typeof newDesign> } = {}): Promise<Outcome> {
     const fake = await new FakeOpenAI(o.openai).start();
     servers.push(fake);
     const store = new InMemoryAssetStore();
     const events: RecordedEvent[] = [];
     const packages: Outcome['packages'] = [];
-    const design = { ...editPaletteRole(newDesign('premium_editorial'), 'primary', '#0b6e4f'), confirmed: true, confirmedAt: '2026-11-03T10:00:00.000Z' };
+    const design = o.design ?? { ...editPaletteRole(newDesign('premium_editorial'), 'primary', '#0b6e4f'), confirmed: true, confirmedAt: '2026-11-03T10:00:00.000Z' };
     const handle = await new MozaikCampaignRuntime().startRun({
       runId: 'v4-f4-1',
       projectId: 'project-1',
@@ -92,6 +93,26 @@ describe('F4 Creative Production (V4: one workflow, four agents, no AI images)',
     const result = await handle.done;
     return { result, events, packages, store, fake };
   }
+
+  it('PALETTE OPTION + MOBILE DENSITY: the palette option the user picked is stored, used by every creative and exported; TikTok covers show no empty cards or placeholder pictures', async () => {
+    const s = suggestPalette({ collectionId: 'modern_corporate', readings: [] });
+    const picked = applyPaletteOption(newDesign('modern_corporate'), s, { id: 'contrast', all: true });
+    const o = await run({ design: { ...picked, confirmed: true, confirmedAt: '2026-11-14T10:00:00.000Z' } });
+    assert.equal(o.result.status, 'completed', o.result.errorMessage ?? '');
+    const { pkg } = o.packages[0];
+    const used = pkg.hybrid!.settings.design!;
+    assert.equal(used.paletteVariant, 'contrast');
+    assert.deepEqual(used.palette, s.variants.find((v) => v.id === 'contrast')!.palette);
+    assert.equal(pkg.hybrid!.direction!.colors.primary, used.palette.primary, 'the creatives are drawn with the chosen palette');
+    const { zip } = await buildCampaignZip(pkg, o.store, {});
+    const brand = JSON.parse(await (await JSZip.loadAsync(zip)).file('campaign/brand/brand.json')!.async('string'));
+    assert.equal(brand.paletteOption, 'contrast');
+    assert.deepEqual(brand.palette, used.palette);
+    const tiktok = pkg.hybrid!.creatives.filter((c) => c.channel === 'tiktok' && c.status === 'rendered');
+    assert.ok(tiktok.length > 0);
+    for (const c of tiktok) for (const id of ['empty_structure', 'placeholder_picture']) assert.notEqual(c.design?.checks.find((x) => x.id === id)?.status, 'fail', `${c.slotId} (${c.templateId}): ${id}`);
+    assert.equal(o.fake.imageCalls().length, 0);
+  });
 
   it('one campaign: posts for all five platforms, ads, TWO billboards and TWO flyers, drawn from the approved pictures, with zero image requests', async () => {
     const o = await run({ images: await Promise.all([1, 2, 3, 4, 5, 6].map(photo)) });

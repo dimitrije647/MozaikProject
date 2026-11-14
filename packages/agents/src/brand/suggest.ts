@@ -3,6 +3,7 @@ import { getCollection } from '../collections/registry';
 import type { CollectionId, DesignPalette } from '../collections/schema';
 import { contrast } from '../templates/color';
 import { colorDistance, isNearWhite } from './color-parse';
+import { paletteVariants, type PaletteVariant, type PaletteVariantId } from './variants';
 import type { BrandCandidate, BrandReading, BrandRole, EvidenceTier } from './types';
 
 /**
@@ -43,6 +44,9 @@ export interface PaletteSuggestion {
   fallbackRoles: BrandRole[];
   check: PaletteCheck;
   notes: string[];
+  /** three close options of the palette (closest / stronger contrast / different emphasis); one is recommended and used when the user does not choose */
+  variants: PaletteVariant[];
+  recommendedVariant: PaletteVariantId;
 }
 
 interface Sourced extends BrandCandidate {
@@ -143,5 +147,9 @@ export function suggestPalette(input: { collectionId: CollectionId; readings: Br
     message: r.message,
     colors: [...new Set(r.candidates.slice().sort((a, b) => a.tier - b.tier || b.weight - a.weight).map((c) => c.hex))].slice(0, 6),
   }));
-  return { collectionId: input.collectionId, palette: p, evidence: evidence as Record<BrandRole, PaletteEvidence>, conflicts, readings: summary, fallbackRoles, check: checkPalette(p, min), notes };
+  // THREE CLOSE OPTIONS of the detected palette for the user to choose from (colors the user set by hand stay in every option)
+  const locked = ROLES.filter((r) => evidence[r]?.source === 'user');
+  const variants = paletteVariants(p as DesignPalette, { minTextContrast: min, locked });
+  const recommendedVariant = variants.find((v) => v.recommended)?.id ?? 'closest';
+  return { collectionId: input.collectionId, palette: p, evidence: evidence as Record<BrandRole, PaletteEvidence>, conflicts, readings: summary, fallbackRoles, check: checkPalette(p, min), notes, variants, recommendedVariant };
 }
