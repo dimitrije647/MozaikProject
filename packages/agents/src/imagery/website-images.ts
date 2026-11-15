@@ -49,7 +49,9 @@ export interface WebsiteImageCandidate {
   /** declared size (attributes or the largest srcset descriptor), null when the page does not say */
   width: number | null;
   height: number | null;
-  where: 'open_graph' | 'twitter' | 'schema_org' | 'img' | 'picture' | 'background' | 'link_rel' | 'preload';
+  where: 'open_graph' | 'twitter' | 'schema_org' | 'img' | 'picture' | 'background' | 'link_rel' | 'preload' | 'gallery_link';
+  /** for a picture found through a gallery link: the small preview shown on the page that links to this file */
+  previewUrl?: string | null;
   /** the text around the picture: caption, nearest heading, aria label */
   context: string;
   /** 0..1: how prominent it is on its page */
@@ -92,7 +94,8 @@ export interface WebsiteImageDiscovery {
   site: string;
   pages: WebsitePageOutcome[];
   candidates: WebsiteImageCandidate[];
-  rejected: { url: string; reason: string }[];
+  /** `kind` groups the reasons for the zero-result explanation (absent on results of older versions) */
+  rejected: { url: string; reason: string; kind?: RejectKind }[];
   socialLinks: { platform: string; url: string }[];
   /** Logo candidates of the home page (only when `logoBrand` was given): descriptions, nothing was downloaded. */
   logos?: LogoCandidateInfo[];
@@ -101,7 +104,16 @@ export interface WebsiteImageDiscovery {
   notes: string[];
 }
 
+export type RejectKind = 'not_public' | 'tracking' | 'not_photo' | 'logo' | 'icon' | 'too_small' | 'thumbnail' | 'strip' | 'unclear_type' | 'robots';
+
 const RASTER_PATH = /\.(jpe?g|png|webp)$/i;
+/** A file that names itself a thumbnail (`thumbnail_x.jpg`, `x-thumb.jpg`, `/thumbs/x.jpg`): a preview of a larger picture, not the picture. */
+const THUMB_FILE = /\/(thumbs?|thumbnails?)\/|(^|[-_.\/])(thumb|thumbs|thumbnail|thumbnails)[-_.]/i;
+/**
+ * A PNG among the files of the site's TEMPLATE / THEME (`/site/templates/images/`, `/wp-content/themes/x/img/`, `/templates/x/images/`): language
+ * flags, buttons, ornaments. Content photographs live in the media folders; a photograph in a theme folder is a JPEG and stays a candidate.
+ */
+const TEMPLATE_PNG = /\/(templates?|themes?|skins?)\/(?:[^/?#]+\/)*[^/?#]+\.png$/i;
 const RASTER_FORMAT_PARAM = /(?:^|[?&])(?:fm|format|f|ext)=(jpe?g|png|webp)(?:&|$)/i;
 const NOT_PICTURE_EXT = /\.(svg|ico|gif|bmp|tif{1,2}|avif|heic|mp4|webm|pdf|css|js)$/i;
 const DECORATIVE = /(sprite|favicon|apple-touch|android-chrome|mstile|emoji|avatar|gravatar|pixel|tracking|tracker|spacer|blank|transparent|1x1|badge|flag-|\/flags\/|payment|visa|mastercard|paypal|arrow|chevron|spinner|loader|placeholder)/i;
@@ -242,6 +254,7 @@ function jsonLdImages(raw: string): string[] {
 
 interface Raw {
   url: string;
+  previewUrl?: string | null;
   alt?: string | null;
   title?: string | null;
   width?: number | null;
@@ -258,6 +271,12 @@ const LAZY_SET = ['srcset', 'data-srcset', 'data-lazy-srcset', 'data-original-se
 const BG_ATTRS = ['data-bg', 'data-background', 'data-background-image', 'data-bg-src', 'data-image-src', 'data-bgset'];
 const CSS_URL = /url\(\s*['"]?([^'")\s]+)['"]?\s*\)/gi;
 const STYLE_BG = /background(?:-image)?\s*:[^;}]*?url\(\s*['"]?([^'")\s]+)['"]?\s*\)/gi;
+
+/** A link straight to a picture file (jpg / png / webp, query ignored), not a placeholder. */
+const isImageLink = (href: string) => {
+  if (!href || href.startsWith('#') || /^(mailto|tel|javascript|data):/i.test(href)) return false;
+  return RASTER_PATH.test(href.split(/[?#]/)[0]) && !isPlaceholder(href);
+};
 
 /** The picture references of ONE page's HTML, in document order, with the words around each. Pure: no network. */
 export function imagesOfHtml(html: string, pageUrl: string): Raw[] {
@@ -300,7 +319,16 @@ export function imagesOfHtml(html: string, pageUrl: string): Raw[] {
     const w = num($el.attr('width')) ?? num($el.attr('data-width')) ?? set?.width ?? null;
     const h = num($el.attr('height')) ?? num($el.attr('data-height'));
     const inHeader = $el.closest('header, nav, footer').length > 0;
-    add({ url, alt: decode($el.attr('alt')) || null, title: decode($el.attr('title')) || null, width: w, height: h, where: 'img', context: contextOf($el), weight: (inHeader ? 0.15 : Math.max(0.3, 0.9 - i * 0.03)) * weightScale });
+    const weight = (inHeader ? 0.15 : Math.max(0.3, 0.9 - i * 0.03)) * weightScale;
+    // A gallery / lightbox shows a small preview inside a link to the full picture (<a href="photo.jpg"><img src="thumbnail_photo.jpg"></a>).
+    // The link names the real file, so that file is the candidate; the preview is only the pointer to it (its declared size is the preview's).
+    const link = $el.closest('a[href]');
+    const href = decode(link.attr('href'));
+    if (link.length && !inHeader && isImageLink(href) && href !== url) {
+      add({ url: href, previewUrl: url, alt: decode($el.attr('alt')) || decode(link.attr('title')) || null, title: decode($el.attr('title')) || null, width: num(link.attr('data-width')), height: num(link.attr('data-height')), where: 'gallery_link', context: contextOf($el), weight });
+      return;
+    }
+    add({ url, alt: decode($el.attr('alt')) || null, title: decode($el.attr('title')) || null, width: w, height: h, where: 'img', context: contextOf($el), weight });
   };
   $('img').each((i, el) => imgOf($(el), i));
   // a lazy-loading script often leaves the real <img> only inside <noscript>
@@ -357,8 +385,10 @@ const PAGE_KINDS: [RegExp, number, string][] = [
   [/about|ueber-uns|uber-uns|über-uns|who-we-are|unternehmen|company|o-nama|onama|story|history|geschichte|wir\b/i, 9, 'about'],
   [/service|leistung|dienstleistung|angebot|usluge|offer|solution|loesung|lösung|beratung|consulting|what-we-do|expertise/i, 9, 'services'],
   [/galler|galerie|galerij|portfolio|project|projekt|reference|referenz|cases?\b|case-stud|showcase|kunden|clients|work\b/i, 8, 'gallery'],
+  // a venue's guests (restaurants, hotels, events): pages of photographs of people at the place
+  [/gosti|guests|gaeste|gäste/i, 7, 'gallery'],
   [/system|method|approach|ansatz|how-we-work|process|prozess|program|academy|akademie|training|kurs|course|workshop|seminar|schulung/i, 6, 'services'],
-  [/product|produkt|proizvod|shop|collection|kollektion|menu|speisekarte/i, 6, 'products'],
+  [/product|produkt|proizvod|shop|collection|kollektion|menu|meni\b|jelovnik|speisekarte/i, 6, 'products'],
   [/career|karriere|jobs|join-us|stellen|karijer|posao/i, 5, 'about'],
   [/location|standort|office|buero|büro|contact|kontakt/i, 3, 'contact'],
   [/blog|news|aktuell|magazin|insights|journal|vijesti|novosti/i, 3, 'blog'],
@@ -387,6 +417,19 @@ export function linksOfHtml(html: string, pageUrl: string): PageLink[] {
     }
   });
   return out;
+}
+
+/**
+ * One page, however it is linked: `http://` and `https://`, with or without `www.`, with or without the trailing slash. Sites often mix these in their
+ * own links; read as different pages, the same page took two places of the page budget.
+ */
+export function pageKey(raw: string): string {
+  try {
+    const u = new URL(raw);
+    return `${u.hostname.toLowerCase().replace(/^www\./, '')}${u.pathname}`.replace(/\/$/, '');
+  } catch {
+    return raw;
+  }
 }
 
 const localeOf = (path: string): string | null => {
@@ -424,9 +467,12 @@ export function rankImagePages(links: readonly PageLink[], baseUrl: string, read
       continue;
     }
     if (u.hostname.replace(/^www\./, '') !== host || (u.protocol !== 'https:' && u.protocol !== 'http:')) continue;
+    // the same page linked through the other scheme or host spelling is read the way the site was entered
+    u.protocol = base.protocol;
+    u.hostname = base.hostname;
     if (l.nofollow || u.search || /\.(pdf|jpe?g|png|gif|webp|svg|ico|zip|rar|gz|mp4|mp3|avi|mov|docx?|xlsx?|pptx?|exe|dmg|css|js|json|xml|txt)$/i.test(u.pathname)) continue;
-    const key = `${u.origin}${u.pathname}`.replace(/\/$/, '');
-    if (read.has(key) || key === `${base.origin}${base.pathname}`.replace(/\/$/, '')) continue;
+    const key = pageKey(u.toString());
+    if (read.has(key) || key === pageKey(base.toString())) continue;
     if (NEVER_READ.test(u.pathname)) continue;
     const loc = localeOf(u.pathname);
     if (locale ? loc !== locale : loc !== null) continue;
@@ -560,6 +606,40 @@ export async function categoryOfPixels(buf: Buffer, prior: WebsiteImageCategory 
   return { category, faces, graphic: m.graphic };
 }
 
+// ---- explaining an empty result ---------------------------------------------------------------------------------------------------------------------------
+
+const KIND_LABEL: Record<RejectKind, string> = {
+  logo: 'logo(s), offered separately as logo candidates',
+  icon: 'icon(s) or interface graphic(s)',
+  too_small: 'picture(s) too small for a creative',
+  thumbnail: 'thumbnail preview(s) without a linked full-size version',
+  strip: 'thin strip(s)',
+  not_photo: 'vector, animation or document file(s)',
+  tracking: 'tracking pixel(s)',
+  robots: 'picture(s) robots.txt does not allow fetching',
+  not_public: 'non-public address(es)',
+  unclear_type: 'address(es) whose file type is not clear',
+};
+
+/** Why nothing usable came out of pages that WERE read, from what was actually seen and rejected (never "no pictures" when pictures were found). */
+function emptyResultNote(read: number, references: number, rejected: readonly { kind?: RejectKind }[]): string {
+  if (!references) return `${read} page(s) read, but their HTML declares no pictures (pictures that a script adds later are not seen by this reader).`;
+  const counts = new Map<RejectKind, number>();
+  for (const r of rejected) if (r.kind) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
+  const parts = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${KIND_LABEL[k]}`);
+  return `${read} page(s) read and ${references} picture reference(s) found, but none is a usable photograph${parts.length ? `: ${parts.join(', ')}` : ''}.`;
+}
+
+/** The reasons the photographs that were found are not recommended (too small, another website), counted. */
+function whyNone(photos: readonly WebsiteImageCandidate[]): string {
+  const counts = new Map<string, number>();
+  for (const c of photos) {
+    const why = !c.firstParty ? 'served by another website' : Math.max(c.width ?? 0, c.height ?? 0) && Math.max(c.width ?? 0, c.height ?? 0) < MIN_LIBRARY_SIDE ? `smaller than ${MIN_LIBRARY_SIDE} px on the long side` : 'not suitable';
+    counts.set(why, (counts.get(why) ?? 0) + 1);
+  }
+  return `${[...counts.entries()].map(([w, n]) => `${n} ${w}`).join(', ')}. Nothing was added to fill the gap.`;
+}
+
 // ---- the crawl ------------------------------------------------------------------------------------------------------------------------------------------
 
 export interface DiscoverWebsiteOptions {
@@ -611,14 +691,7 @@ export async function discoverWebsiteImages(siteUrl: string, o: DiscoverWebsiteO
 
   const rawAll: (Raw & { pageUrl: string; pageRole: string })[] = [];
   const readKeys = new Set<string>();
-  const keyOf = (u: string) => {
-    try {
-      const x = new URL(u);
-      return `${x.origin}${x.pathname}`.replace(/\/$/, '');
-    } catch {
-      return u;
-    }
-  };
+  const keyOf = pageKey;
   let bytes = 0;
   let stoppedBy: string | null = null;
   const strongStems = new Set<string>();
@@ -628,7 +701,19 @@ export async function discoverWebsiteImages(siteUrl: string, o: DiscoverWebsiteO
     if (!r.ok) {
       const blocked = r.code === 'robots_disallowed' || r.code === 'bot_protected' || r.code === 'blocked_url';
       if (r.code === 'page_limit') return null;
-      out.pages.push({ url, status: blocked ? 'blocked' : 'failed', message: r.code === 'robots_disallowed' ? 'robots.txt does not allow reading this page; it was not read.' : r.code === 'bot_protected' ? 'The page is protected against automated reading; it was not worked around.' : r.status === 401 || r.status === 403 ? 'The page needs a login or is not public; it was not read.' : r.message, images: 0 });
+      const notFound = r.code === 'http_error' && (r.status === 404 || r.status === 410);
+      const message =
+        r.code === 'robots_disallowed'
+          ? 'robots.txt does not allow reading this page; it was not read.'
+          : r.code === 'bot_protected'
+            ? `${r.message ? `${r.message} ` : ''}The page is protected against automated reading; it was not worked around.`
+            : r.status === 401 || r.status === 403
+              ? 'The page needs a login or is not public; it was not read.'
+              : notFound && role === 'home'
+                ? // the address the owner entered: the server itself says it does not exist (some servers answer automated readers so even when a browser shows the page)
+                  `The website answered HTTP ${r.status} (page not found) to LaunchPilot's reader for ${url}. Some servers answer automated readers this way even when the page opens in a browser; the answer is respected, not worked around. Check the website address, or upload the logo and photographs yourself.`
+                : r.message;
+      out.pages.push({ url, status: blocked ? 'blocked' : 'failed', message, images: 0 });
       return null;
     }
     readKeys.add(keyOf(r.finalUrl));
@@ -689,8 +774,8 @@ export async function discoverWebsiteImages(siteUrl: string, o: DiscoverWebsiteO
 
   // normalise, filter, merge sizes of the same picture
   const byStem = new Map<string, WebsiteImageCandidate & { weight: number; area: number }>();
-  const reject = (url: string, reason: string) => {
-    if (!out.rejected.some((r) => r.url === url)) out.rejected.push({ url, reason });
+  const reject = (url: string, reason: string, kind: RejectKind) => {
+    if (!out.rejected.some((r) => r.url === url)) out.rejected.push({ url, reason, kind });
   };
   let logosSeen = 0;
   for (const r of rawAll) {
@@ -706,39 +791,48 @@ export async function discoverWebsiteImages(siteUrl: string, o: DiscoverWebsiteO
     const file = unwrapImageUrl(abs) ?? abs;
     const policy = web.checkUrl(url);
     if (!policy.ok) {
-      reject(url, 'The address is not a public web address.');
+      reject(url, 'The address is not a public web address.', 'not_public');
       continue;
     }
     if (TRACKING_HOST.test(url)) {
-      reject(url, 'A tracking pixel, not a picture.');
+      reject(url, 'A tracking pixel, not a picture.', 'tracking');
       continue;
     }
     if (NOT_PICTURE_EXT.test(file.pathname)) {
-      reject(url, 'Not a photograph (vector, icon, animation or document).');
+      reject(url, 'Not a photograph (vector, icon, animation or document).', 'not_photo');
       continue;
     }
     const category = classifyWebsiteImage({ ...r, url, pageRole: r.pageRole }, siteWords);
     if (category === 'logo') {
       logosSeen++;
-      reject(url, 'A logo: logos are collected separately (logo candidates), never as campaign photographs.');
+      reject(url, 'A logo: logos are collected separately (logo candidates), never as campaign photographs.', 'logo');
       continue;
     }
     if (DECORATIVE.test(file.pathname)) {
-      reject(url, 'An icon or interface graphic, not campaign imagery.');
+      reject(url, 'An icon or interface graphic, not campaign imagery.', 'icon');
+      continue;
+    }
+    if (!r.width && !r.height && TEMPLATE_PNG.test(file.pathname)) {
+      reject(url, "A graphic of the site's template (button, flag or ornament), not campaign imagery.", 'icon');
       continue;
     }
     if ((r.width !== null && r.width !== undefined && r.width < MIN_SIDE) || (r.height !== null && r.height !== undefined && r.height < MIN_SIDE)) {
-      reject(url, `Too small (${r.width ?? '?'}x${r.height ?? '?'} declared): it would look soft in a creative.`);
+      reject(url, `Too small (${r.width ?? '?'}x${r.height ?? '?'} declared): it would look soft in a creative.`, 'too_small');
       continue;
     }
     if (r.width && r.height && (r.width / r.height > 6 || r.height / r.width > 6)) {
-      reject(url, 'A thin strip, not a usable picture.');
+      reject(url, 'A thin strip, not a usable picture.', 'strip');
+      continue;
+    }
+    // a preview that names itself a thumbnail, with no size on the page and no link to its full picture: too small to use, and not the original
+    if (r.where !== 'gallery_link' && !r.width && !r.height && THUMB_FILE.test(file.pathname)) {
+      reject(url, 'A thumbnail preview: the page links no full-size version of it, and a preview is too small for a creative.', 'thumbnail');
       continue;
     }
     if (!RASTER_PATH.test(file.pathname) && !RASTER_FORMAT_PARAM.test(file.search) && r.where !== 'open_graph' && r.where !== 'twitter' && r.where !== 'schema_org') {
       // an address without a file extension (a CDN) is accepted only when the page itself marks it as its image
       if (!(r.width && r.width >= 400)) {
-        reject(url, 'The file type is not clear from the address.');
+        reject(url, 'The file type is not clear from the address.', 'unclear_type');
         continue;
       }
     }
@@ -750,6 +844,7 @@ export async function discoverWebsiteImages(siteUrl: string, o: DiscoverWebsiteO
       width: r.width ?? null,
       height: r.height ?? null,
       where: r.where,
+      ...(r.previewUrl ? { previewUrl: new URL(r.previewUrl, r.pageUrl).toString() } : {}),
       context: r.context ?? '',
       prominence: Math.min(1, r.weight),
       firstParty: isFirstParty(file.hostname, siteHost) && isFirstParty(abs.hostname, siteHost),
@@ -789,7 +884,7 @@ export async function discoverWebsiteImages(siteUrl: string, o: DiscoverWebsiteO
       if (!(await web.robotsAllow(c.url, o.signal))) {
         byStem.delete(key);
         robotsBlocked++;
-        reject(c.url, 'robots.txt does not allow fetching this picture; it is not offered.');
+        reject(c.url, 'robots.txt does not allow fetching this picture; it is not offered.', 'robots');
       }
     }
   }
@@ -804,7 +899,8 @@ export async function discoverWebsiteImages(siteUrl: string, o: DiscoverWebsiteO
   const recommended = all.filter((c) => c.recommended).length;
   out.summary = { distinct: all.length, photos: photos.length, brandGraphics: all.length - photos.length, usable: usable.length, recommended, target: LIBRARY_TARGET, max: LIBRARY_MAX, targetReached: recommended >= LIBRARY_TARGET };
   const read = out.pages.filter((p) => p.status === 'read').length;
-  if (!out.candidates.length) notes.unshift('The pages were read but no usable pictures were found on them (only icons, logos or very small images).');
+  if (!out.candidates.length) notes.unshift(emptyResultNote(read, rawAll.length, out.rejected));
+  else if (!recommended && photos.length) notes.unshift(`${read} page(s) read: ${photos.length} distinct photograph(s) found, none recommended for the campaign library: ${whyNone(photos)}`);
   else
     notes.unshift(
       `${read} page(s) read: ${photos.length} distinct photograph(s)${all.length - photos.length ? ` and ${all.length - photos.length} brand graphic(s)` : ''} found${logosSeen ? ' (logos are listed separately)' : ''}; ${recommended} recommended for the campaign library` +

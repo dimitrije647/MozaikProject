@@ -412,7 +412,7 @@ export class ImageLibraryService {
             const key = imageStem(c.url);
             const file = decodeURIComponent((unwrapImageUrl(c.url) ?? new URL(c.url)).pathname.split('/').pop() ?? '');
             const title = (c.alt || c.title || c.context || file).slice(0, 160);
-            const meta = { where: c.where, firstParty: c.firstParty, prominence: c.prominence, category: c.category ?? null, pageRole: c.pageRole ?? null, recommended: c.recommended === true, rank: c.rank ?? null, why: c.why ?? null };
+            const meta = { where: c.where, previewUrl: c.previewUrl ?? null, firstParty: c.firstParty, prominence: c.prominence, category: c.category ?? null, pageRole: c.pageRole ?? null, recommended: c.recommended === true, rank: c.rank ?? null, why: c.why ?? null };
             const data = { title, pageUrl: c.pageUrl, remoteUrl: c.url, width: c.width, height: c.height, text: textOfImage({ title: c.title, alt: c.alt, fileName: file, context: c.context }), metaJson: meta as never };
             // the same picture may already be a row under an OLDER key (earlier versions merged image-CDN addresses): it is found by its address and kept
             const existing = (await this.prisma.projectImage.findUnique({ where: { projectId_source_dedupeKey: { projectId, source: 'website', dedupeKey: key } } })) ?? (await this.prisma.projectImage.findFirst({ where: { projectId, source: 'website', role: 'photo', remoteUrl: c.url } }));

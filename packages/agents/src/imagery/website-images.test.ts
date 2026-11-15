@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import type { FetchResult } from '../tools/web-fetch';
+import { detectBotChallenge, type FetchResult } from '../tools/web-fetch';
 import { brandGraphic, personScene } from '../testing/photo-fixtures';
 import {
   LIBRARY_MAX,
@@ -14,6 +14,7 @@ import {
   looksLikePersonName,
   rankImagePages,
   linksOfHtml,
+  pageKey,
   recommendLibrary,
   unwrapImageUrl,
   type WebsiteImageCandidate,
@@ -301,5 +302,118 @@ describe('the pixel check after import (local, no identification)', () => {
     assert.equal(graphic?.category, 'brand_graphic');
     const keep = await categoryOfPixels(group, 'brand_graphic');
     assert.equal(keep?.category, 'brand_graphic', 'a banner the words marked stays a brand graphic');
+  });
+});
+
+// A small venue site built the way older CMS sites (ProcessWire, Joomla) often are: the home page at "/", every content page under a language prefix
+// ("/rs/..."), internal links that mix http:// and https://, the logo among the template files (/site/templates/images/), and a lightbox gallery whose
+// previews ("thumbnail_*.jpg", no declared size) link to the full pictures. All names and texts are invented; no file of a real site is used.
+describe('website image discovery: a venue site with a language prefix and a lightbox gallery', () => {
+  const VENUE = 'https://venue-cafe.example';
+  const venueNav = `<div class="top"><a href="http://venue-cafe.example/rs/"><img src="/site/templates/images/logo-rs.png"/></a>
+    <a href="http://venue-cafe.example/en/"><img src="/site/templates/images/lang-en.png"/></a>
+    <ul class="menu"><li><a href="/rs/">POČETNA</a></li><li><a href="/rs/o-nama/">O NAMA</a></li><li><a href="/rs/meni/">HRANA</a></li><li><a href="/rs/nasi-gosti/">NAŠI GOSTI</a></li>
+    <li><a href="/rs/galerija/">GALERIJA</a></li><li><a href="/rs/kontakt/">KONTAKT</a></li></ul></div>`;
+  const venuePage = (title: string, body: string) => `<!doctype html><html><head><title>${title} - Venue Cafe</title><link rel="shortcut icon" href="/site/templates/images/favicon.png"></head><body>${venueNav}${body}</body></html>`;
+  const slider = [1, 2, 3, 4, 5].map((i) => `<li><img src="/site/assets/files/1006/slide${i}.jpg" width="1170" height="524" alt="" /></li>`).join('');
+  const tiles = ['coffee', 'food', 'about', 'gallery'].map((t, i) => `<div><a href="/rs/${t}/"><img src="/site/assets/files/10${23 + i}/${t}.jpg" width="270" height="275" alt="" /></a><a href="http://venue-cafe.example/rs/${t}/">Saznajte više</a></div>`).join('');
+  const lightbox = (dir: number, names: string[]) => names.map((n) => `<a href="/site/assets/files/${dir}/${n}.jpg" class="lightview" data-lightview-group="g"><img src="/site/assets/files/${dir}/thumbnail_${n}.jpg" /></a>`).join('');
+  const galleryNames = Array.from({ length: 14 }, (_, i) => `venue_interior_${String(i + 1).padStart(2, '0')}`);
+  const pages: Record<string, Page> = {
+    [VENUE]: venuePage('Home', `<ul data-orbit>${slider}</ul>${tiles}<img src="/site/assets/files/1020/rating-badge.jpg" width="270" height="50" alt="" />`),
+    [`${VENUE}/rs/o-nama`]: venuePage('O nama', `<h1>O nama</h1><img src="/site/assets/files/1008/terrace.jpg" width="1170" height="700" alt="Terasa restorana" />`),
+    [`${VENUE}/rs/galerija`]: venuePage('Galerija', `<img src="/site/assets/files/1009/header.jpg" width="1170" height="325" alt="" /><div class="gallery">${lightbox(1009, galleryNames)}<img src="/site/assets/files/1009/thumbnail_orphan_preview.jpg" /></div>`),
+    [`${VENUE}/rs/nasi-gosti`]: venuePage('Naši gosti', `<div class="gallery">${lightbox(1012, ['guests_birthday_01', 'guests_birthday_02'])}</div>`),
+    [`${VENUE}/rs/meni`]: venuePage('Meni', `<h1>Meni</h1><img src="/site/assets/files/1030/pizza.jpg" width="900" height="600" alt="Pizza" />`),
+    [`${VENUE}/en`]: venuePage('Home EN', `<img src="/site/assets/files/1006/slide-en.jpg" width="1170" height="524" />`),
+  };
+
+  it('reads the language-prefixed pages (gallery, guests, about, menu) once each, though they are linked as http:// and https://; another language is not read', async () => {
+    const { web, fetched } = fakeWeb(pages);
+    const d = await discoverWebsiteImages(`${VENUE}/`, { web, logoBrand: ['venue', 'cafe'] });
+    const read = d.pages.filter((p) => p.status === 'read').map((p) => p.url.replace(VENUE, '') || '/');
+    for (const p of ['/rs/galerija', '/rs/nasi-gosti', '/rs/o-nama', '/rs/meni']) assert.ok(read.includes(p), `${p} is read (${read.join(', ')})`);
+    assert.ok(!fetched.some((u) => /\/en\/?$/.test(u)), 'the English copy is not read');
+    const keys = fetched.map(pageKey);
+    assert.equal(new Set(keys).size, keys.length, `no page is fetched twice: ${fetched.join(', ')}`);
+    assert.ok(fetched.every((u) => u.startsWith('https://')), 'pages linked as http:// are read the way the site was entered');
+    assert.ok(read.length <= 8);
+  });
+
+  it('a lightbox gallery gives its FULL pictures: the preview is only the pointer (kept as provenance); an orphan preview is refused with the reason', async () => {
+    const d = await discoverWebsiteImages(`${VENUE}/`, { web: fakeWeb(pages).web, logoBrand: ['venue', 'cafe'] });
+    const full = d.candidates.filter((c) => c.where === 'gallery_link');
+    assert.equal(full.length, 16, 'fourteen gallery pictures and two guest pictures');
+    const one = full.find((c) => c.url.endsWith('/1009/venue_interior_01.jpg'))!;
+    assert.equal(one.previewUrl, `${VENUE}/site/assets/files/1009/thumbnail_venue_interior_01.jpg`);
+    assert.equal(one.pageUrl, `${VENUE}/rs/galerija`);
+    assert.equal(one.width, null, "the preview's size is not the picture's size: the import measures the real file");
+    assert.ok(!d.candidates.some((c) => /thumbnail_/.test(c.url)), 'no preview is offered as a picture');
+    const orphan = d.rejected.find((r) => r.url.endsWith('thumbnail_orphan_preview.jpg'))!;
+    assert.equal(orphan.kind, 'thumbnail');
+    assert.match(orphan.reason, /thumbnail preview/);
+    // the minimum-size policy is unchanged: declared small home tiles are never recommended, the thin badge is refused
+    for (const small of ['coffee.jpg', 'food.jpg']) assert.ok(!d.candidates.some((c) => c.url.endsWith(small) && c.recommended), `${small} is not recommended`);
+    assert.ok(d.rejected.some((r) => r.url.endsWith('rating-badge.jpg')) && !d.candidates.some((c) => c.url.endsWith('rating-badge.jpg')));
+  });
+
+  it('the logo in the template folder is a logo candidate, never a photograph; at most 10 recommended, all distinct, all first-party, nothing downloaded', async () => {
+    const d = await discoverWebsiteImages(`${VENUE}/`, { web: fakeWeb(pages).web, logoBrand: ['venue', 'cafe'] });
+    assert.equal(d.logos?.[0]?.location, `${VENUE}/site/templates/images/logo-rs.png`);
+    assert.ok(!d.candidates.some((c) => /logo/.test(c.url)));
+    assert.ok(d.rejected.some((r) => r.url.endsWith('logo-rs.png') && r.kind === 'logo'));
+    const rec = d.candidates.filter((c) => c.recommended);
+    assert.equal(rec.length, LIBRARY_MAX);
+    assert.ok(rec.every((c) => c.firstParty && !/thumbnail_|logo/.test(c.url)));
+    // the language-switch flag among the template files is an interface graphic, not a photograph
+    assert.ok(!d.candidates.some((c) => c.url.endsWith('/site/templates/images/lang-en.png')));
+    assert.equal(d.rejected.find((r) => r.url.endsWith('lang-en.png'))?.kind, 'icon');
+    assert.equal(new Set(d.candidates.map((c) => imageStem(c.url))).size, d.candidates.length, 'no duplicates');
+    assert.equal(d.summary!.targetReached, true);
+    assert.ok(d.notes.some((n) => /No picture was downloaded/.test(n)));
+  });
+
+  it('a gallery link only counts when it points to a picture file; a link to a page leaves the preview a normal picture with its own size', () => {
+    const html = `<a href="/rs/galerija/"><img src="/m/gallery-teaser.jpg" width="1170" height="600" alt=""></a><a href="/m/big.webp?v=2" data-width="2400" data-height="1600"><img src="/m/small.webp" width="300" height="200" alt="Terrace"></a>`;
+    const imgs = imagesOfHtml(html, VENUE);
+    assert.deepEqual(imgs.map((i) => [i.where, i.url, i.width]), [['img', '/m/gallery-teaser.jpg', 1170], ['gallery_link', '/m/big.webp?v=2', 2400]]);
+    assert.equal(imgs[1].previewUrl, '/m/small.webp');
+    assert.equal(imgs[1].alt, 'Terrace');
+  });
+
+  it('a page key ignores scheme, www and the trailing slash', () => {
+    assert.equal(pageKey('http://www.Venue-Cafe.example/rs/galerija/'), pageKey('https://venue-cafe.example/rs/galerija'));
+    assert.notEqual(pageKey('https://venue-cafe.example/rs/galerija'), pageKey('https://venue-cafe.example/en/gallery'));
+  });
+});
+
+describe('website image discovery: explaining a result without pictures', () => {
+  it('a start page answered with HTTP 404 is explained (respected, not worked around) and nothing is invented', async () => {
+    const d = await discoverWebsiteImages(`${SITE}/`, { web: fakeWeb({}).web });
+    assert.equal(d.pages.length, 1);
+    assert.equal(d.pages[0].status, 'failed');
+    assert.match(d.pages[0].message!, /HTTP 404 \(page not found\).*respected, not worked around.*upload the logo and photographs yourself/);
+    assert.equal(d.candidates.length, 0);
+    assert.ok(d.notes.some((n) => /No page of the website could be read/.test(n)));
+  });
+
+  it('pages that were read: "no pictures declared" and "pictures found but rejected" are different answers, with the counted reasons', async () => {
+    const none = await discoverWebsiteImages(`${SITE}/en`, { web: fakeWeb({ [`${SITE}/en`]: '<!doctype html><html><head><title>Plain</title></head><body><h1>Hello</h1><p>Text only.</p></body></html>' }).web });
+    assert.match(none.notes[0], /1 page\(s\) read, but their HTML declares no pictures/);
+    const icons = page('Icons', '<img src="/i/logo-acme.png" alt="Acme logo"><img src="/i/icon-phone.png" width="32" height="32"><img src="/i/arrow-right.png"><img src="/i/thumbs/team.jpg">');
+    const some = await discoverWebsiteImages(`${SITE}/en`, { web: fakeWeb({ [`${SITE}/en`]: icons }).web });
+    assert.match(some.notes[0], /picture reference\(s\) found, but none is a usable photograph: /);
+    for (const reason of [/logo\(s\)/, /thumbnail preview/, /icon/]) assert.match(some.notes[0], reason);
+    const small = await discoverWebsiteImages(`${SITE}/en`, { web: fakeWeb({ [`${SITE}/en`]: page('Small', '<img src="/m/terrace.jpg" width="400" height="300" alt="Terrace">') }).web });
+    assert.match(small.notes[0], /1 distinct photograph\(s\) found, none recommended for the campaign library: 1 smaller than 600 px/);
+  });
+
+  it('a hosting firewall\'s "One moment, please..." check is recognized as bot protection, not read as a page without pictures', () => {
+    const challenge = `<!DOCTYPE html><html lang="en"><head><meta charset="utf8"><script>(function(){setTimeout(function(){window.location.reload();},5000);}())</script><title>One moment, please...</title></head><body><div id="container"><h1>One moment, please...</h1><p>Please wait while your request is being verified...</p></div><script>var a0y=1;</script></body></html>`;
+    assert.equal(detectBotChallenge(200, {}, challenge), "a hosting firewall's");
+    assert.equal(detectBotChallenge(200, {}, challenge.replace('One moment, please...</title>', 'Einen Moment bitte …</title>')), "a hosting firewall's");
+    // an ordinary page that happens to say "one moment" is not a challenge
+    assert.equal(detectBotChallenge(200, {}, '<html><head><title>One moment, please - our blog</title></head><body><a href="/a">Read</a><img src="/x.jpg"></body></html>'), null);
+    assert.equal(detectBotChallenge(200, {}, HOME), null);
   });
 });

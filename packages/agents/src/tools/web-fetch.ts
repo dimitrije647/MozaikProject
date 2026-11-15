@@ -47,6 +47,12 @@ const CHALLENGE_VENDORS: [RegExp, string][] = [
   [/errors\.edgesuite\.net|akamai/i, 'Akamai'],
 ];
 const GENERIC_CHALLENGE = /captcha|verify (that )?you are (a )?human|are you a robot|bot (detection|protection)|access denied|request blocked|unusual traffic/i;
+/**
+ * A hosting firewall's JavaScript check (Imunify360-style): HTTP 200, a page titled "One moment, please..." (localized) that only reloads itself
+ * while a script verifies the browser. Read as a page it looks like a site without pictures; it is a challenge.
+ */
+const RELOAD_CHALLENGE_TITLE = /<title>\s*(?:One moment, please|Einen Moment bitte|Un momento, por favor|Un moment, s'il vous pla[iî]t|Un momento, per favore)[^<]{0,12}<\/title>/i;
+const RELOAD_CHALLENGE_BODY = /request is being verified|location\.reload\(\)/i;
 
 /**
  * Recognizes challenge or block pages served by bot-protection services, so they are reported as "cannot be read
@@ -58,6 +64,7 @@ export function detectBotChallenge(status: number, headers: Record<string, strin
   if (mitigated === 'challenge' || mitigated === 'block') return 'Cloudflare';
   const head = body.slice(0, 40_000);
   for (const [re, vendor] of CHALLENGE_VENDORS) if (re.test(head)) return vendor;
+  if (RELOAD_CHALLENGE_TITLE.test(head) && RELOAD_CHALLENGE_BODY.test(head) && !/<a\s[^>]*href=/i.test(head)) return "a hosting firewall's";
   if ((status === 403 || status === 429 || status === 503) && GENERIC_CHALLENGE.test(head) && head.length < 30_000) return 'bot protection';
   return null;
 }

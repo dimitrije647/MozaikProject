@@ -231,7 +231,7 @@ export class GetContentService implements OnModuleInit {
           const photos = d.summary ? d.summary.photos : d.candidates.length;
           const pagesRead = d.pages.filter((p) => p.status === 'read').length;
           const detail = d.summary ? `: ${d.summary.photos} photograph(s), ${d.summary.recommended} recommended for the campaign library${d.summary.brandGraphics ? `, ${d.summary.brandGraphics} brand graphic(s) kept apart` : ''}` : '';
-          return { status: logos || photos ? 'ok' : 'empty', message: logos || photos ? `${pagesRead} page(s) read${detail}; nothing was downloaded.` : 'The pages were read, but no logo or usable photograph was found on them.', found: { logos, photos: d.summary ? photos : Math.max(photos, ing.created), colors: 0 } };
+          return { status: logos || photos ? 'ok' : 'empty', message: logos || photos ? `${pagesRead} page(s) read${detail}; nothing was downloaded.` : (d.notes[0] ?? 'The pages were read, but no logo or usable photograph was found on them.'), found: { logos, photos: d.summary ? photos : Math.max(photos, ing.created), colors: 0 } };
         }),
         step('github', async () => {
           if (!intake?.githubUrl) return { status: 'skipped', message: 'No repository address was given for this project.' };
