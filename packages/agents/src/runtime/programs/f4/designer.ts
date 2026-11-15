@@ -1,5 +1,6 @@
 import { toSafeError } from '../../../ai/errors';
 import { CREATIVE_INFO } from '../../../creative/board';
+import { RENDERER_VERSION, sha256Of, type CreativeRenderSpec } from '../../../creative/editor';
 import type { AssetRecord, LayoutRecord, SkippedLayout } from '../../../creative/schemas';
 import type { RerenderOp } from '../../../creative/repair';
 import { paletteKeyOf } from '../../../collections/design';
@@ -12,8 +13,9 @@ import { analyzeSubject } from '../../../imagery/subject';
 import sharp from 'sharp';
 import { NEVER_A_PICTURE, assetKindOf, rankCompositions, shortlistCompositions, type AssetKind, type Composition, type CompositionContext, type ContentProfile, type VariantId } from '../../../templates/adapt';
 import { isBetter, repairLoop, type DesignAttempt } from '../../../templates/design-loop';
-import { designStatus, preflight } from '../../../templates/preflight';
+import { designStatus, preflight, visibilityScore } from '../../../templates/preflight';
 import { renderTemplate } from '../../../templates/render';
+import { chooseSecondary, type FrameCandidate } from '../../../templates/crop';
 import { formatClassOf, type RenderSubject, type TemplateDef } from '../../../templates/schema';
 import { OnEventTypes, guarded } from '../../run-context';
 import { PhaseAgent } from '../f1/agent';
@@ -157,7 +159,7 @@ export function buildDesigner(env: F4Env): PhaseAgent {
   type Attempt = { ok: true; asset: AssetRecord; layout: LayoutRecord; tc: TemplateCreativeRecord; item: TemplateSelectionItem } | { ok: false; reason: string };
 
   /** The pictures a template draws for a creative: rights-gated again, with the subject map of the hero picture. */
-  type Pictures = { hero?: Buffer; secondary?: Buffer; heroFocus?: [number, number]; subject?: RenderSubject; sourceIds: string[]; credits: string[] };
+  type Pictures = { hero?: Buffer; secondary?: Buffer; heroId?: string; secondaryId?: string; heroFocus?: [number, number]; subject?: RenderSubject; secondarySubject?: RenderSubject; sourceIds: string[]; credits: string[] };
   const picturesFor = async (tpl: TemplateDef, current: TemplateSelectionItem): Promise<Pictures | { error: string }> => {
     // the picture is the one the Visual Researcher assigned to THIS creative, from the approved library, and nothing else. It passes the rights gate
     // again here: a picture that may not be exported is never drawn, whatever reached this point.
@@ -179,6 +181,7 @@ export function buildDesigner(env: F4Env): PhaseAgent {
       if (h && 'error' in h) return h;
       if (h) {
         out.hero = h.data;
+        out.heroId = h.id;
         out.sourceIds.push(`brand:${h.id}`);
         out.heroFocus = current.focus ? [current.focus[0], current.focus[1]] : (h.focus ?? undefined);
         // where the people, faces and subject are (local pixel analysis, cached per picture): the crop keeps them whole and visible
@@ -191,10 +194,42 @@ export function buildDesigner(env: F4Env): PhaseAgent {
       if (s && 'error' in s) return s;
       if (s) {
         out.secondary = s.data;
+        out.secondaryId = s.id;
         out.sourceIds.push(`brand:${s.id}`);
+        // the small second frame is cropped around its own people (a centre crop of a group photo leaves half a face at the edge)
+        const m = await analyzeSubject(s.data);
+        if (m) out.secondarySubject = { faces: m.faces, subject: m.subject, graphic: m.graphic };
       }
     }
     return out;
+  };
+
+  /**
+   * THE SECOND PICTURE OF A TWO-PICTURE LAYOUT must be a meaningful picture in its small frame, never the main photograph again and never a slice
+   * of a group with half a face at the edge. The assigned one is kept when its predicted frame is fine; otherwise another approved photograph
+   * whose frame is (the one the campaign uses least first). Nothing better: the assigned one stays and the preflight judges the render.
+   */
+  const secondaryFor = async (tpl: TemplateDef, current: TemplateSelectionItem): Promise<{ id: string | null; note: string | null }> => {
+    const layer = tpl.layers.find((l) => l.type === 'image' && l.slot === 'secondary');
+    const assigned = current.secondaryImageId ?? null;
+    if (!layer || !('box' in layer) || !current.imageId) return { id: assigned, note: null };
+    const [bx, by, bwf, bhf] = layer.box;
+    const candidate = async (id: string): Promise<FrameCandidate | null> => {
+      const b = hy.brandImages.find((x) => x.id === id);
+      const sz = b ? await pictureSize(id) : null;
+      if (!b || !sz) return null;
+      const m = await analyzeSubject(b.data);
+      return { id, w: sz.w, h: sz.h, subject: m ? { faces: m.faces, subject: m.subject, graphic: m.graphic } : undefined, uses: pictureUses.get(id) ?? 0 };
+    };
+    const others: FrameCandidate[] = [];
+    for (const b of hy.brandImages) {
+      if (b.id === assigned || b.id === current.imageId || !exportEligibility(b.library?.rights ?? uploadRights()).eligible) continue;
+      if ((await pictureKind(b.id)) !== 'photograph') continue;
+      const c = await candidate(b.id);
+      if (c) others.push(c);
+    }
+    const pick = chooseSecondary({ rect: { x: bx * current.width, y: by * current.height, w: bwf * current.width, h: bhf * current.height }, canvasW: current.width, canvasH: current.height, heroId: current.imageId, assigned: assigned ? await candidate(assigned) : null, others });
+    return { id: pick.id, note: pick.replaced ? (assigned === current.imageId ? 'The second picture was the main photograph again, so another approved photograph was used.' : `The assigned second picture would have shown ${pick.problem ?? 'only a fragment of a person'} in its small frame, so another approved photograph was used there.`) : null };
   };
 
   /** Pixel size of a library picture (from its stored analysis, else read once) and of the logo. */
@@ -290,7 +325,7 @@ export function buildDesigner(env: F4Env): PhaseAgent {
     // the review asked for ANOTHER layout: everything of the delivered template counts as used
     if (o.swap) used.set(item.templateId, new Set(['base', 'mirror', 'compact', 'mirror+compact', 'top', 'bottom', 'top+compact', 'bottom+compact', 'contain', 'photo-panel']));
     const ctxC: CompositionContext = { used, usedFamilies: o.families, preferred: shortlist };
-    type Best = { attempt: DesignAttempt; comp: Composition; current: TemplateSelectionItem; pics: Pictures; dropSupport: boolean };
+    type Best = { attempt: DesignAttempt; comp: Composition; current: TemplateSelectionItem; pics: Pictures; dropSupport: boolean; secNote: string | null };
     let best: Best | null = null;
     let renders = 0;
     let lastRefusal: string | null = null;
@@ -298,7 +333,9 @@ export function buildDesigner(env: F4Env): PhaseAgent {
     let ranked: Composition[] = [];
     const attemptWith = async (comp: Composition, base: TemplateSelectionItem) => {
       const lib = library.get(comp.templateId)!;
-      const current = comp.templateId === item.templateId ? base : withTemplate(base, lib, o.swap ? 'the review asked for another layout' : 'it suits this content better');
+      let current = comp.templateId === item.templateId ? base : withTemplate(base, lib, o.swap ? 'the review asked for another layout' : 'it suits this content better');
+      const sec = await secondaryFor(comp.template, current);
+      if (sec.id !== (current.secondaryImageId ?? null)) current = { ...current, secondaryImageId: sec.id };
       const pics = await picturesFor(comp.template, current);
       if ('error' in pics) return pics.error;
       tried.push(`${comp.templateId}${comp.variant === 'base' ? '' : `:${comp.variant}`}`);
@@ -308,7 +345,7 @@ export function buildDesigner(env: F4Env): PhaseAgent {
         const content = renderContent(current.content, hy.brandName, settings.visual.facts, dropSupport);
         const run = await repairLoop(
           comp.templateId,
-          (tune) => renderTemplate({ template: comp.template, width: current.width, height: current.height, content, palette: env.hasBrandPalette ? env.palette : [], styleId: env.board.selection?.styleId ?? env.board.direction?.styleId, anchors: hy.anchors ?? undefined, brandName: hy.brandName, images: { hero: pics.hero, secondary: pics.secondary }, logo: env.logo, ...(pics.heroFocus ? { heroFocus: pics.heroFocus } : {}), ...(env.brand?.logo ? { logoAdapt: true } : {}), ...(pics.subject ? { subject: pics.subject } : {}), tune, alternatives: { cta: current.content.ctaOptions ?? [], headline: current.content.headlineOptions ?? [] } }),
+          (tune) => renderTemplate({ template: comp.template, width: current.width, height: current.height, content, palette: env.hasBrandPalette ? env.palette : [], styleId: env.board.selection?.styleId ?? env.board.direction?.styleId, anchors: hy.anchors ?? undefined, brandName: hy.brandName, images: { hero: pics.hero, secondary: pics.secondary }, logo: env.logo, ...(pics.heroFocus ? { heroFocus: pics.heroFocus } : {}), ...(env.brand?.logo ? { logoAdapt: true } : {}), ...(pics.subject ? { subject: pics.subject } : {}), ...(pics.secondarySubject ? { secondarySubject: pics.secondarySubject } : {}), tune, alternatives: { cta: current.content.ctaOptions ?? [], headline: current.content.headlineOptions ?? [] } }),
           (res) => preflight({ report: res.report, flags: res.flags, layers: res.layers, hasLogo: !!env.logo, hasPicture: pics.sourceIds.length > 0, templateHasImage, media: { kind, logoSpellsName: spells, fastScroll: !!budget?.fastScroll, textBudget: budget ? { maxWords: budget.maxWords, maxBlocks: budget.maxBlocks } : null, pictureIsPhoto: photoAvailable }, layout: { density: comp.template.density } }),
           4,
           initialTune,
@@ -325,7 +362,7 @@ export function buildDesigner(env: F4Env): PhaseAgent {
           continue;
         }
         const drawsPhoto = pics.sourceIds.length > 0;
-        if (!best || better(run.best, drawsPhoto, best.attempt, best.pics.sourceIds.length > 0)) best = { attempt: run.best, comp, current, pics, dropSupport };
+        if (!best || better(run.best, drawsPhoto, best.attempt, best.pics.sourceIds.length > 0)) best = { attempt: run.best, comp, current, pics, dropSupport, secNote: sec.note };
         return null;
       }
       return null;
@@ -408,6 +445,7 @@ export function buildDesigner(env: F4Env): PhaseAgent {
           ...(attempt.templateId !== item.templateId ? [{ kind: 'template', target: attempt.templateId, detail: `Composed with ${attempt.templateId} instead of the planned ${item.templateId}${o.swap ? ' (asked for by the review)' : ' (it suits this content better)'}.` }] : []),
           ...(comp.variant !== 'base' ? [{ kind: 'position', target: comp.variant, detail: VARIANT_NOTE[comp.variant] }] : []),
           ...(current.imageId !== item.imageId ? [{ kind: 'crop', target: current.imageId ?? '', detail: 'Used another approved picture whose shape suits this format.' }] : []),
+          ...(chosen.secNote ? [{ kind: 'crop', target: current.secondaryImageId ?? 'secondary', detail: chosen.secNote }] : []),
           ...(dropSupport && !o.dropSupport ? [{ kind: 'copy', target: 'support', detail: 'Left out the supporting line: it did not fit without being cut.' }] : []),
           ...attempt.actions,
         ].slice(0, 40),
@@ -442,6 +480,37 @@ export function buildDesigner(env: F4Env): PhaseAgent {
           ? { applied: true, reason: null }
           : { applied: false, reason: !hasLogoLayer ? 'This template has no logo area.' : flags.includes('logo_unreadable') ? 'The logo file could not be read, so the business name was used.' : 'The logo could not be drawn here, so the business name was used.' }
         : undefined;
+      // THE EDITABLE RENDER SPECIFICATION: what reproduces this creative exactly (the final composed template and repair tune, the references of
+      // its pictures and logo, the text as drawn), stored with the asset so its owner can change the text later without any model call
+      const drawnContent = renderContent(current.content, hy.brandName, settings.visual.facts, dropSupport) as Record<string, string>;
+      for (const sh of res.report.shortened ?? []) drawnContent[sh.slot] = sh.to;
+      const renderSpec: CreativeRenderSpec = {
+        v: 1,
+        renderer: RENDERER_VERSION,
+        slotId: current.slotId,
+        templateId: attempt.templateId,
+        templateVersion: tpl.version,
+        variant: comp.variant,
+        template: comp.template,
+        width: res.width,
+        height: res.height,
+        palette: env.hasBrandPalette ? env.palette : [],
+        styleId: env.board.selection?.styleId ?? env.board.direction?.styleId ?? null,
+        anchors: hy.anchors ?? null,
+        brandName: hy.brandName,
+        hero: pics.hero && pics.heroId ? { id: pics.heroId, sha256: sha256Of(pics.hero) } : null,
+        secondary: pics.secondary && pics.secondaryId ? { id: pics.secondaryId, sha256: sha256Of(pics.secondary) } : null,
+        heroFocus: pics.heroFocus ?? null,
+        logo: env.logo ? { sha256: sha256Of(env.logo) } : null,
+        logoAdapt: !!env.brand?.logo,
+        tune: attempt.tune as Record<string, unknown>,
+        content: drawnContent,
+        original: Object.fromEntries(res.drawn.filter((d) => d !== 'brand' && typeof drawnContent[d] === 'string').map((d) => [d, drawnContent[d]])),
+        check: { hasLogo: !!env.logo, hasPicture: sourceIds.length > 0, templateHasImage: comp.template.layers.some((l) => l.type === 'image'), media: { kind, logoSpellsName: spells, fastScroll: !!budget?.fastScroll, textBudget: budget ? { maxWords: budget.maxWords, maxBlocks: budget.maxBlocks } : null, pictureIsPhoto: photoAvailable }, density: comp.template.density ?? null },
+        baseline: attempt.pre.failures.map((f) => f.id),
+        baselineVisibility: res.report.hero ? visibilityScore(res.report) : null,
+        pictureKind: current.imageId ? await pictureKind(current.imageId) : null,
+      };
       const rightsNote = credits.length ? `Inherits the rights of its source picture(s): ${[...new Set(credits)].join(' | ')}`.slice(0, 240) : null;
       const asset = await tools.assets.save({
         kind: 'layout',
@@ -464,6 +533,7 @@ export function buildDesigner(env: F4Env): PhaseAgent {
         promptMetadata: null,
         usage: null,
         data: res.png,
+        renderSpec,
         origin: 'TEMPLATE_RENDERED',
         templateId: current.templateId,
         templateVersion: current.templateVersion,

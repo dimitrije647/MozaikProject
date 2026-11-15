@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsInt, IsObject, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
 /**
  * V4: the stages of a campaign (Business Research, Marketing Strategy, Creative Production) are started ONLY by Campaign Production
@@ -21,4 +21,14 @@ export class ListEventsQueryDto {
 export class ListAuditsQueryDto {
   @IsOptional() @IsString() @MaxLength(60) cursor?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(50) limit?: number;
+}
+
+/** The creative editor: the text fields (by stable field id) and the asset the edit starts from (a stale base is refused). */
+export class CreativeEditDto {
+  @IsObject() fields!: Record<string, unknown>;
+  @IsString() @MaxLength(60) baseAssetId!: string;
+}
+
+export class CreativeRestoreDto {
+  @IsString() @MaxLength(60) baseAssetId!: string;
 }

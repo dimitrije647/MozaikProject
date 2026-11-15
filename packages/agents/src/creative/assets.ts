@@ -6,7 +6,11 @@ import type { AssetRecord } from './schemas';
  * in SemanticEvents or JSON reports): they save through this interface and load bytes when they need them. The backend
  * implements it on top of the project's existing file storage and the CampaignAsset table.
  */
-export type NewAsset = Omit<AssetRecord, 'id' | 'sha256' | 'bytes' | 'createdAt'> & { data: Buffer };
+export type NewAsset = Omit<AssetRecord, 'id' | 'sha256' | 'bytes' | 'createdAt'> & {
+  data: Buffer;
+  /** the render specification that reproduces a template creative (creative/editor.ts): stored with the asset, never in the package */
+  renderSpec?: unknown;
+};
 
 export interface AssetStore {
   save(asset: NewAsset): Promise<AssetRecord>;
@@ -21,12 +25,14 @@ export const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex'
 export class InMemoryAssetStore implements AssetStore {
   readonly files = new Map<string, Buffer>();
   readonly records = new Map<string, AssetRecord>();
+  readonly specs = new Map<string, unknown>();
 
   async save(asset: NewAsset): Promise<AssetRecord> {
-    const { data, ...rest } = asset;
+    const { data, renderSpec, ...rest } = asset;
     const record: AssetRecord = { ...rest, id: `ast_${randomUUID().slice(0, 8)}`, sha256: sha256(data), bytes: data.length, createdAt: new Date().toISOString() };
     this.files.set(record.id, data);
     this.records.set(record.id, record);
+    if (renderSpec !== undefined) this.specs.set(record.id, renderSpec);
     return record;
   }
 

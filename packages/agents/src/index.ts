@@ -72,6 +72,7 @@ export * from './creative/palette';
 export { CREATIVE_INFO, CREATIVE_KEYS, CREATIVE_COORDINATOR_NAME, creativeKeyByName, type CreativeBoard, type CreativeKey, type CreativePlan, type CreativeSettingsSnapshot } from './creative/board';
 export { buildCampaignZip, zipFileName, safeName, creditsFromImagery, type ExportManifest, type ExportFile, type ExportSource, type ExportOptions } from './creative/export';
 export { legacyCampaignMarkdown, legacyTemplateFileName } from './creative/export-legacy';
+export { CreativeRenderSpec, RENDERER_VERSION, applyCreativeRevision, creativeOf, editDiagnostics, editorFields, renderEdit, renderSpec, restoreOriginalRevision, sha256Of, validateEdits, type EditInputs, type EditResult, type EditorField, type FieldError } from './creative/editor';
 export { CREATIVE_INSTRUCTIONS } from './creative/prompts';
 export { planRepairs, slotsShowing, type RepairPlan, type RerenderOp } from './creative/repair';
 

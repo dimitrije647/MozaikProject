@@ -52,18 +52,29 @@ export function creditsFromImagery(pkg: CampaignPackage): string {
   return ['Image credits', '', ...used.map((l) => `${l.attribution} (${l.license}${l.attributionRequired ? ', credit required' : ''})${l.pageUrl ? ` ${l.pageUrl}` : ''}`), ''].join('\n');
 }
 
-const copyText = (v: CopyVariantRecord, conceptName: string, visual: string | null, item: DeliverableRecord | undefined) => {
+/** The text the owner wrote on an edited visual (creative editor), by field. */
+type EditedText = { file: string | null; revision: number; fields: Record<string, string> };
+const FIELD_NAME: Record<string, string> = { headline: 'Headline', support: 'Supporting text', cta: 'Call to action', eyebrow: 'Eyebrow', quote: 'Quote', attribution: 'Attribution', stat: 'Figure', statLabel: 'Figure label', date: 'Date', location: 'Location', offer: 'Offer', offerDetail: 'Offer detail', tag: 'Tag', point1: 'Feature 1', point2: 'Feature 2', point3: 'Feature 3' };
+
+const copyText = (v: CopyVariantRecord, conceptName: string, visual: string | null, item: DeliverableRecord | undefined, edits: EditedText[] = [], own: EditedText | null = null) => {
   const lines = [`Concept: ${conceptName}`, ''];
+  // the visual of this copy was edited by its owner: its headline and call to action are the ones on the image
+  const headline = own?.fields.headline ?? v.headline;
+  const cta = own?.fields.cta ?? v.ctaText;
   if (v.placement === 'social_post') {
-    lines.push(`Hook / headline: ${v.headline}`, '', 'Post text:', v.body, '', `Call to action: ${v.ctaText}`);
+    lines.push(`Hook / headline: ${headline}`, '', 'Post text:', v.body, '', `Call to action: ${cta}`);
     if (v.hashtags.length) lines.push(`Hashtags: ${v.hashtags.join(' ')}`);
     if (v.postingFormat) lines.push(`Suggested posting format: ${v.postingFormat}`);
   } else {
-    lines.push(`Headline: ${v.headline}`);
+    lines.push(`Headline: ${headline}`);
     if (v.body && v.body !== v.headline) lines.push('', v.placement === 'flyer' ? 'Body:' : 'Description:', v.body);
-    lines.push('', `Call to action: ${v.ctaText}`);
+    lines.push('', `Call to action: ${cta}`);
   }
   lines.push('', visual ? `Visual: ${visual}` : `Visual: not produced${item?.reason ? ` (${item.reason})` : ''}.`);
+  for (const e of edits) {
+    lines.push('', `Text on the visual${e.file ? ` ${e.file}` : ''} (edited by the owner, revision ${e.revision}):`);
+    for (const [k, val] of Object.entries(e.fields)) lines.push(`- ${FIELD_NAME[k] ?? k}: ${val}`);
+  }
   if (v.version > 1) lines.push(`Revised ${v.version - 1} time(s) after the quality review.`);
   return lines.join('\n') + '\n';
 };
@@ -125,6 +136,11 @@ function readme(pkg: CampaignPackage, pathOf: Map<string, string>, conceptNo: (i
     lines.push('', '### Needs design review (not production-ready)', '', 'These files were produced, but a critical problem remained after the automatic repairs. Check them before publishing:');
     for (const c of review) lines.push(`- \`${pathOf.get(c.assetId!)!.replace(`${ROOT}/`, '')}\`: ${c.design!.checks.filter((x) => x.status === 'fail').map((x) => x.detail).join(' ').slice(0, 300)}`);
     for (const i of notReady) lines.push(`- \`${pathOf.get(i.assetId!)!.replace(`${ROOT}/`, '')}\`: ${(i.blockers ?? []).join(' ').slice(0, 300) || 'an open review finding'}`);
+  }
+  const edited = (pkg.hybrid?.creatives ?? []).filter((c) => c.edit?.state === 'edited' && c.assetId && pathOf.get(c.assetId));
+  if (edited.length) {
+    lines.push('', '### Edited by the owner', '', 'The text on these visuals was changed in the creative editor and the visual was rendered again from the same design (no AI call):');
+    for (const c of edited) lines.push(`- \`${pathOf.get(c.assetId!)!.replace(`${ROOT}/`, '')}\`: revision ${c.edit!.revision}, design check ${c.design?.status ?? 'not checked'}`);
   }
   const matrices = [...new Set(d.items.filter((i) => i.matrix).map((i) => i.matrix!.group))];
   if (matrices.length) {
@@ -189,7 +205,14 @@ export async function buildCampaignZip(pkg: CampaignPackage, assets: AssetStore,
     const folder = item?.folder ?? (v.placement === 'social_post' ? `social/${v.channel}` : d.items.find((i) => i.kind === v.placement)?.folder ?? 'other');
     const visual = item?.assetId ? (pathOf.get(item.assetId)?.split('/').pop() ?? null) : null;
     const suffix = v.placement === 'social_post' ? 'post' : `${safeName(v.placement)}-copy`;
-    await put(`${folder}/${conceptNo(v.conceptId)}-${suffix}.txt`, copyText(v, conceptName(v.conceptId), visual, item), 'text');
+    // the visuals of this copy whose text the owner edited (creative editor): the copy file says what the image really shows
+    const editOf = (i: DeliverableRecord): EditedText | null => {
+      const e = (pkg.hybrid?.creatives ?? []).find((c) => c.slotId === i.id && c.assetId === i.assetId)?.edit;
+      return e && e.state === 'edited' && e.fields ? { file: i.assetId ? (pathOf.get(i.assetId)?.split('/').pop() ?? null) : null, revision: e.revision, fields: e.fields } : null;
+    };
+    const related = d.items.filter((i) => i.status === 'delivered' && (i === item || i.variantId === v.id));
+    const edits = related.map(editOf).filter((e): e is EditedText => !!e);
+    await put(`${folder}/${conceptNo(v.conceptId)}-${suffix}.txt`, copyText(v, conceptName(v.conceptId), visual, item, edits, item ? editOf(item) : null), 'text');
     if (v.placement === 'social_post' && v.channel === 'tiktok' && v.videoScript) await put(`${folder}/${conceptNo(v.conceptId)}-video-script.md`, scriptMarkdown(v, conceptName(v.conceptId)), 'markdown');
   }
   // ---- strategy ----

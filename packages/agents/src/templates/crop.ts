@@ -1,5 +1,5 @@
 import { MAX_UPSCALE } from '../creative/formats';
-import type { PxRect, RenderSubject, UnitBox } from './schema';
+import type { PxRect, RenderReport, RenderSubject, UnitBox } from './schema';
 
 /**
  * WHERE A PICTURE IS FRAMED INSIDE ITS BOX (pure: no pixels, no I/O). Used by the renderer to draw, and by the composition scorer to predict
@@ -136,3 +136,107 @@ export function planCrop(c: CropInput): CropPlan {
 
 /** A picture-fraction box -> pixels of the layer bitmap for a crop plan. */
 export const mapToLayer = (p: CropPlan, b: UnitBox): PxRect => ({ x: b[0] * p.sw + (p.fit === 'contain' ? p.left : -p.left), y: b[1] * p.sh + (p.fit === 'contain' ? p.top : -p.top), w: b[2] * p.sw, h: b[3] * p.sh });
+
+/**
+ * WHAT A (SMALL) PICTURE FRAME SHOWS, from the crop geometry alone: for every detected face the share of its HEAD (hair and chin included)
+ * inside the frame and whether the frame edge cuts it, the share of the subject (the people) inside it and of its width, how much of the box the
+ * picture would fill shown whole. A small portrait frame cut out of a wide group photograph shows a slice of one person: judgeFrame says so.
+ */
+export function frameReport(rect: PxRect, plan: CropPlan, imgW: number, imgH: number, subject: RenderSubject | undefined, sameAsHero: boolean): Omit<NonNullable<RenderReport['secondary']>, 'layerId'> {
+  const { w: bw, h: bh } = rect;
+  const inside = (b: PxRect) => (overlap1(b.x, b.x + b.w, 0, bw) * overlap1(b.y, b.y + b.h, 0, bh)) / Math.max(1, b.w * b.h);
+  const k = Math.min(bw / imgW, bh / imgH);
+  const r3 = (v: number) => Math.round(v * 1000) / 1000;
+  const faces = (subject?.faces ?? []).map((f) => {
+    const share = inside(mapToLayer(plan, headOf(f)));
+    const fb = mapToLayer(plan, f);
+    return { inFrame: r3(share), area: r3((fb.w * fb.h) / (bw * bh)), edge: share > 0.02 && share < 0.98 };
+  });
+  let subjectInFrame: number | null = null;
+  let subjectWidthShown: number | null = null;
+  if (subject) {
+    const sb = mapToLayer(plan, subject.subject);
+    subjectInFrame = r3(inside(sb));
+    subjectWidthShown = r3(Math.min(1, overlap1(sb.x, sb.x + sb.w, 0, bw) / Math.max(1, sb.w)));
+  }
+  return { rect, fit: plan.fit, cropLoss: r3(plan.cropLoss), faces, subjectInFrame, subjectWidthShown, sameAsHero, containFill: r3((imgW * k * imgH * k) / (bw * bh)) };
+}
+
+/** Thresholds of the frame judgement (MVP heuristics on a heuristic face detector: a fragment is a failure only with face evidence). */
+export const FRAME = {
+  /** a head inside the frame by more than this and less than `whole` is cut by the frame edge */
+  cutLow: 0.15,
+  whole: 0.85,
+  /** faces smaller than this share of the largest one are background people (not judged) */
+  keyFace: 0.3,
+  /** without a whole face, less than this share of the people in the frame is a fragment */
+  fragment: 0.5,
+  /** without detected faces: a frame showing less than this share of the subject's width of a heavily cropped picture is reported */
+  widthShown: 0.45,
+  cropLoss: 0.5,
+  /** showing the whole picture (contain) is acceptable only when it fills at least this share of the frame */
+  containFill: 0.55,
+} as const;
+
+/**
+ * Is the frame a MEANINGFUL, self-contained picture? fail = the evidence is reliable (the same photograph twice, a detected face cut by the edge,
+ * people shown without any whole face); warn = only the rough subject box says the frame is a narrow slice of a wide picture (no face found, so
+ * the detector may simply have missed it).
+ */
+export function judgeFrame(f: Pick<NonNullable<RenderReport['secondary']>, 'faces' | 'subjectInFrame' | 'subjectWidthShown' | 'sameAsHero' | 'cropLoss' | 'fit'>): { status: 'pass' | 'warn' | 'fail'; problems: string[] } {
+  const problems: string[] = [];
+  let status: 'pass' | 'warn' | 'fail' = 'pass';
+  if (f.sameAsHero) {
+    problems.push('the same photograph appears twice in one creative');
+    status = 'fail';
+  }
+  const max = Math.max(0, ...f.faces.map((x) => x.area));
+  const key = f.faces.filter((x) => x.area >= max * FRAME.keyFace && x.inFrame > 0.02);
+  const cut = key.filter((x) => x.inFrame > FRAME.cutLow && x.inFrame < FRAME.whole);
+  const whole = key.filter((x) => x.inFrame >= FRAME.whole);
+  if (cut.length) {
+    problems.push(`${cut.length === 1 ? 'a face is' : `${cut.length} faces are`} cut by the edge of the frame${whole.length ? '' : ' and no face is whole'}`);
+    status = 'fail';
+  } else if (f.faces.length && !whole.length && (f.subjectInFrame ?? 1) < FRAME.fragment) {
+    problems.push(`only a fragment of the people is in the frame (${Math.round((f.subjectInFrame ?? 0) * 100)}% of them, no whole face)`);
+    status = 'fail';
+  } else if (!f.faces.length && f.fit === 'cover' && f.subjectWidthShown !== null && f.subjectWidthShown < FRAME.widthShown && f.cropLoss > FRAME.cropLoss) {
+    problems.push(`the frame shows only ${Math.round(f.subjectWidthShown * 100)}% of the width of what the picture shows (a narrow slice of a wide picture)`);
+    if (status === 'pass') status = 'warn';
+  }
+  return { status, problems };
+}
+
+export interface FrameCandidate {
+  id: string;
+  w: number;
+  h: number;
+  subject?: RenderSubject;
+  /** how many creatives of the campaign already use it (fewer first) */
+  uses: number;
+}
+
+/**
+ * THE SECOND PICTURE FOR A SMALL FRAME: the assigned one when its frame is a meaningful picture; otherwise the approved photograph whose frame is
+ * (a clean one first, then one with only a rough warning), never the main photograph again. Pure: predicted with the same crop planner the
+ * renderer uses. `id: assigned` with a failing judgement means nothing better exists (the preflight and the layout choice take it from there).
+ */
+export function chooseSecondary(o: { rect: PxRect; canvasW: number; canvasH: number; heroId: string | null; assigned: FrameCandidate | null; others: FrameCandidate[] }): { id: string | null; replaced: boolean; problem: string | null } {
+  const judge = (c: FrameCandidate) => {
+    const plan = planCrop({ imgW: c.w, imgH: c.h, bw: Math.max(2, Math.round(o.rect.w)), bh: Math.max(2, Math.round(o.rect.h)), focus: [0.5, 0.5], layerRect: o.rect, canvasW: o.canvasW, canvasH: o.canvasH, subject: c.subject });
+    return judgeFrame(frameReport({ ...o.rect, w: Math.max(2, Math.round(o.rect.w)), h: Math.max(2, Math.round(o.rect.h)) }, plan, c.w, c.h, c.subject, c.id === o.heroId));
+  };
+  const first = o.assigned ? judge(o.assigned) : null;
+  if (o.assigned && first?.status === 'pass') return { id: o.assigned.id, replaced: false, problem: null };
+  const others = o.others.filter((c) => c.id !== o.heroId && c.id !== o.assigned?.id).sort((a, b) => a.uses - b.uses || (a.id < b.id ? -1 : 1)).slice(0, 8);
+  let warn: string | null = null;
+  for (const c of others) {
+    const j = judge(c);
+    if (j.status === 'pass') return { id: c.id, replaced: !!o.assigned, problem: first?.problems[0] ?? null };
+    if (j.status === 'warn' && !warn) warn = c.id;
+  }
+  if (o.assigned && first?.status === 'fail' && warn) return { id: warn, replaced: true, problem: first.problems[0] ?? null };
+  // the very same photograph twice is never kept: without another picture the frame keeps the layout's own placeholder (the preflight reports it)
+  if (o.assigned && o.assigned.id === o.heroId) return { id: warn, replaced: true, problem: first?.problems[0] ?? null };
+  return { id: o.assigned?.id ?? null, replaced: false, problem: first && first.status !== 'pass' ? (first.problems[0] ?? null) : null };
+}

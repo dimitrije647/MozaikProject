@@ -312,6 +312,11 @@ export interface TemplateRenderInput {
    * measures how visible every face stays in the finished creative.
    */
   subject?: RenderSubject;
+  /**
+   * The same map for the SECONDARY picture (a small second photo of a two-picture layout): with it the small frame is cropped around whole faces
+   * and the people instead of its centre, and the report says what that frame really shows (secondary_crop).
+   */
+  secondarySubject?: RenderSubject;
   /** Deterministic adjustments asked for by the design preflight after an earlier render of the same creative failed a check. */
   tune?: RenderTune;
   /**
@@ -360,6 +365,8 @@ export interface RenderTune {
    * absolute top/height of a box (y/h). Only vertical: the alignment axes of the composition never change.
    */
   move?: Record<string, { dy?: number; dh?: number; y?: number; h?: number; hide?: boolean }>;
+  /** show the WHOLE secondary picture (fitted in its own border colour) instead of a crop that leaves only a fragment of a person */
+  secondaryFit?: 'contain';
 }
 
 export interface PxRect {
@@ -393,6 +400,26 @@ export interface RenderReport {
     /** 0..1 how unchanged the whole visible picture looks (panels, scrims and bands lower it) */
     pictureVisibility: number | null;
     faces: { rect: PxRect; area: number; inFrame: number; visibility: number | null }[];
+  };
+  /**
+   * What the SECONDARY picture frame shows (geometry of the crop, no pixel measurement): its faces (share of each head inside the frame), the
+   * share of the people/subject inside it, whether it is the same picture as the hero, and how much of the picture the crop leaves out.
+   */
+  secondary?: null | {
+    layerId: string;
+    rect: PxRect;
+    fit: 'cover' | 'contain';
+    cropLoss: number;
+    /** the picture holds detected faces (the evidence for a face fragment is strong only then) */
+    faces: { inFrame: number; area: number; edge: boolean }[];
+    /** share of the subject box (the people when there are faces) inside the frame; null without subject information */
+    subjectInFrame: number | null;
+    /** the frame is narrower than the subject: how much of the subject's width fits (1 = all of it) */
+    subjectWidthShown: number | null;
+    /** the hero and the secondary are the same picture */
+    sameAsHero: boolean;
+    /** how much of the box the picture fills when shown whole (contain): 1 = no letterbox */
+    containFill: number;
   };
   texts: { layerId: string; slot: TextSlot; rect: PxRect; size: number; contrast: number; busy: number; trimmed: boolean; backed: boolean; /** relative luminance of the text colour */ lum: number; /** the words really drawn */ text?: string; align?: 'left' | 'center' | 'right'; /** the designed area the text was set in (rect = the ink) */ box?: PxRect; valign?: 'top' | 'middle' | 'bottom'; /** set at an angle (a tilted card) */ rotated?: boolean }[];
   /** designed areas of OPTIONAL text slots left empty (no date, no support line): the room a missing text leaves behind */

@@ -58,7 +58,7 @@ export class DbAssetStore implements AssetStore {
   ) {}
 
   async save(asset: NewAsset): Promise<AssetRecord> {
-    const { data, flags, promptMetadata, usage, variationId, origin, templateId, templateVersion, sourceAssetIds, rights, ...rest } = asset;
+    const { data, flags, promptMetadata, usage, variationId, origin, templateId, templateVersion, sourceAssetIds, rights, renderSpec, ...rest } = asset;
     const sha256 = (await import('node:crypto')).createHash('sha256').update(data).digest('hex');
     const key = await this.storage.save(this.projectId, `${rest.kind}-${rest.conceptId}.png`, data);
     try {
@@ -84,7 +84,7 @@ export class DbAssetStore implements AssetStore {
           status: rest.status,
           filePath: key,
           altText: rest.altText,
-          metadataJson: { flags, promptMetadata, usage, variationId: variationId ?? null, ...(origin ? { origin } : {}), ...(templateId ? { templateId, templateVersion: templateVersion ?? null } : {}), ...(sourceAssetIds?.length ? { sourceAssetIds } : {}), ...(rights ? { rights } : {}) },
+          metadataJson: { flags, promptMetadata, usage, variationId: variationId ?? null, ...(origin ? { origin } : {}), ...(templateId ? { templateId, templateVersion: templateVersion ?? null } : {}), ...(sourceAssetIds?.length ? { sourceAssetIds } : {}), ...(rights ? { rights } : {}), ...(renderSpec !== undefined ? { renderSpec: renderSpec as never } : {}) },
         },
       });
       return toAssetRecord(row);

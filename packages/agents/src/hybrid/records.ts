@@ -186,6 +186,23 @@ export const TemplateCreativeRecord = z.object({
   reason: z.string().nullable(),
   /** The design preflight of this creative: the checks, the automatic repairs and the templates tried. */
   design: DesignDiagnostics.optional(),
+  /**
+   * MANUAL TEXT EDITS by the owner (creative editor): the revision counter, the original generated asset (kept, restorable) with its original
+   * diagnostics, the original and the current text, and a short history. Absent on creatives that were never edited.
+   */
+  edit: z
+    .object({
+      revision: z.number().int(),
+      originalAssetId: z.string(),
+      originalDesign: DesignDiagnostics.nullable(),
+      originalFlags: z.array(z.string()),
+      original: z.record(z.string(), z.string()),
+      fields: z.record(z.string(), z.string()).nullable(),
+      state: z.enum(['original', 'edited']),
+      editedAt: z.string().nullable(),
+      history: z.array(z.object({ revision: z.number().int(), assetId: z.string(), kind: z.enum(['edit', 'restore']), at: z.string() })).max(20),
+    })
+    .optional(),
 });
 export type TemplateCreativeRecord = z.infer<typeof TemplateCreativeRecord>;
 

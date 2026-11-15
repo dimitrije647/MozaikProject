@@ -1,4 +1,5 @@
 import { formatClassOf, type PxRect, type RenderReport, type RenderTune, type TextSlot, type UnitBox } from './schema';
+import { FRAME, judgeFrame } from './crop';
 import { mergeMoves, sceneFromReport, spacingIssues, type SpacingMove } from './spacing';
 
 /**
@@ -10,6 +11,9 @@ import { mergeMoves, sceneFromReport, spacingIssues, type SpacingMove } from './
  *   face_crop            no key face is cut by the edge of the frame (a person left out entirely is acceptable; one cut in half is not)
  *   subject_size         the people are big enough to be seen (a group photo is not shrunk into a thumbnail tile)
  *   graphic_crop         a flat graphic (logo banner, text on colour) is never cropped (its letters would be cut)
+ *   secondary_crop       the small SECOND picture of a two-picture layout is a meaningful picture of its own: no face cut by its edge, not a
+ *                        fragment of people without a whole face, not the same photograph as the main one (face evidence = failure; the
+ *                        rough subject box alone = a warning, the detector is a heuristic)
  *   overlay_dominance    dark panels, scrims and bands leave enough of the picture visible
  *   logo_visibility      the logo is whole, inside the safe area, big enough and readable against what is behind it
  *   text_safe_area       all text and buttons are inside the safe margins
@@ -206,6 +210,12 @@ export function preflight(input: PreflightInput): PreflightResult {
       const ok = hero.pictureVisibility >= THRESHOLDS.pictureVisibility;
       const heavy = r.decor.filter((d) => d.afterHero && d.opacity >= 0.35 && inter(d.rect, hero.rect) > area(hero.rect) * 0.1).map((d) => d.layerId);
       add({ id: 'overlay_dominance', category: 'occlusion', status: ok ? 'pass' : 'fail', detail: `${pct(hero.pictureVisibility)} of the picture stays visible under the overlays (needs ${pct(THRESHOLDS.pictureVisibility)}).`, layers: ok ? undefined : heavy });
+    }
+    const sec = r.secondary;
+    if (!sec) add({ id: 'secondary_crop', category: 'crop', status: 'skip', detail: 'No second picture in this creative.' });
+    else {
+      const j = judgeFrame(sec);
+      add({ id: 'secondary_crop', category: 'crop', status: j.status, detail: j.problems.length ? `The second picture (${sec.layerId}) is not a meaningful picture on its own: ${j.problems.join('; ')}.` : sec.fit === 'contain' ? 'The second picture is shown whole.' : 'The second picture frames whole people (or its subject) on its own.', layers: [sec.layerId] });
     }
     // a layout made for TWO pictures that got one shows an empty placeholder panel where the second should be: that is a preview, not an ad
     const emptySecond = flags.includes('secondary_missing_fallback') && input.hasPicture;
@@ -489,6 +499,14 @@ export function nextRepair(p: PreflightResult, r: RenderReport, tune: RenderTune
     actions.push({ kind: 'copy', target: 'logo', detail: 'Wrote the business name next to the logo mark.' });
   }
 
+  // a small second picture that only shows a fragment of a person is shown whole instead, when that still fills its frame (another picture or
+  // layout is the designer's next step otherwise)
+  const sc = failed('secondary_crop');
+  if (sc && r.secondary && !r.secondary.sameAsHero && r.secondary.fit === 'cover' && next.secondaryFit !== 'contain' && r.secondary.containFill >= FRAME.containFill) {
+    next.secondaryFit = 'contain';
+    actions.push({ kind: 'crop', target: r.secondary.layerId, detail: 'Showed the whole second picture: every crop of its small frame cut a person.' });
+  }
+
   // editor furniture is simply left out
   const ui = failed('final_asset_purity');
   if (ui) for (const id of ui.layers ?? []) if (!next.hide!.includes(id) && decorById.has(id)) {
@@ -600,7 +618,7 @@ export function nextRepair(p: PreflightResult, r: RenderReport, tune: RenderTune
  *   unresolved  a critical problem remains: a face cut or covered, a cropped brand graphic, cut text, an unreadable headline, a missing or
  *               unreadable logo, text outside the safe area or editor furniture. Such a creative is delivered for review, never as approved.
  */
-export const CRITICAL_CHECKS = new Set(['face_occlusion', 'face_crop', 'graphic_crop', 'text_fit', 'headline_readability', 'logo_visibility', 'text_safe_area', 'final_asset_purity', 'media_button', 'brand_identity']);
+export const CRITICAL_CHECKS = new Set(['face_occlusion', 'face_crop', 'secondary_crop', 'graphic_crop', 'text_fit', 'headline_readability', 'logo_visibility', 'text_safe_area', 'final_asset_purity', 'media_button', 'brand_identity']);
 export type DesignStatus = 'passed' | 'warnings' | 'unresolved';
 export function designStatus(p: Pick<PreflightResult, 'failures' | 'checks'>): DesignStatus {
   if (p.failures.some((f) => CRITICAL_CHECKS.has(f.id))) return 'unresolved';
@@ -609,5 +627,5 @@ export function designStatus(p: Pick<PreflightResult, 'failures' | 'checks'>): D
 
 /** Failures no tune can fix: only another template (or another crop geometry) can. */
 export function needsAnotherTemplate(p: PreflightResult): boolean {
-  return p.failures.some((f) => ['face_crop', 'subject_size', 'graphic_crop', 'text_fit', 'text_safe_area', 'template_fit'].includes(f.id) || (f.id === 'text_collision' && !/logo/.test(f.layers?.join(' ') ?? '')));
+  return p.failures.some((f) => ['face_crop', 'secondary_crop', 'subject_size', 'graphic_crop', 'text_fit', 'text_safe_area', 'template_fit'].includes(f.id) || (f.id === 'text_collision' && !/logo/.test(f.layers?.join(' ') ?? '')));
 }

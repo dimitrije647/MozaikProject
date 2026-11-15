@@ -1,7 +1,8 @@
 'use client';
 
 import * as React from 'react';
-import { AlertCircle, Check, Clapperboard, Download, ExternalLink, ImageOff } from 'lucide-react';
+import { AlertCircle, Check, Clapperboard, Download, ExternalLink, ImageOff, PencilLine } from 'lucide-react';
+import { CreativeEditorDialog } from '@/components/creative-editor';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { KIND_LABEL, PLATFORM_LABEL, SOCIAL_PLATFORMS, campaignZipUrl, type CampaignAssetViewData, type CampaignFullData, type CampaignPackageV4, type CopyVariantV4, type DeliverableRecordData } from '@/lib/campaign';
@@ -55,12 +56,17 @@ export function CampaignResult({ campaignId }: { campaignId: string }) {
 
 // ---- V4 -------------------------------------------------------------------------------------------------------------------------------------
 
-function Visual({ item, asset, copy }: { item: DeliverableRecordData; asset: CampaignAssetViewData | undefined; copy?: CopyVariantV4 }) {
+function Visual({ item, asset, copy, edited, onOpen }: { item: DeliverableRecordData; asset: CampaignAssetViewData | undefined; copy?: CopyVariantV4; edited?: boolean; onOpen?: (slotId: string) => void }) {
   return (
     <figure data-testid={`deliverable-${item.id}`} data-status={item.status} className="space-y-1.5 rounded-xl border border-cream-300/80 bg-white/70 p-2">
       {item.status === 'delivered' && asset ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={assetSrc(asset)} alt={`${item.label} (${item.width} x ${item.height})`} className="max-h-72 w-full rounded-md bg-cream-100 object-contain" loading="lazy" />
+        <button type="button" data-testid={`open-creative-${item.id}`} onClick={() => onOpen?.(item.id)} aria-label={`Open ${item.label} to view or edit its text`} className="group relative block w-full rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={assetSrc(asset)} alt={`${item.label} (${item.width} x ${item.height})`} className="max-h-72 w-full rounded-md bg-cream-100 object-contain" loading="lazy" />
+          <span className="absolute right-2 top-2 hidden items-center gap-1 rounded-full bg-ink/80 px-2 py-1 text-[11px] text-cream-100 group-hover:flex group-focus-visible:flex">
+            <PencilLine className="h-3 w-3" /> Edit text
+          </span>
+        </button>
       ) : (
         <div className="flex h-40 items-center justify-center rounded-md bg-amber-50 px-3 text-center text-xs text-amber-900">
           <span>
@@ -71,6 +77,7 @@ function Visual({ item, asset, copy }: { item: DeliverableRecordData; asset: Cam
       )}
       <figcaption className="text-xs">
         <span className="font-medium">{item.label}</span> <span className="text-muted">{item.width} x {item.height}</span>
+        {edited && <Badge className="ml-1 bg-violet-100 text-violet-800">edited</Badge>}
         <span className="ml-1">{item.status === 'delivered' ? (item.withPicture ? <Badge className="bg-sky-100 text-sky-800">real picture</Badge> : <Badge className="bg-cream-200 text-ink-600">typography-first</Badge>) : null}</span>
         {copy && <span className="mt-0.5 block text-ink-600">{copy.headline}</span>}
       </figcaption>
@@ -215,10 +222,13 @@ function V4Result({ data, pkg }: { data: CampaignFullData; pkg: CampaignPackageV
   const approval = APPROVAL[pkg.approval.status];
   const unresolved = pkg.reviewFindings.filter((f) => pkg.approval.unresolvedFindingIds.includes(f.id));
   const copyFor = (kind: string) => pkg.copyVariants.filter((v) => v.placement === kind);
+  // the creative editor: one creative at a time, opened from its preview
+  const [editing, setEditing] = React.useState<string | null>(null);
+  const editedSlots = new Set(((pkg.hybrid as { creatives?: { slotId: string; edit?: { state?: string } }[] } | null | undefined)?.creatives ?? []).filter((c) => c.edit?.state === 'edited').map((c) => c.slotId));
   const visuals = (items: DeliverableRecordData[]) => (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {items.map((i) => (
-        <Visual key={i.id} item={i} asset={i.assetId ? assetOf.get(i.assetId) : undefined} copy={i.variantId ? copyOf.get(i.variantId) : undefined} />
+        <Visual key={i.id} item={i} asset={i.assetId ? assetOf.get(i.assetId) : undefined} copy={i.variantId ? copyOf.get(i.variantId) : undefined} edited={editedSlots.has(i.id)} onOpen={setEditing} />
       ))}
     </div>
   );
@@ -241,6 +251,7 @@ function V4Result({ data, pkg }: { data: CampaignFullData; pkg: CampaignPackageV
 
   return (
     <div data-testid="campaign-result" className="space-y-5">
+      <CreativeEditorDialog campaignId={data.id} slotId={editing} onClose={() => setEditing(null)} />
       <Block id="overview" title="Overview">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>

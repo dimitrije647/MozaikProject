@@ -3,6 +3,8 @@ import { MozaikCampaignRuntime } from '@launchpilot/agents';
 import { ApiCredentialsModule } from '../api-credentials/api-credentials.module';
 import { ProjectsModule } from '../projects/projects.module';
 import { VisualModule } from '../visual/visual.module';
+import { CreativeEditorController } from './creative-editor.controller';
+import { CreativeEditorService } from './creative-editor.service';
 import { FactoryController } from './factory.controller';
 import { FactoryService } from './factory.service';
 import { HybridController } from './hybrid.controller';
@@ -14,9 +16,10 @@ import { CAMPAIGN_RUNTIME } from './types/runtime.token';
 
 @Module({
   imports: [ProjectsModule, ApiCredentialsModule, VisualModule],
-  controllers: [MozaikController, FactoryController, HybridController],
+  controllers: [MozaikController, FactoryController, HybridController, CreativeEditorController],
   providers: [
     MozaikService,
+    CreativeEditorService,
     FactoryService,
     HybridService,
     HybridInputsService,

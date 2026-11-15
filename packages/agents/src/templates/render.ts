@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import { CREATIVE_FORMATS, MAX_UPSCALE } from '../creative/formats';
 import { hexToRgb, luminanceRatio, mix, relativeLuminance, rgbLuminance, rgbToHex } from './color';
-import { headOf, mapToLayer, planCrop, type CropPlan } from './crop';
+import { frameReport, headOf, mapToLayer, planCrop, type CropPlan } from './crop';
 import { resolvePalette, type PaletteAnchors } from './palette';
 import {
   formatClassOf,
@@ -184,6 +184,9 @@ interface Scene {
   heroFocus?: [number, number];
   logoAdapt?: boolean;
   subject?: RenderSubject;
+  secondarySubject?: RenderSubject;
+  /** the secondary picture is the very same file as the hero */
+  sameAsHero: boolean;
   tune: RenderTune;
   canvas: Buffer;
   ops: sharp.OverlayOptions[];
@@ -679,7 +682,11 @@ async function drawImage(S: Scene, layer: L<'image'>) {
   const tracked = layer.slot === 'hero' && !S.heroTrack && !!info;
   if (info) {
     const focus: [number, number] = layer.slot === 'hero' && S.heroFocus ? S.heroFocus : (layer.focus ?? [0.5, 0.5]);
-    plan = planCrop({ imgW: info.w, imgH: info.h, bw, bh, focus: [clamp(focus[0], 0, 1), clamp(focus[1], 0, 1)], layerRect: r, canvasW: S.W, canvasH: S.H, subject: layer.slot === 'hero' ? S.subject : undefined, avoid: S.tune.avoid, fit: layer.fit });
+    // the secondary picture is framed around its own people too (a centre crop of a group photo leaves half a face at the edge)
+    const subject = layer.slot === 'hero' ? S.subject : S.secondarySubject;
+    const fit = layer.slot === 'secondary' && S.tune.secondaryFit === 'contain' ? 'contain' : layer.fit;
+    plan = planCrop({ imgW: info.w, imgH: info.h, bw, bh, focus: [clamp(focus[0], 0, 1), clamp(focus[1], 0, 1)], layerRect: r, canvasW: S.W, canvasH: S.H, subject, avoid: S.tune.avoid, fit });
+    if (layer.slot === 'secondary' && !S.report.secondary) S.report.secondary = { layerId: layer.id, ...frameReport({ x: r.x, y: r.y, w: bw, h: bh }, plan, info.w, info.h, subject, S.sameAsHero) };
     if (plan.fit === 'contain') flag(S, `image_fitted:${layer.slot}`);
     if (plan.zoom > 1) flag(S, `image_zoomed:${layer.slot}`);
     if (plan.fit === 'cover' && plan.subjectAware) flag(S, `crop_subject_aware:${layer.slot}`);
@@ -1353,6 +1360,8 @@ async function renderInner(input: TemplateRenderInput): Promise<TemplateRenderRe
     heroFocus: hf,
     logoAdapt: input.logoAdapt === true,
     subject: validSubject(input.subject),
+    secondarySubject: validSubject(input.secondarySubject),
+    sameAsHero: !!input.images?.hero && !!input.images?.secondary && (input.images.hero === input.images.secondary || input.images.hero.equals(input.images.secondary)),
     tune: input.tune ?? {},
     canvas,
     ops: [],
@@ -1362,7 +1371,7 @@ async function renderInner(input: TemplateRenderInput): Promise<TemplateRenderRe
     flags: [],
     drawn: [],
     painted: [],
-    report: { width, height, safe: { l: 0, t: 0, r: width, b: height }, hero: null, texts: [], buttons: [], logo: null, decor: [], shortened: [] },
+    report: { width, height, safe: { l: 0, t: 0, r: width, b: height }, hero: null, secondary: null, texts: [], buttons: [], logo: null, decor: [], shortened: [] },
     heroTrack: null,
   };
   S.report.safe = { ...S.safe };

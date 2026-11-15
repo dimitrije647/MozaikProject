@@ -7,6 +7,7 @@ import { suggestPalette } from '../brand/suggest';
 import { InMemoryAssetStore } from './assets';
 import type { CreativeInput } from './context';
 import { buildCampaignZip } from './export';
+import { CreativeRenderSpec, applyCreativeRevision, editDiagnostics, editorFields, renderEdit, renderSpec, restoreOriginalRevision, sha256Of } from './editor';
 import type { CampaignPackage } from './schemas';
 import type { RecordedEvent } from '../factory/state';
 import { analyzeImage } from '../imagery/analysis';
@@ -117,6 +118,69 @@ describe('F4 Creative Production (V4: one workflow, four agents, no AI images)',
     for (const c of rendered.filter((x) => x.format === 'billboard')) assert.equal(c.design?.checks.find((x) => x.id === 'content_spacing')?.status, 'pass');
     assert.equal(o.fake.imageCalls().length, 0);
     assert.ok(o.fake.calls().every((r) => r.agent === 'copywriter' || r.agent === 'creviewer'), 'the spacing adds no model request');
+  });
+
+  it('CREATIVE EDITOR: every new creative stores a render specification that reproduces it exactly; an edit re-renders it locally and the ZIP exports the edited file', async () => {
+    const images = await Promise.all([1, 2, 3, 4].map(photo));
+    const o = await run({ images });
+    assert.equal(o.result.status, 'completed', o.result.errorMessage ?? '');
+    let { pkg } = o.packages[0];
+    const rendered = pkg.hybrid!.creatives.filter((c) => c.status === 'rendered' && c.assetId);
+    assert.ok(rendered.length > 5);
+    const byId = new Map(images.map((i) => [i.id, i.data]));
+    const callsBefore = o.fake.calls().length;
+    // the specification of EVERY rendered creative is stored with its asset and reproduces the delivered PNG byte for byte
+    for (const c of rendered) {
+      const raw = o.store.specs.get(c.assetId!);
+      assert.ok(raw, `${c.slotId}: no render specification stored`);
+      const spec = CreativeRenderSpec.parse(raw);
+      assert.equal(spec.slotId, c.slotId);
+      assert.equal(spec.templateId, c.templateId);
+      const again = await renderSpec(spec, { hero: spec.hero ? byId.get(spec.hero.id) : null, secondary: spec.secondary ? byId.get(spec.secondary.id) : null });
+      assert.ok(again.ok);
+      if (again.ok) assert.equal(sha256Of(again.png), sha256Of(await o.store.load(c.assetId!)), `${c.slotId} (${c.templateId}:${spec.variant}) is not reproduced exactly`);
+      if (spec.hero) assert.equal(spec.hero.sha256, sha256Of(byId.get(spec.hero.id)!), 'pictures are referenced by id + checksum, never copied');
+      assert.ok(!JSON.stringify(spec).includes('base64'), 'no picture bytes inside the specification');
+    }
+    // edit the headline of one Instagram creative: same palette, same pictures, same composition; the ZIP carries exactly the saved bytes
+    const target = rendered.find((c) => c.channel === 'instagram') ?? rendered[0];
+    const spec = CreativeRenderSpec.parse(o.store.specs.get(target.assetId!));
+    const fields = editorFields(spec);
+    assert.ok(fields.some((f) => f.id === 'headline'));
+    assert.ok(!fields.some((f) => (f.id as string) === 'brand'), 'the business name is protected');
+    const inputs = { hero: spec.hero ? byId.get(spec.hero.id) : null, secondary: spec.secondary ? byId.get(spec.secondary.id) : null };
+    const edited = await renderEdit(spec, { headline: 'Dive with us this summer' }, inputs);
+    assert.ok(edited.ok, JSON.stringify(!edited.ok && edited.errors));
+    if (!edited.ok) return;
+    assert.equal(edited.spec.palette.join(), spec.palette.join());
+    assert.deepEqual(edited.spec.hero, spec.hero);
+    assert.equal(edited.spec.content.headline, 'Dive with us this summer');
+    const asset = await o.store.save({ ...o.store.records.get(target.assetId!)!, version: 2, parentAssetId: target.assetId, data: edited.png, renderSpec: edited.spec });
+    pkg = applyCreativeRevision(pkg, { slotId: target.slotId, previousAssetId: target.assetId!, asset, design: editDiagnostics(edited, target.design), flags: edited.flags, fields: { headline: 'Dive with us this summer' }, original: spec.original, at: '2026-11-15T10:00:00.000Z' });
+    const zip1 = await JSZip.loadAsync((await buildCampaignZip(pkg, o.store, {})).zip);
+    const manifest = JSON.parse(await zip1.file('campaign/manifest.json')!.async('string'));
+    const entry = manifest.files.find((f: { assetId?: string }) => f.assetId === asset.id);
+    assert.ok(entry, 'the edited image is in the ZIP');
+    const bytes = await zip1.file(entry.path)!.async('nodebuffer');
+    assert.equal(sha256Of(bytes), sha256Of(edited.png), 'the ZIP holds the very bytes of the preview');
+    assert.equal(entry.sha256, sha256Of(edited.png));
+    assert.ok(!manifest.files.some((f: { assetId?: string }) => f.assetId === target.assetId), 'the old image is not exported');
+    // unrelated creatives keep their files
+    for (const c of rendered.filter((x) => x.slotId !== target.slotId)) assert.ok(manifest.files.some((f: { assetId?: string }) => f.assetId === c.assetId), `${c.slotId} lost its file`);
+    const item = pkg.deliverables!.items.find((i) => i.id === target.slotId)!;
+    assert.equal(item.assetId, asset.id);
+    const texts = await Promise.all(Object.keys(zip1.files).filter((p) => p.endsWith('.txt')).map((p) => zip1.file(p)!.async('string')));
+    const copy = texts.find((t) => t.includes('edited by the owner'));
+    assert.ok(copy, 'a copy file says the visual was edited');
+    assert.match(copy!, /Headline: Dive with us this summer/);
+    assert.match(await zip1.file('campaign/README.md')!.async('string'), /Edited by the owner/);
+    // restore: the original file again, exported again
+    pkg = restoreOriginalRevision(pkg, { slotId: target.slotId, previousAssetId: asset.id, original: o.store.records.get(target.assetId!)!, at: '2026-11-15T10:05:00.000Z' });
+    const zip2 = await JSZip.loadAsync((await buildCampaignZip(pkg, o.store, {})).zip);
+    const m2 = JSON.parse(await zip2.file('campaign/manifest.json')!.async('string'));
+    assert.ok(m2.files.some((f: { assetId?: string }) => f.assetId === target.assetId) && !m2.files.some((f: { assetId?: string }) => f.assetId === asset.id));
+    assert.equal(o.fake.calls().length, callsBefore, 'editing makes no model request');
+    assert.equal(o.fake.imageCalls().length, 0);
   });
 
   it('one campaign: posts for all five platforms, ads, TWO billboards and TWO flyers, drawn from the approved pictures, with zero image requests', async () => {
