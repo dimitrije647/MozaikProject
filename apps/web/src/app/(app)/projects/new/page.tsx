@@ -2,11 +2,10 @@
 
 import { useRouter } from 'next/navigation';
 import * as React from 'react';
-import { Controller, useForm, type FieldPath } from 'react-hook-form';
+import { Controller, useForm, type FieldErrors, type FieldPath } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
 import { useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, ArrowRight, Check, CheckCircle2, Rocket } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowRight, Check, CheckCircle2, Rocket } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Field, Input, Select, Textarea } from '@/components/ui/form';
@@ -18,61 +17,22 @@ import { ProgressBar, Stepper } from '@/components/stepper';
 import { api, post, put, patch } from '@/lib/api';
 import { keys } from '@/lib/hooks';
 import { DURATIONS, LANGUAGES, MARKETING_GOALS, SOCIAL_PLATFORMS } from '@/lib/constants';
+import {
+  DRAFT_KEY,
+  LIMITS,
+  WIZARD_DEFAULTS as DEFAULTS,
+  WIZARD_STEPS as STEPS,
+  blockingMessage,
+  createDraftAutosave,
+  createProjectSubmitter,
+  firstStepWithError,
+  parseDraft,
+  wizardSchema,
+  type DraftStatus,
+  type WizardOutput,
+  type WizardValues as Values,
+} from '@/lib/project-wizard';
 import { cn } from '@/lib/utils';
-
-const optionalUrl = z.union([z.literal(''), z.string().url('Enter a full URL, e.g. https://example.com')]);
-
-const schema = z.object({
-  productName: z.string().min(2, 'Give your product a name'),
-  shortDescription: z.string().max(2000),
-  websiteUrl: optionalUrl,
-  githubUrl: optionalUrl,
-  socials: z.object({
-    instagram: optionalUrl,
-    facebook: optionalUrl,
-    linkedin: optionalUrl,
-    x: optionalUrl,
-    reddit: optionalUrl,
-    tiktok: optionalUrl,
-    pinterest: optionalUrl,
-    youtube: optionalUrl,
-  }),
-  marketingGoal: z.string(),
-  targetMarket: z.string().max(200),
-  targetAudience: z.string().max(1000),
-  preferredLanguage: z.string(),
-  campaignDuration: z.string(),
-  enableSeasonalCalendar: z.boolean(),
-  enableGoogleDriveExport: z.boolean(),
-  publishingMode: z.enum(['manual', 'scheduled']),
-});
-type Values = z.infer<typeof schema>;
-
-const DEFAULTS: Values = {
-  productName: '',
-  shortDescription: '',
-  websiteUrl: '',
-  githubUrl: '',
-  socials: { instagram: '', facebook: '', linkedin: '', x: '', reddit: '', tiktok: '', pinterest: '', youtube: '' },
-  marketingGoal: '',
-  targetMarket: '',
-  targetAudience: '',
-  preferredLanguage: 'en',
-  campaignDuration: '1 month',
-  enableSeasonalCalendar: false,
-  enableGoogleDriveExport: false,
-  publishingMode: 'manual',
-};
-
-const STEPS = [
-  { title: 'Product', hint: 'What are you promoting?', fields: ['productName', 'shortDescription', 'websiteUrl', 'githubUrl'] },
-  { title: 'Social presence', hint: 'Where your audience is', fields: ['socials'] },
-  { title: 'Marketing goals', hint: 'Goal, market, audience', fields: ['marketingGoal', 'targetMarket', 'targetAudience', 'preferredLanguage', 'campaignDuration'] },
-  { title: 'Features', hint: 'Toggles and publishing', fields: ['enableSeasonalCalendar', 'enableGoogleDriveExport', 'publishingMode'] },
-  { title: 'Review', hint: 'Check and save', fields: [] },
-] as const;
-
-const DRAFT_KEY = 'launchpilot:new-project-draft';
 
 type FileBuckets = Record<'logo' | 'screenshot' | 'image' | 'doc' | 'reference', PendingFile[]>;
 const EMPTY_FILES: FileBuckets = { logo: [], screenshot: [], image: [], doc: [], reference: [] };
@@ -84,11 +44,13 @@ export default function NewProjectPage() {
   const [step, setStep] = React.useState(0);
   const [files, setFiles] = React.useState<FileBuckets>(EMPTY_FILES);
   const [saving, setSaving] = React.useState(false);
-  const [draftSaved, setDraftSaved] = React.useState(false);
-  // Set once the project row exists so a retry after a partial failure does not create a duplicate.
-  const createdId = React.useRef<string | null>(null);
+  const [draft, setDraft] = React.useState<DraftStatus>('idle');
+  // Why the wizard did not move on, shown next to the buttons (the field itself may be scrolled away).
+  const [blocked, setBlocked] = React.useState('');
+  // A Continue click is being validated: a second click must not move two steps.
+  const advancing = React.useRef(false);
 
-  const form = useForm<Values>({ resolver: zodResolver(schema), defaultValues: DEFAULTS, mode: 'onTouched' });
+  const form = useForm<Values, unknown, WizardOutput>({ resolver: zodResolver(wizardSchema), defaultValues: DEFAULTS, mode: 'onTouched' });
   const {
     register,
     control,
@@ -99,79 +61,79 @@ export default function NewProjectPage() {
     formState: { errors },
   } = form;
 
+  // One submitter per wizard: concurrent saves share one request and the project row is created once.
+  const submitter = React.useMemo(
+    () =>
+      createProjectSubmitter({
+        post,
+        put,
+        patch,
+        upload: (id, kind, list) => {
+          const body = new FormData();
+          list.forEach((f) => body.append('files', f));
+          if (kind !== 'doc') body.append('type', kind);
+          return api(`/projects/${id}/assets`, { method: 'POST', body });
+        },
+      }),
+    [],
+  );
+  const autosave = React.useMemo(
+    () => (typeof window === 'undefined' ? null : createDraftAutosave(window.localStorage, setDraft)),
+    [],
+  );
+
   // Restore draft on first mount.
   React.useEffect(() => {
     try {
-      const raw = localStorage.getItem(DRAFT_KEY);
-      if (raw) reset({ ...DEFAULTS, ...JSON.parse(raw) });
+      const restored = parseDraft(localStorage.getItem(DRAFT_KEY));
+      if (restored) reset(restored);
     } catch {
-      /* corrupt draft: ignore */
+      /* storage not readable: start empty */
     }
   }, [reset]);
 
-  // Debounced autosave of the text fields (files cannot be persisted in localStorage).
+  // Debounced autosave of the text fields (files cannot be persisted in localStorage). It never blocks the wizard.
   React.useEffect(() => {
     const sub = watch((values) => {
-      setDraftSaved(false);
-      const t = setTimeout(() => {
-        localStorage.setItem(DRAFT_KEY, JSON.stringify(values));
-        setDraftSaved(true);
-      }, 600);
-      return () => clearTimeout(t);
+      autosave?.schedule(values);
+      setBlocked('');
     });
-    return () => sub.unsubscribe();
-  }, [watch]);
+    const flush = () => autosave?.flush();
+    window.addEventListener('pagehide', flush);
+    return () => {
+      sub.unsubscribe();
+      window.removeEventListener('pagehide', flush);
+      flush();
+    };
+  }, [watch, autosave]);
 
-  async function next() {
-    const ok = await trigger(STEPS[step].fields as unknown as FieldPath<Values>[]);
-    if (ok) setStep((s) => Math.min(s + 1, STEPS.length - 1));
+  function goTo(s: number) {
+    autosave?.flush();
+    setBlocked('');
+    setStep(s);
   }
 
-  async function submit(v: Values) {
+  async function next() {
+    if (advancing.current) return;
+    advancing.current = true;
+    const from = step;
+    try {
+      const fields = STEPS[from].fields as unknown as FieldPath<Values>[];
+      const ok = await trigger(fields, { shouldFocus: true });
+      if (ok) goTo(Math.min(from + 1, STEPS.length - 1));
+      else setBlocked(blockingMessage(Object.keys(form.formState.errors).filter((k) => (fields as string[]).includes(k))));
+    } finally {
+      advancing.current = false;
+    }
+  }
+
+  async function submit(v: WizardOutput) {
+    if (submitter.busy) return;
     setSaving(true);
     try {
-      if (!createdId.current) {
-        const project = await post<{ id: string }>('/projects', {
-          name: v.productName,
-          description: v.shortDescription || undefined,
-        });
-        createdId.current = project.id;
-      }
-      const id = createdId.current;
-
-      await put(`/projects/${id}/intake`, {
-        productName: v.productName,
-        shortDescription: v.shortDescription,
-        websiteUrl: v.websiteUrl,
-        githubUrl: v.githubUrl,
-        targetMarket: v.targetMarket,
-        targetAudience: v.targetAudience,
-        marketingGoal: v.marketingGoal,
-        preferredLanguage: v.preferredLanguage,
-        campaignDuration: v.campaignDuration,
-        publishingMode: v.publishingMode,
-        enableSeasonalCalendar: v.enableSeasonalCalendar,
-        enableGoogleDriveExport: v.enableGoogleDriveExport,
-      });
-      await put(`/projects/${id}/social-profiles`, {
-        profiles: Object.entries(v.socials)
-          .filter(([, url]) => url)
-          .map(([platform, url]) => ({ platform, url })),
-      });
-
-      // Upload each bucket. Uploaded buckets are cleared so a retry only re-sends what failed.
-      for (const kind of Object.keys(files) as (keyof FileBuckets)[]) {
-        const bucket = files[kind];
-        if (!bucket.length) continue;
-        const body = new FormData();
-        bucket.forEach((f) => body.append('files', f.file));
-        if (kind !== 'doc') body.append('type', kind);
-        await api(`/projects/${id}/assets`, { method: 'POST', body });
-        setFiles((cur) => ({ ...cur, [kind]: [] }));
-      }
-
-      await patch(`/projects/${id}`, { status: 'READY' });
-      localStorage.removeItem(DRAFT_KEY);
+      const uploads = Object.fromEntries(Object.entries(files).map(([k, list]) => [k, list.map((p) => p.file)]));
+      const id = await submitter.submit(v, uploads, (kind) => setFiles((cur) => ({ ...cur, [kind]: [] })));
+      autosave?.clear();
       qc.invalidateQueries({ queryKey: keys.projects });
       qc.invalidateQueries({ queryKey: keys.activity });
       toast.success('Project saved');
@@ -182,29 +144,54 @@ export default function NewProjectPage() {
     }
   }
 
+  // Saving with an error on an earlier step (reachable through the step list): open that step and say why.
+  function invalid(errs: FieldErrors<Values>) {
+    const keysWithError = Object.keys(errs);
+    const at = firstStepWithError(keysWithError);
+    if (at !== null && at !== step) setStep(at);
+    setBlocked(blockingMessage(keysWithError));
+  }
+
+  function onFormSubmit(e: React.FormEvent<HTMLFormElement>) {
+    // Enter in a text field submits the form: on steps 1-4 that means Continue, never saving the project early.
+    if (step < STEPS.length - 1) {
+      e.preventDefault();
+      void next();
+      return;
+    }
+    void handleSubmit(submit, invalid)(e);
+  }
+
   const v = watch();
   const setFilesFor = (k: keyof FileBuckets) => (list: PendingFile[]) => setFiles((cur) => ({ ...cur, [k]: list }));
+  const descriptionLength = v.shortDescription?.length ?? 0;
 
   return (
     <div className="space-y-8">
       <SectionHeader
         eyebrow="New project"
         title="Brief your AI marketing team"
-        description="Six short steps. Everything you enter here becomes the structured brief for your campaign."
+        description="Five short steps. Everything you enter here becomes the structured brief for your campaign."
       />
 
       <div className="grid gap-8 lg:grid-cols-[260px_1fr]">
         <aside className="space-y-5 lg:sticky lg:top-24 lg:self-start">
-          <Stepper steps={STEPS} current={step} onSelect={setStep} />
+          <Stepper steps={STEPS} current={step} onSelect={goTo} />
           <div className="px-3">
             <ProgressBar value={(step + 1) / STEPS.length} />
-            <p className="mt-2 flex items-center gap-1.5 text-xs text-muted">
-              {draftSaved ? <><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Draft saved on this device</> : 'Draft autosaves as you type'}
+            <p className={cn('mt-2 flex items-center gap-1.5 text-xs', draft === 'error' ? 'text-red-600' : 'text-muted')} data-testid="draft-status">
+              {draft === 'saved' ? (
+                <><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Draft saved on this device</>
+              ) : draft === 'error' ? (
+                <><AlertCircle className="h-3.5 w-3.5" /> Draft could not be saved on this device. You can continue; your entries stay on this page until you save the project.</>
+              ) : (
+                'Draft autosaves as you type'
+              )}
             </p>
           </div>
         </aside>
 
-        <form onSubmit={handleSubmit(submit)} noValidate>
+        <form onSubmit={onFormSubmit} noValidate>
           <Card className="overflow-hidden">
             <div key={step} className="animate-slide-in space-y-6 p-6 sm:p-8">
               {step === 0 && (
@@ -213,8 +200,17 @@ export default function NewProjectPage() {
                   <Field label="Product name" htmlFor="productName" error={errors.productName?.message}>
                     <Input id="productName" placeholder="e.g. Deep Diving School" {...register('productName')} />
                   </Field>
-                  <Field label="Description" htmlFor="shortDescription" optional hint="One or two sentences: what it is and who it is for. A campaign needs a short description (a business name and a description are all it requires); everything else on this form is optional.">
-                    <Textarea id="shortDescription" {...register('shortDescription')} />
+                  <Field
+                    label="Description"
+                    htmlFor="shortDescription"
+                    optional
+                    error={errors.shortDescription?.message}
+                    hint="One or two sentences: what it is and who it is for. A campaign needs a short description (a business name and a description are all it requires); everything else on this form is optional."
+                  >
+                    <Textarea id="shortDescription" aria-invalid={Boolean(errors.shortDescription)} {...register('shortDescription')} />
+                    <p className={cn('text-right text-xs tabular-nums', descriptionLength > LIMITS.shortDescription ? 'font-medium text-red-600' : 'text-muted')} data-testid="description-count">
+                      {descriptionLength} / {LIMITS.shortDescription}
+                    </p>
                   </Field>
                   <div className="grid gap-4 sm:grid-cols-2">
                     <Field label="Website URL" htmlFor="websiteUrl" optional error={errors.websiteUrl?.message}>
@@ -322,19 +318,42 @@ export default function NewProjectPage() {
               {step === 4 && (
                 <>
                   <StepTitle title="Review & submit" body="Check the brief. You can edit any step before saving. The look of your campaigns (template collection, colors and output formats) is chosen when you run a campaign, not here." />
-                  <ReviewList values={v} files={files} goTo={setStep} />
+                  <ReviewList values={v} files={files} goTo={goTo} />
                 </>
               )}
             </div>
 
+            {blocked && (
+              <p role="alert" data-testid="wizard-blocked" className="flex items-start gap-2 border-t border-red-200 bg-red-50 px-6 py-3 text-sm text-red-700 sm:px-8">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /> {blocked}
+              </p>
+            )}
             <div className="flex items-center justify-between border-t border-cream-300/80 bg-cream-100/60 px-6 py-4 sm:px-8">
-              <Button type="button" variant="ghost" onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0 || saving}>
+              <Button type="button" variant="ghost" onClick={() => goTo(Math.max(0, step - 1))} disabled={step === 0 || saving}>
                 <ArrowLeft className="h-4 w-4" /> Back
               </Button>
               {step < STEPS.length - 1 ? (
-                <Button key="next" type="button" onClick={next}>Continue <ArrowRight className="h-4 w-4" /></Button>
+                <Button
+                  key="next"
+                  type="button"
+                  // A double-click is one Continue (e.detail counts the clicks; keyboard activation is 0).
+                  onClick={(e) => {
+                    if (e.detail <= 1) void next();
+                  }}
+                >
+                  Continue <ArrowRight className="h-4 w-4" />
+                </Button>
               ) : (
-                <Button key="submit" type="submit" size="lg" loading={saving}>
+                <Button
+                  key="submit"
+                  type="submit"
+                  size="lg"
+                  loading={saving}
+                  // The second click of a double-click on Continue lands here once the Review step opens: ignore it.
+                  onClick={(e) => {
+                    if (e.detail > 1) e.preventDefault();
+                  }}
+                >
                   <Rocket className="h-4 w-4" /> Save project
                 </Button>
               )}

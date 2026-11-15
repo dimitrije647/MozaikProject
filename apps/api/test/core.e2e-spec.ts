@@ -34,6 +34,31 @@ describe('Existing API regression', () => {
     await u1.agent.get(`/projects/${p.id}`).expect(404);
   });
 
+  // The new-project wizard sends the same description to POST /projects and PUT /intake. The project
+  // endpoint used to allow 1000 characters while the intake (and the wizard) allow 2000, so a longer
+  // description failed only at the very end, on "Save project".
+  it('projects: the wizard save sequence accepts a long multiline Serbian description and creates one project', async () => {
+    const u = await registerUser(app, 'wizard');
+    const para = 'Flying Dutchman je restoran i bar na obali Dunava. Domaća kuhinja, riblji specijaliteti, ćevapčići i šljivovica; đakonije za žurke.\n';
+    let description = '';
+    while (description.length + para.length <= 2000) description += para;
+    expect(description.length).toBeGreaterThan(1000);
+    const before = (await u.agent.get('/projects').expect(200)).body.length;
+    const p = (await u.agent.post('/projects').send({ name: 'Flying Dutchman', description }).expect(201)).body;
+    await u.agent
+      .put(`/projects/${p.id}/intake`)
+      .send({ productName: 'Flying Dutchman', shortDescription: description, websiteUrl: 'https://flyingdutchman.rs/', githubUrl: '', targetMarket: '', targetAudience: '', marketingGoal: '', preferredLanguage: 'sr', campaignDuration: '1 month', publishingMode: 'manual', enableSeasonalCalendar: false, enableGoogleDriveExport: false })
+      .expect(200);
+    await u.agent.put(`/projects/${p.id}/social-profiles`).send({ profiles: [] }).expect(200);
+    await u.agent.patch(`/projects/${p.id}`).send({ status: 'READY' }).expect(200);
+    const saved = (await u.agent.get(`/projects/${p.id}`).expect(200)).body;
+    expect(saved.description).toBe(description);
+    expect(saved.intake.shortDescription).toBe(description);
+    expect(saved.intake.githubUrl).toBeNull();
+    expect((await u.agent.get('/projects').expect(200)).body.length).toBe(before + 1);
+    await u.agent.post('/projects').send({ name: 'Too long', description: description + 'x'.repeat(2001 - description.length) }).expect(400);
+  });
+
   it('uploads: store, download through the authenticated endpoint, reject bad types, delete', async () => {
     const u = await registerUser(app, 'upload');
     const other = await registerUser(app, 'upload2');
