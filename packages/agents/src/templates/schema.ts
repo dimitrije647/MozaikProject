@@ -355,6 +355,11 @@ export interface RenderTune {
   brandName?: boolean;
   /** buttons put back on the axis of their group: centre / left edge / right edge at x (fraction of the width) */
   alignX?: Record<string, { mode: 'center' | 'left' | 'right'; x: number }>;
+  /**
+   * CONTENT-AWARE SPACING (templates/spacing.ts): vertical changes of layer geometry, as fractions - relative (dy: move, dh: grow) or the new
+   * absolute top/height of a box (y/h). Only vertical: the alignment axes of the composition never change.
+   */
+  move?: Record<string, { dy?: number; dh?: number; y?: number; h?: number; hide?: boolean }>;
 }
 
 export interface PxRect {
@@ -389,8 +394,10 @@ export interface RenderReport {
     pictureVisibility: number | null;
     faces: { rect: PxRect; area: number; inFrame: number; visibility: number | null }[];
   };
-  texts: { layerId: string; slot: TextSlot; rect: PxRect; size: number; contrast: number; busy: number; trimmed: boolean; backed: boolean; /** relative luminance of the text colour */ lum: number; /** the words really drawn */ text?: string; align?: 'left' | 'center' | 'right' }[];
-  buttons: { layerId: string; rect: PxRect; trimmed: boolean; widened: boolean; arrowDropped: boolean; text?: string }[];
+  texts: { layerId: string; slot: TextSlot; rect: PxRect; size: number; contrast: number; busy: number; trimmed: boolean; backed: boolean; /** relative luminance of the text colour */ lum: number; /** the words really drawn */ text?: string; align?: 'left' | 'center' | 'right'; /** the designed area the text was set in (rect = the ink) */ box?: PxRect; valign?: 'top' | 'middle' | 'bottom'; /** set at an angle (a tilted card) */ rotated?: boolean }[];
+  /** designed areas of OPTIONAL text slots left empty (no date, no support line): the room a missing text leaves behind */
+  emptySlots?: { layerId: string; slot: TextSlot; rect: PxRect }[];
+  buttons: { layerId: string; rect: PxRect; trimmed: boolean; widened: boolean; arrowDropped: boolean; text?: string; rotated?: boolean }[];
   logo: null | {
     layerId: string;
     rect: PxRect;

@@ -111,7 +111,12 @@ describe('F4 Creative Production (V4: one workflow, four agents, no AI images)',
     const tiktok = pkg.hybrid!.creatives.filter((c) => c.channel === 'tiktok' && c.status === 'rendered');
     assert.ok(tiktok.length > 0);
     for (const c of tiktok) for (const id of ['empty_structure', 'placeholder_picture']) assert.notEqual(c.design?.checks.find((x) => x.id === id)?.status, 'fail', `${c.slotId} (${c.templateId}): ${id}`);
+    // CONTENT-AWARE SPACING runs on every rendered creative (deterministic, inside the existing repair loop): billboards keep their space
+    const rendered = pkg.hybrid!.creatives.filter((c) => c.status === 'rendered');
+    for (const c of rendered) assert.ok(c.design?.checks.some((x) => x.id === 'content_spacing'), `${c.slotId}: no content_spacing check`);
+    for (const c of rendered.filter((x) => x.format === 'billboard')) assert.equal(c.design?.checks.find((x) => x.id === 'content_spacing')?.status, 'pass');
     assert.equal(o.fake.imageCalls().length, 0);
+    assert.ok(o.fake.calls().every((r) => r.agent === 'copywriter' || r.agent === 'creviewer'), 'the spacing adds no model request');
   });
 
   it('one campaign: posts for all five platforms, ads, TWO billboards and TWO flyers, drawn from the approved pictures, with zero image requests', async () => {

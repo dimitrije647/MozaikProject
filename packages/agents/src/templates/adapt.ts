@@ -1,6 +1,7 @@
 import { CREATIVE_FORMATS } from '../creative/formats';
 import { busyIn, type SubjectMap } from '../imagery/subject';
 import { overlap1, planCrop, type CropPlan } from './crop';
+import { spacingIssues, type SpacingScene } from './spacing';
 import { formatClassOf, layerFor, type FontFamily, type FormatClass, type Layer, type Paint, type TemplateDef, type TextSlot, type UnitBox } from './schema';
 
 /**
@@ -479,11 +480,13 @@ export function reflowText(t: TemplateDef, copy: ContentProfile['copy'], W = 108
   if (freed < 0.04) return t;
   // the headline gets up to 30% larger type and only the height that type needs (estimated: greedy word wrap); the rest of the freed space goes
   // before the call to action, so the texts stay one group and the button keeps its place
-  const k = Math.min(1.3, (hb.h + freed * 0.7) / hb.h);
+  const k = Math.min(1.3, (hb.h + Math.min(freed * 0.7, panelRoom(t, hi, hb))) / hb.h);
   const sizePx = head.size.max * k * Math.min(W, H);
   const lines = linesAt(copy.headline ?? '', head, sizePx, W);
   const need = Number.isFinite(lines) ? (Math.min(lines, head.maxLines) * sizePx * (head.style.lineHeight ?? 1.15) * 1.06) / H : hb.h + freed * 0.7;
-  const grow = Math.max(0, Math.min(freed * 0.7, need - hb.h));
+  // the headline never grows out of the panel that carries it (a headline on a colour block must not run over its edge)
+  const room = panelRoom(t, hi, hb);
+  const grow = Math.max(0, Math.min(freed * 0.7, need - hb.h, room));
   const air = freed - grow;
   const ctaRow = rows.findIndex((r, i) => i > headRow && r.items.some((x) => x.l.type === 'button' || (x.l.type === 'text' && x.l.slot === 'cta')));
   // the new top of each shown row after the headline: pulled up by the empty rows above it, pushed down by the headline's growth (and the air before the button)
@@ -507,6 +510,13 @@ export function reflowText(t: TemplateDef, copy: ContentProfile['copy'], W = 108
     return { ...l, box: [l.box[0], l.box[1] + dy, l.box[2], l.box[3]] } as Layer;
   });
   return { ...t, layers };
+}
+
+const bottom = (r: R) => r.y + r.h;
+/** The room below the headline inside the panel that carries it (Infinity when it is set on the canvas). */
+function panelRoom(t: TemplateDef, hi: number, hb: R): number {
+  const pnl = panelOf(t.layers, hi);
+  return pnl ? Math.max(0, bottom(boundsOf(pnl)!) - 0.012 - (hb.y + hb.h)) : Infinity;
 }
 
 /** How many lines a text takes in a text layer at a font size (greedy word wrap, optimistic glyph width); Infinity when a word does not fit. */
@@ -818,6 +828,16 @@ export function scoreComposition(t: TemplateDef, variant: VariantId, profile: Co
     densityScore -= Math.min(0.4, placeholder) * densityWeight;
     if (profile.fastScroll || mobile) hard.push('placeholder_picture: a picture area without a picture would look unfinished on a mobile visual');
   }
+  // CONTENT FIT (content-aware spacing, predicted): a template drawn for more copy than the concept has leaves accidental empty space between
+  // related elements. When the spacing repair can regroup it the template stays a good choice (small cost); when it cannot, another layout wins.
+  const gaps = spacingIssues(predictedScene(t, profile), { kind: profile.kind ?? null, fastScroll: !!profile.fastScroll, density: t.density });
+  let spacingScore = 0;
+  if (gaps.length) {
+    const sw = profile.fastScroll || mobile ? 1 : social ? 0.8 : 0.6;
+    const fixable = gaps.every((g) => g.fix);
+    spacingScore = -(fixable ? 0.03 : 0.12) * sw;
+    reasons.push(`the copy leaves ${Math.round(gaps[0].gap * 100)}% of the height as accidental empty space${fixable ? ' (the spacing will be regrouped)' : ' (no regrouping fits: another layout suits this amount of content better)'}`);
+  }
   // FAST SCROLL: how much of the frame the photograph fills (a full-bleed cover beats a small tilted card)
   const pictureShare = heroR ? inter(heroR, { x: 0, y: 0, w: W, h: H }) / (W * H) : 0;
   const pictureFill = profile.fastScroll && isPhoto ? 0.3 * pictureShare : 0;
@@ -840,7 +860,8 @@ export function scoreComposition(t: TemplateDef, variant: VariantId, profile: Co
     emptyPenalty +
     textDominance +
     pictureFill +
-    densityScore;
+    densityScore +
+    spacingScore;
   reasons.unshift(
     `subject ${Math.round(subjVis * 100)}% visible, faces ${Math.round(faceClear * 100)}% clear, text on ${textOver === 'picture' ? `calm picture ${Math.round(space * 100)}%` : textOver}, headline fit ${fit === 1 ? 'comfortable' : fit ? 'tight' : 'no'}, overlays cover ${Math.round(intrusion * 100)}% of the picture`,
   );
@@ -854,6 +875,55 @@ export function scoreComposition(t: TemplateDef, variant: VariantId, profile: Co
     reasons,
     predicted: { crop: crop ? { fit: crop.fit, zoom: crop.zoom, cropLoss: Math.round(crop.cropLoss * 1000) / 1000 } : null, facesWhole: key.filter((f) => f.inFrame >= 0.85).length, facesTotal: key.length, textOver, logoPx: logoPx === null ? null : Math.round(logoPx) },
   };
+}
+
+/** Where a text would be drawn in its box (greedy wrap at the largest size that fits): the PREDICTED ink, as fractions. */
+function predictInk(text: string, l: Extract<Layer, { type: 'text' }>, W: number, H: number): { x: number; y: number; w: number; h: number } {
+  const unit = Math.min(W, H);
+  const [bx, by, bw, bh] = l.box;
+  const lh = l.style.lineHeight ?? 1.15;
+  const max = l.size.max * unit;
+  const min = Math.min(l.size.min, l.size.max) * unit;
+  let inkH = bh;
+  for (let i = 0; i <= 10; i++) {
+    const size = max - ((max - min) * i) / 10;
+    const lines = linesAt(text, l, size, W);
+    if (Number.isFinite(lines) && lines <= l.maxLines && lines * size * lh <= bh * H * 1.02) {
+      inkH = Math.min(bh, (lines * size * lh + size * 0.2) / H);
+      break;
+    }
+  }
+  const y = l.valign === 'bottom' ? by + bh - inkH : l.valign === 'middle' ? by + (bh - inkH) / 2 : by;
+  return { x: bx, y, w: bw, h: inkH };
+}
+
+/** The composition as the renderer would draw it, predicted from the layers and the copy (for the spacing estimate before rendering). */
+export function predictedScene(t: TemplateDef, profile: ContentProfile): SpacingScene {
+  const W = profile.width;
+  const H = profile.height;
+  const fmt = Object.values(CREATIVE_FORMATS).find((f) => f.width === W && f.height === H);
+  const items: SpacingScene['items'] = [];
+  const empty: SpacingScene['empty'] = [];
+  const decor: SpacingScene['decor'] = [];
+  let picture: SpacingScene['picture'] = null;
+  for (const l of t.layers) {
+    if (l.rotate) continue;
+    if (l.type === 'text') {
+      const text = profile.copy[l.slot]?.trim();
+      if (/^point\d$/.test(l.slot)) continue;
+      if (!text) {
+        if (l.optional && l.slot !== 'headline') empty.push(boxR(l.box));
+        continue;
+      }
+      items.push({ id: l.id, kind: 'text', slot: l.slot, ink: predictInk(text, l, W, H), box: boxR(l.box), valign: l.valign });
+    } else if (l.type === 'button') {
+      if (profile.copy.cta?.trim()) items.push({ id: l.id, kind: 'button', ink: boxR(l.box), box: boxR(l.box) });
+    } else if (l.type === 'logo') items.push({ id: l.id, kind: 'logo', ink: boxR(l.box), box: boxR(l.box) });
+    else if (l.type === 'image') {
+      if (l.slot === 'hero' && (profile.picture || l.fallback !== 'none')) picture = boundsOf(l);
+    } else if (DECOR.has(l.type) && l.type !== 'fill') decor.push({ id: l.id, type: l.type, r: boundsOf(l)!, opacity: opacityOf(l), gradient: fadingPaint(l) });
+  }
+  return { width: W, height: H, items, decor, picture, empty, safe: { t: fmt?.safe.top ?? 0.06, b: 1 - (fmt?.safe.bottom ?? 0.06) } };
 }
 
 /**

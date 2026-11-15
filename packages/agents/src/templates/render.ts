@@ -379,6 +379,7 @@ async function drawText(S: Scene, layer: L<'text'>) {
   const full = contentFor(S, layer.slot);
   if (!full) {
     if (!layer.optional) flag(S, `text_slot_empty:${layer.slot}`);
+    else (S.report.emptySlots ??= []).push({ layerId: layer.id, slot: layer.slot, rect: boxPx(S, layer.box) });
     return;
   }
   const capped = capLength(full, MAX_TEXT_CHARS);
@@ -450,7 +451,7 @@ async function drawText(S: Scene, layer: L<'text'>) {
   addVector(S, svg, { ...layer, opacity: undefined }, center, true);
   S.painted.push(layer.id);
   if (!S.drawn.includes(layer.slot)) S.drawn.push(layer.slot);
-  S.report.texts.push({ layerId: layer.id, slot: layer.slot, rect: rotatedBBox(ink, layer.rotate, center), size: fit.size, contrast: Math.round(contrastFrac * 1000) / 1000, busy: Math.round(busy * 1000) / 1000, trimmed: fit.trimmed || capped.cut, backed, lum: Math.round(relativeLuminance(color) * 1000) / 1000, text: drawnText, align: layer.align });
+  S.report.texts.push({ layerId: layer.id, slot: layer.slot, rect: rotatedBBox(ink, layer.rotate, center), size: fit.size, contrast: Math.round(contrastFrac * 1000) / 1000, busy: Math.round(busy * 1000) / 1000, trimmed: fit.trimmed || capped.cut, backed, lum: Math.round(relativeLuminance(color) * 1000) / 1000, text: drawnText, align: layer.align, box: rect, valign: layer.valign, ...(layer.rotate ? { rotated: true } : {}) });
 }
 
 async function drawButton(S: Scene, layer: L<'button'>) {
@@ -556,7 +557,7 @@ async function drawButton(S: Scene, layer: L<'button'>) {
   addVector(S, markup, layer, [rect.x + rect.w / 2, rect.y + rect.h / 2], true);
   S.painted.push(layer.id);
   if (!S.drawn.includes('cta')) S.drawn.push('cta');
-  S.report.buttons.push({ layerId: layer.id, rect: rotatedBBox(rect, layer.rotate), trimmed: fit.trimmed || capped.cut, widened, arrowDropped, text: cta });
+  S.report.buttons.push({ layerId: layer.id, rect: rotatedBBox(rect, layer.rotate), trimmed: fit.trimmed || capped.cut, widened, arrowDropped, text: cta, ...(layer.rotate ? { rotated: true } : {}) });
 }
 
 // ---- images ----------------------------------------------------------------------------------------------------------------------------
@@ -1367,9 +1368,17 @@ async function renderInner(input: TemplateRenderInput): Promise<TemplateRenderRe
   S.report.safe = { ...S.safe };
   if (logoUnreadable && template.layers.some((l) => l.type === 'logo')) flag(S, 'logo_unreadable');
 
+  const moves = S.tune.move ?? {};
+  if (Object.keys(moves).length) flag(S, 'content_spacing_adjusted');
   for (const raw of template.layers) {
-    const layer = layerFor(raw, cls);
-    if (!layer) continue;
+    const resolved = layerFor(raw, cls);
+    if (!resolved) continue;
+    // an accent of a text that was left out goes with it (content-aware spacing); text, buttons, pictures and the logo are never hidden
+    if (moves[resolved.id]?.hide && DECOR_TYPES.has(resolved.type)) {
+      flag(S, `layer_hidden:${resolved.id}`);
+      continue;
+    }
+    const layer = movedLayer(resolved, moves[resolved.id]);
     switch (layer.type) {
       case 'text':
         await drawText(S, layer);
@@ -1391,6 +1400,25 @@ async function renderInner(input: TemplateRenderInput): Promise<TemplateRenderRe
   measureHero(S);
   const png = await sharp(S.canvas, rawOpts(width, height)).removeAlpha().png().toBuffer();
   return { ok: true, png, width, height, flags: S.flags, drawn: S.drawn, layers: S.painted, report: S.report };
+}
+
+/**
+ * CONTENT-AWARE SPACING: a layer moved or resized vertically (tune.move, planned by templates/spacing.ts from the measured geometry). Lines and
+ * polygons move; boxes move and grow (relative) or take a new absolute top/height. Horizontal geometry never changes.
+ */
+function movedLayer(l: Layer, m: NonNullable<RenderTune['move']>[string] | undefined): Layer {
+  if (!m) return l;
+  const ok = (v: number | undefined) => typeof v === 'number' && Number.isFinite(v);
+  const dy = ok(m.dy) ? clamp(m.dy!, -1, 1) : 0;
+  const dh = ok(m.dh) ? clamp(m.dh!, -1, 1) : 0;
+  if (l.type === 'fill') return l;
+  if (l.type === 'line') return { ...l, from: [l.from[0], l.from[1] + dy], to: [l.to[0], l.to[1] + dy] };
+  if (l.type === 'polygon') return { ...l, points: l.points.map(([x, y]) => [x, y + dy] as [number, number]) };
+  if (!('box' in l)) return l;
+  const [x, y, w, h] = l.box;
+  const ny = ok(m.y) ? clamp(m.y!, -1, 2) : y + dy;
+  const nh = Math.max(0.004, ok(m.h) ? clamp(m.h!, 0, 2) : h + dh);
+  return { ...l, box: [x, ny, w, nh] } as Layer;
 }
 
 /** Only well-formed boxes (finite fractions) reach the crop; anything else is ignored rather than trusted. */

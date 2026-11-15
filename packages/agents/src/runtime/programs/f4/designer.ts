@@ -309,7 +309,7 @@ export function buildDesigner(env: F4Env): PhaseAgent {
         const run = await repairLoop(
           comp.templateId,
           (tune) => renderTemplate({ template: comp.template, width: current.width, height: current.height, content, palette: env.hasBrandPalette ? env.palette : [], styleId: env.board.selection?.styleId ?? env.board.direction?.styleId, anchors: hy.anchors ?? undefined, brandName: hy.brandName, images: { hero: pics.hero, secondary: pics.secondary }, logo: env.logo, ...(pics.heroFocus ? { heroFocus: pics.heroFocus } : {}), ...(env.brand?.logo ? { logoAdapt: true } : {}), ...(pics.subject ? { subject: pics.subject } : {}), tune, alternatives: { cta: current.content.ctaOptions ?? [], headline: current.content.headlineOptions ?? [] } }),
-          (res) => preflight({ report: res.report, flags: res.flags, layers: res.layers, hasLogo: !!env.logo, hasPicture: pics.sourceIds.length > 0, templateHasImage, media: { kind, logoSpellsName: spells, fastScroll: !!budget?.fastScroll, textBudget: budget ? { maxWords: budget.maxWords, maxBlocks: budget.maxBlocks } : null, pictureIsPhoto: photoAvailable } }),
+          (res) => preflight({ report: res.report, flags: res.flags, layers: res.layers, hasLogo: !!env.logo, hasPicture: pics.sourceIds.length > 0, templateHasImage, media: { kind, logoSpellsName: spells, fastScroll: !!budget?.fastScroll, textBudget: budget ? { maxWords: budget.maxWords, maxBlocks: budget.maxBlocks } : null, pictureIsPhoto: photoAvailable }, layout: { density: comp.template.density } }),
           4,
           initialTune,
         );

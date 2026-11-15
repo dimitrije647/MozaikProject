@@ -1,4 +1,5 @@
 import { formatClassOf, type PxRect, type RenderReport, type RenderTune, type TextSlot, type UnitBox } from './schema';
+import { mergeMoves, sceneFromReport, spacingIssues, type SpacingMove } from './spacing';
 
 /**
  * THE DESIGN PREFLIGHT (deterministic, no model). Every rendered creative is checked BEFORE it is accepted; a creative that fails is repaired
@@ -27,6 +28,10 @@ import { formatClassOf, type PxRect, type RenderReport, type RenderTune, type Te
  *                        a billboard may stay sparse)
  *   placeholder_picture  no picture area shows only its placeholder pattern because there is no picture (mobile: a failure)
  *   unused_space         a mobile visual uses its canvas (text, picture and filled cards cover a reasonable share of it)
+ *   content_spacing      no ACCIDENTAL empty space: a gap between related elements far larger than the composition's own rhythm and made of
+ *                        designed-but-unfilled text area (a body box made for seven lines holding one), an empty section after a panel, or the
+ *                        empty end of a card. Intentional space (billboards, airy rhythms, minimal posters, picture areas) passes. The repair
+ *                        moves the content vertically (templates/spacing.ts) and the attempt is checked again.
  *
  * Categories (what the Quality Reviewer reports): text, image, crop, occlusion, logo, safe_area, template_mismatch, ui_contamination, duplicate_layout.
  */
@@ -47,6 +52,8 @@ export interface PreflightResult {
   passed: boolean;
   checks: DesignCheck[];
   failures: DesignCheck[];
+  /** the vertical moves that would close the accidental gaps found by content_spacing (used by the repair) */
+  spacing?: Record<string, SpacingMove>;
 }
 
 export interface RepairAction {
@@ -112,6 +119,8 @@ export interface PreflightInput {
     /** an approved PHOTOGRAPH was assigned to this creative (drawn or not) */
     pictureIsPhoto?: boolean;
   } | null;
+  /** the template's declared density (an airy template earns more room before space counts as accidental) */
+  layout?: { density?: 'airy' | 'balanced' | 'dense' | null } | null;
 }
 
 /** Thresholds of the composition checks (MVP heuristics). */
@@ -248,12 +257,15 @@ export function preflight(input: PreflightInput): PreflightResult {
     if (!g.length || (mode === 'center' && g.length < 1)) continue;
     const axisOf = (q: PxRect) => (mode === 'center' ? q.x + q.w / 2 : mode === 'left' ? q.x : q.x + q.w);
     // the group's axis: centred texts share a centre, left texts a left edge (median, so one odd line does not move it)
-    const xs = g.map((t) => axisOf(t.rect)).sort((a, b) => a - b);
-    const axis = xs[Math.floor(xs.length / 2)];
-    const col = { x0: Math.min(...g.map((t) => t.rect.x)), x1: Math.max(...g.map((t) => t.rect.x + t.rect.w)), y0: Math.min(...g.map((t) => t.rect.y)), y1: Math.max(...g.map((t) => t.rect.y + t.rect.h)) };
-    // a centred group must really sit on one axis (texts within 3% of each other) before a button is held to it
-    if (mode === 'center' && xs[xs.length - 1] - xs[0] > r.width * 0.03) continue;
     for (const b of r.buttons) {
+      // the button's own column: the texts above it that share its horizontal range (a split layout has two columns with two axes)
+      const gb = g.filter((t) => Math.min(t.rect.x + t.rect.w, b.rect.x + b.rect.w) - Math.max(t.rect.x, b.rect.x) > b.rect.w * 0.5);
+      if (!gb.length) continue;
+      const xs = gb.map((t) => axisOf(t.rect)).sort((p, q) => p - q);
+      const axis = xs[Math.floor(xs.length / 2)];
+      const col = { x0: Math.min(...gb.map((t) => t.rect.x)), x1: Math.max(...gb.map((t) => t.rect.x + t.rect.w)), y0: Math.min(...gb.map((t) => t.rect.y)), y1: Math.max(...gb.map((t) => t.rect.y + t.rect.h)) };
+      // a centred group must really sit on one axis (texts within 3% of each other) before a button is held to it
+      if (mode === 'center' && xs[xs.length - 1] - xs[0] > r.width * 0.03) continue;
       const inCol = Math.min(col.x1, b.rect.x + b.rect.w) - Math.max(col.x0, b.rect.x) > b.rect.w * 0.5;
       const near = b.rect.y >= col.y0 - r.height * 0.05 && b.rect.y <= col.y1 + r.height * 0.18;
       if (!inCol || !near) continue;
@@ -288,7 +300,25 @@ export function preflight(input: PreflightInput): PreflightResult {
 
   compositionChecks(input, add);
   const failures = checks.filter((c) => c.status === 'fail');
-  return { passed: failures.length === 0, checks, failures };
+  const spacing = spacingMovesOf(input);
+  return { passed: failures.length === 0, checks, failures, ...(spacing ? { spacing } : {}) };
+}
+
+/** The accidental gaps of the rendered creative (null: none, or a billboard). Cached per report: the check and the repair share one measurement. */
+const spacingCache = new WeakMap<RenderReport, ReturnType<typeof spacingIssues>>();
+function spacingOf(input: PreflightInput) {
+  const hit = spacingCache.get(input.report);
+  if (hit) return hit;
+  const issues = spacingIssues(sceneFromReport(input.report), { kind: input.media?.kind ?? null, fastScroll: !!input.media?.fastScroll, density: input.layout?.density ?? null });
+  spacingCache.set(input.report, issues);
+  return issues;
+}
+function spacingMovesOf(input: PreflightInput): Record<string, SpacingMove> | null {
+  const fixes = spacingOf(input).filter((i) => i.fix);
+  if (!fixes.length) return null;
+  let moves: Record<string, SpacingMove> = {};
+  for (const f of fixes) if (!Object.keys(f.fix!.moves).some((id) => id in moves)) moves = { ...moves, ...f.fix!.moves };
+  return moves;
 }
 
 /**
@@ -390,6 +420,21 @@ function compositionChecks(input: PreflightInput, add: (c: DesignCheck) => void)
   if (mobile) {
     const covered = (textRects.reduce((sum, t) => sum + area(clip(t)), 0) + (r.logo ? area(clip(r.logo.rect)) : 0) + (r.hero ? area(clip(r.hero.rect)) : 0) + filledArea) / canvas;
     add({ id: 'unused_space', category: 'composition', status: covered < COMPOSITION.mobileCoverage ? 'warn' : 'pass', detail: covered < COMPOSITION.mobileCoverage ? `Text, picture and cards cover only ${pct(covered)} of this mobile visual: much of the canvas is unused.` : `Text, picture and cards cover ${pct(covered)} of the visual.` });
+  }
+  // ---- accidental empty space (content-aware spacing): gaps measured against the composition's own rhythm, never a global empty-pixel share
+  if (media?.kind === 'billboard') add({ id: 'content_spacing', category: 'composition', status: 'pass', detail: 'A billboard may keep generous negative space.' });
+  else {
+    const issues = spacingOf(input);
+    const pctH = (v: number) => `${Math.round(v * 100)}%`;
+    const what = (i: (typeof issues)[number]) =>
+      i.type === 'gap' ? `${pctH(i.gap)} of the height separates ${i.above.join('+')} from ${i.below.join('+')} (the other gaps are about ${pctH(i.typical)})` : i.type === 'panel_gap' ? `${pctH(i.gap)} of the height is empty between panel "${i.panel}" and ${(i.above[0] === i.panel ? i.below : i.above).join('+')}` : `a card ends in ${pctH(i.gap)} of empty height after its content`;
+    add({
+      id: 'content_spacing',
+      category: 'composition',
+      status: issues.length ? 'fail' : 'pass',
+      detail: issues.length ? `Accidental empty space: ${what(issues[0])}; ${Math.round(issues[0].unfilled * 100)}% of it is text area the copy did not fill.${issues[0].fix ? ` The content can be regrouped (${issues[0].fix.strategy.replace('_', ' ')}).` : ' Another layout fits this amount of content better.'}` : 'Related elements are grouped; the free space is part of the design.',
+      layers: issues.length ? [...new Set(issues.flatMap((i) => [...i.above, ...i.below]))] : undefined,
+    });
   }
   // ---- the logo treatment
   const lg = r.logo;
@@ -530,6 +575,12 @@ export function nextRepair(p: PreflightResult, r: RenderReport, tune: RenderTune
       next.logoScale = Math.max(1, Math.round((tune.logoScale ?? 1) * 0.85 * 100) / 100);
       actions.push({ kind: 'size', target: r.logo.layerId, detail: 'Reduced the enlarged logo so it no longer touches the text.' });
     }
+  }
+
+  // accidental empty space: the related elements are regrouped vertically (a panel grows, a group moves to its button, a card shrinks)
+  if (failed('content_spacing') && p.spacing && Object.keys(p.spacing).length) {
+    next.move = mergeMoves(tune.move, p.spacing);
+    actions.push({ kind: 'position', target: Object.keys(p.spacing).join(','), detail: 'Regrouped the content to close accidental empty space (vertical spacing only; alignment unchanged).' });
   }
 
   // a headline over a busy picture gets a tight solid backing (the text itself stays fully opaque)
